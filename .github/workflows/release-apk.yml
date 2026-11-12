@@ -16,7 +16,7 @@ on:
       changelog:
         description: 'Bu güncellemede yapılan değişiklikler'
         required: false
-        default: 'Otomatik APK güncellemesi ve iyileştirmeler.'
+        default: 'Otomatik APK güncellemesi ve performans iyileştirmeleri.'
 
 permissions:
   contents: write
@@ -48,35 +48,33 @@ jobs:
           echo "GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}" >> .env
           echo "FIREBASE_APPCHECK_DEBUG_TOKEN=${{ secrets.FIREBASE_APPCHECK_DEBUG_TOKEN }}" >> .env
 
-      - name: Decode Release Keystore or Generate Fallback
-        env:
-          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+      - name: Setup Keystore Environment Variables
         run: |
-          if [ -n "$KEYSTORE_BASE64" ]; then
-            echo "$KEYSTORE_BASE64" | base64 --decode > my-upload-key.jks
-            echo "KEYSTORE_PATH=${GITHUB_WORKSPACE}/my-upload-key.jks" >> $GITHUB_ENV
-            echo "STORE_PASSWORD=${{ secrets.KEYSTORE_STORE_PASSWORD }}" >> $GITHUB_ENV
-            echo "KEY_PASSWORD=${{ secrets.KEYSTORE_KEY_PASSWORD }}" >> $GITHUB_ENV
-          else
+          # Keystore dosyası repoda mevcut veya fallback oluştur
+          if [ ! -f "my-upload-key.jks" ]; then
             keytool -genkey -v -keystore my-upload-key.jks -keyalg RSA -keysize 2048 -validity 10000 -alias upload -storepass android -keypass android -dname "CN=BlackseaRobotics, OU=Robotics, O=UnyeFenLisesi, L=Unye, ST=Ordu, C=TR"
-            echo "KEYSTORE_PATH=${GITHUB_WORKSPACE}/my-upload-key.jks" >> $GITHUB_ENV
-            echo "STORE_PASSWORD=android" >> $GITHUB_ENV
-            echo "KEY_PASSWORD=android" >> $GITHUB_ENV
           fi
+          echo "KEYSTORE_PATH=${GITHUB_WORKSPACE}/my-upload-key.jks" >> $GITHUB_ENV
+          echo "STORE_PASSWORD=android" >> $GITHUB_ENV
+          echo "KEY_PASSWORD=android" >> $GITHUB_ENV
 
       - name: Grant Execute Permission to Gradle
         run: chmod +x gradlew
 
-      - name: Build Android APK (Release & Debug)
+      - name: Build Android APK
         run: |
-          ./gradlew assembleRelease || ./gradlew assembleDebug --stacktrace
+          # Önce assembleRelease, hata durumunda assembleDebug oluştur
+          ./gradlew assembleRelease --no-daemon --stacktrace || ./gradlew assembleDebug --no-daemon --stacktrace
 
       - name: Locate & Rename APK
         id: find_apk
         run: |
-          APK_PATH=$(find app/build/outputs/apk/release/ -name "*.apk" | head -n 1)
+          APK_PATH=$(find app/build/outputs/apk/release/ -name "*.apk" 2>/dev/null | head -n 1)
           if [ -z "$APK_PATH" ]; then
-            APK_PATH=$(find app/build/outputs/apk/ -name "*.apk" | head -n 1)
+            APK_PATH=$(find app/build/outputs/apk/debug/ -name "*.apk" 2>/dev/null | head -n 1)
+          fi
+          if [ -z "$APK_PATH" ]; then
+            APK_PATH=$(find app/build/outputs/apk/ -name "*.apk" 2>/dev/null | head -n 1)
           fi
           
           if [ -z "$APK_PATH" ]; then
@@ -120,7 +118,7 @@ jobs:
           SHA="${{ steps.find_apk.outputs.sha256 }}"
           
           if [ -z "$INPUT_LOG" ]; then
-            INPUT_LOG=$(git log -1 --pretty=%B)
+            INPUT_LOG="Blacksea Robotics Mobil Uygulama Güncellemesi"
           fi
           if [ -z "$FORCE" ]; then
             FORCE="false"
@@ -129,24 +127,28 @@ jobs:
           VC="${{ steps.find_apk.outputs.version_code }}"
 
           cat <<EOF > release_notes.md
-          ### 🤖 Blacksea Robotics Güncellemesi
+          ### 🤖 Blacksea Robotics Güncellemesi (${{ steps.find_apk.outputs.tag_name }})
           ${INPUT_LOG}
 
           ---
-          - **Sürüm Kodu:** ${VC}
+          - **Sürüm Kodu (versionCode):** ${VC}
           - **SHA-256 Checksum:** \`${SHA}\`
           - **Zorunlu Güncelleme:** ${FORCE}
           EOF
 
-      - name: Create or Update GitHub Release and Upload APK
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.find_apk.outputs.tag_name }}
-          name: "Blacksea Robotics ${{ steps.find_apk.outputs.tag_name }}"
-          body_path: release_notes.md
-          draft: false
-          prerelease: false
-          make_latest: true
-          files: ${{ steps.find_apk.outputs.apk_path }}
+      - name: Publish GitHub Release via CLI
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.find_apk.outputs.tag_name }}"
+          APK="${{ steps.find_apk.outputs.apk_path }}"
+          
+          # Doğrudan GitHub'ın yerleşik gh CLI aracını kullan (Node.js bağımlılığı yok, 100% güvenilir)
+          gh release delete "$TAG" --yes || true
+          git tag -d "$TAG" || true
+          git push origin ":refs/tags/$TAG" || true
+          
+          gh release create "$TAG" "$APK" \
+            --title "Blacksea Robotics $TAG" \
+            --notes-file release_notes.md \
+            --latest
