@@ -1,0 +1,145 @@
+name: Build & Release Blacksea Robotics APK
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      force_update:
+        description: 'Zorunlu Güncelleme mi? (true/false)'
+        required: false
+        default: 'false'
+      changelog:
+        description: 'Bu güncellemede yapılan değişiklikler'
+        required: false
+        default: 'Otomatik AI Studio senkronizasyonu ve güncellemeler.'
+
+jobs:
+  build:
+    name: Build & Release Android APK
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Java JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+          cache: 'gradle'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Prepare Secrets & Environment (.env)
+        run: |
+          touch .env
+          echo "GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}" >> .env
+          echo "FIREBASE_APPCHECK_DEBUG_TOKEN=${{ secrets.FIREBASE_APPCHECK_DEBUG_TOKEN }}" >> .env
+
+      - name: Decode Release Keystore or Generate Fallback
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "$KEYSTORE_BASE64" | base64 --decode > my-upload-key.jks
+            echo "KEYSTORE_PATH=${GITHUB_WORKSPACE}/my-upload-key.jks" >> $GITHUB_ENV
+            echo "STORE_PASSWORD=${{ secrets.KEYSTORE_STORE_PASSWORD }}" >> $GITHUB_ENV
+            echo "KEY_PASSWORD=${{ secrets.KEYSTORE_KEY_PASSWORD }}" >> $GITHUB_ENV
+          else
+            keytool -genkey -v -keystore my-upload-key.jks -keyalg RSA -keysize 2048 -validity 10000 -alias upload -storepass android -keypass android -dname "CN=BlackseaRobotics, OU=Robotics, O=UnyeFenLisesi, L=Unye, ST=Ordu, C=TR"
+            echo "KEYSTORE_PATH=${GITHUB_WORKSPACE}/my-upload-key.jks" >> $GITHUB_ENV
+            echo "STORE_PASSWORD=android" >> $GITHUB_ENV
+            echo "KEY_PASSWORD=android" >> $GITHUB_ENV
+          fi
+
+      - name: Grant Execute Permission to Gradle
+        run: chmod +x gradlew
+
+      - name: Build Release APK
+        run: ./gradlew assembleRelease --stacktrace
+
+      - name: Locate & Rename APK
+        id: find_apk
+        run: |
+          APK_PATH=$(find app/build/outputs/apk/release/ -name "*.apk" | head -n 1)
+          if [ -z "$APK_PATH" ]; then
+            APK_PATH=$(find app/build/outputs/apk/ -name "*.apk" | head -n 1)
+          fi
+          
+          DETECTED_VERSION_NAME=$(grep -oE 'versionName\s*=\s*"[^"]+"' app/build.gradle.kts | head -1 | cut -d'"' -f2)
+          DETECTED_VERSION_CODE=$(grep -oE 'versionCode\s*=\s*[0-9]+' app/build.gradle.kts | head -1 | awk '{print $NF}')
+          
+          if [ -z "$DETECTED_VERSION_NAME" ]; then
+            DETECTED_VERSION_NAME="1.0.4"
+          fi
+          if [ -z "$DETECTED_VERSION_CODE" ]; then
+            DETECTED_VERSION_CODE="5"
+          fi
+
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            TAG="${{ github.ref_name }}"
+          else
+            TAG="v${DETECTED_VERSION_NAME}"
+          fi
+
+          FINAL_APK_NAME="BlackseaRobotics-${TAG}.apk"
+          cp "$APK_PATH" "${FINAL_APK_NAME}"
+          
+          SHA256=$(sha256sum "${FINAL_APK_NAME}" | awk '{print $1}')
+          
+          echo "apk_path=${FINAL_APK_NAME}" >> $GITHUB_OUTPUT
+          echo "tag_name=${TAG}" >> $GITHUB_OUTPUT
+          echo "sha256=${SHA256}" >> $GITHUB_OUTPUT
+          echo "version_code=${DETECTED_VERSION_CODE}" >> $GITHUB_OUTPUT
+          echo "version_name=${DETECTED_VERSION_NAME}" >> $GITHUB_OUTPUT
+          echo "APK Ready: ${FINAL_APK_NAME} (Version: ${DETECTED_VERSION_NAME}, Code: ${DETECTED_VERSION_CODE}, SHA256: ${SHA256})"
+
+      - name: Extract Release Notes & Metadata
+        id: notes
+        run: |
+          INPUT_LOG="${{ github.event.inputs.changelog }}"
+          FORCE="${{ github.event.inputs.force_update }}"
+          SHA="${{ steps.find_apk.outputs.sha256 }}"
+          
+          if [ -z "$INPUT_LOG" ]; then
+            INPUT_LOG=$(git log -1 --pretty=%B)
+          fi
+          if [ -z "$FORCE" ]; then
+            FORCE="false"
+          fi
+
+          VC="${{ steps.find_apk.outputs.version_code }}"
+
+          cat <<EOF > release_notes.md
+          ${INPUT_LOG}
+
+          ---
+          versionCode: ${VC}
+          sha256: ${SHA}
+          forceUpdate: ${FORCE}
+          EOF
+
+      - name: Create or Update GitHub Release and Upload APK
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.find_apk.outputs.tag_name }}
+          name: "Blacksea Robotics ${{ steps.find_apk.outputs.tag_name }}"
+          body_path: release_notes.md
+          draft: false
+          prerelease: false
+          make_latest: true
+          files: ${{ steps.find_apk.outputs.apk_path }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

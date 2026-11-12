@@ -1,0 +1,109 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isManager() {
+      return isAuthenticated() && (
+        request.auth.token.email == "filim3290@gmail.com" ||
+        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+         (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isSuperAdmin == true ||
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == "Yönetici" ||
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == "Takım Kaptanı" ||
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == "Yetkili Öğretmen" ||
+          ( "roles" in get(/databases/$(database)/documents/users/$(request.auth.uid)).data &&
+            ( "Yönetici" in get(/databases/$(database)/documents/users/$(request.auth.uid)).data.roles ||
+              "Takım Kaptanı" in get(/databases/$(database)/documents/users/$(request.auth.uid)).data.roles ||
+              "Yetkili Öğretmen" in get(/databases/$(database)/documents/users/$(request.auth.uid)).data.roles ) ) ) )
+      );
+    }
+
+    // --- USERS ---
+    match /users/{userId} {
+      allow read: if isAuthenticated();
+      // First user creation / onboarding
+      allow create: if isOwner(userId) && request.resource.data.userId == request.auth.uid;
+      // Managers can update roles, status, team.
+      // Normal users can update their profile without changing roles or superAdmin.
+      // Users can re-apply if currently rejected or pending (can set status to 'pending')
+      allow update: if isAuthenticated() && (
+        isManager() ||
+        (isOwner(userId) &&
+         (!('status' in request.resource.data) || request.resource.data.status == resource.data.status || (request.resource.data.status == 'pending' && (resource.data.status == 'rejected' || resource.data.status == 'pending'))) &&
+         (!('roles' in request.resource.data) || request.resource.data.roles == resource.data.roles) &&
+         (!('isSuperAdmin' in request.resource.data) || request.resource.data.isSuperAdmin == resource.data.isSuperAdmin))
+      );
+      allow delete: if isManager();
+    }
+
+    // --- ROOMS (Open to all authenticated team members) ---
+    match /rooms/{roomId} {
+      allow read: if isAuthenticated();
+      allow create, update: if isAuthenticated();
+      allow delete: if isManager();
+
+      // --- MESSAGES IN ROOM (Open to all members) ---
+      match /messages/{messageId} {
+        allow read: if isAuthenticated();
+        allow create: if isAuthenticated() && request.resource.data.senderId == request.auth.uid;
+        allow update: if isAuthenticated() && (request.resource.data.senderId == request.auth.uid || isManager());
+        allow delete: if isAuthenticated() && (resource.data.senderId == request.auth.uid || isManager());
+      }
+    }
+
+    // --- IDEAS ---
+    match /ideas/{ideaId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && request.resource.data.authorId == request.auth.uid;
+      // Allow updates for likes, category/status, or author updates
+      allow update: if isAuthenticated();
+      allow delete: if isAuthenticated() && (resource.data.authorId == request.auth.uid || isManager());
+
+      // --- COMMENTS ON IDEAS ---
+      match /comments/{commentId} {
+        allow read: if isAuthenticated();
+        allow create: if isAuthenticated() && request.resource.data.authorId == request.auth.uid;
+        allow delete: if isAuthenticated() && (resource.data.authorId == request.auth.uid || isManager());
+      }
+    }
+
+    // --- SHARED FILES (Open to all members) ---
+    match /files/{fileId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && request.resource.data.uploadedById == request.auth.uid;
+      allow update: if isAuthenticated() && (request.resource.data.uploadedById == request.auth.uid || isManager());
+      allow delete: if isAuthenticated() && (resource.data.uploadedById == request.auth.uid || isManager());
+    }
+
+    // --- ANNOUNCEMENTS ---
+    match /announcements/{announcementId} {
+      allow read: if isAuthenticated();
+      allow create, update: if isAuthenticated() && (isManager() || request.resource.data.authorId == request.auth.uid);
+      allow delete: if isAuthenticated() && (resource.data.authorId == request.auth.uid || isManager());
+    }
+
+    // --- NOTIFICATIONS ---
+    match /notifications/{notificationId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated();
+      allow update: if isAuthenticated();
+      allow delete: if isAuthenticated() && (
+        resource.data.recipientUserId == request.auth.uid ||
+        isManager()
+      );
+    }
+
+    // --- APP CONFIG & UPDATES ---
+    match /app_config/{configId} {
+      allow read: if true;
+      allow write: if isAuthenticated();
+    }
+  }
+}

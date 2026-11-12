@@ -1,0 +1,152 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profile in Blacksea Robotics platform",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "displayName": { "type": "string" },
+        "email": { "type": "string" },
+        "team": { "type": "string" },
+        "role": { "type": "string" },
+        "status": { "type": "string" },
+        "photoUrl": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "displayName", "email", "team", "role", "status", "createdAt", "updatedAt"]
+    },
+    "Room": {
+      "title": "Room",
+      "description": "Team chat room",
+      "type": "object",
+      "properties": {
+        "roomId": { "type": "string" },
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "allowedTeam": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["roomId", "name", "description", "allowedTeam", "createdAt", "updatedAt"]
+    },
+    "Message": {
+      "title": "Message",
+      "description": "Chat message in a room",
+      "type": "object",
+      "properties": {
+        "roomId": { "type": "string" },
+        "senderId": { "type": "string" },
+        "senderName": { "type": "string" },
+        "senderPhotoUrl": { "type": "string" },
+        "senderTeam": { "type": "string" },
+        "text": { "type": "string" },
+        "fileUrl": { "type": "string" },
+        "fileName": { "type": "string" },
+        "fileType": { "type": "string" },
+        "isPinned": { "type": "boolean" },
+        "replyToId": { "type": "string" },
+        "replyToSender": { "type": "string" },
+        "replyToText": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["roomId", "senderId", "senderName", "senderTeam", "text", "isPinned", "createdAt", "updatedAt"]
+    },
+    "Idea": {
+      "title": "Idea",
+      "description": "Brainstorming or project idea",
+      "type": "object",
+      "properties": {
+        "roomId": { "type": "string" },
+        "authorId": { "type": "string" },
+        "authorName": { "type": "string" },
+        "authorTeam": { "type": "string" },
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "category": { "type": "string" },
+        "likes": { "type": "array", "items": { "type": "string" } },
+        "likeCount": { "type": "integer" },
+        "fileUrl": { "type": "string" },
+        "fileName": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["roomId", "authorId", "authorName", "authorTeam", "title", "description", "category", "likes", "likeCount", "createdAt", "updatedAt"]
+    },
+    "Comment": {
+      "title": "Comment",
+      "description": "Comment on an idea",
+      "type": "object",
+      "properties": {
+        "ideaId": { "type": "string" },
+        "authorId": { "type": "string" },
+        "authorName": { "type": "string" },
+        "text": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ideaId", "authorId", "authorName", "text", "createdAt"]
+    },
+    "SharedFile": {
+      "title": "SharedFile",
+      "description": "Workspace file (code, docs, designs, pdf)",
+      "type": "object",
+      "properties": {
+        "roomId": { "type": "string" },
+        "uploadedById": { "type": "string" },
+        "uploadedByName": { "type": "string" },
+        "fileName": { "type": "string" },
+        "fileType": { "type": "string" },
+        "description": { "type": "string" },
+        "content": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["roomId", "uploadedById", "uploadedByName", "fileName", "fileType", "description", "createdAt"]
+    },
+    "Announcement": {
+      "title": "Announcement",
+      "description": "Team announcement broadcasted by leaders/admins",
+      "type": "object",
+      "properties": {
+        "authorId": { "type": "string" },
+        "authorName": { "type": "string" },
+        "title": { "type": "string" },
+        "content": { "type": "string" },
+        "isPinned": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["authorId", "authorName", "title", "content", "isPinned", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "User profile collection"
+    },
+    "/rooms/{roomId}": {
+      "schema": "Room",
+      "description": "Rooms collection"
+    },
+    "/rooms/{roomId}/messages/{messageId}": {
+      "schema": "Message",
+      "description": "Room messages subcollection"
+    },
+    "/ideas/{ideaId}": {
+      "schema": "Idea",
+      "description": "Team ideas collection"
+    },
+    "/ideas/{ideaId}/comments/{commentId}": {
+      "schema": "Comment",
+      "description": "Idea comments subcollection"
+    },
+    "/files/{fileId}": {
+      "schema": "SharedFile",
+      "description": "Workspace shared files collection"
+    },
+    "/announcements/{announcementId}": {
+      "schema": "Announcement",
+      "description": "Team announcements collection"
+    }
+  }
+}

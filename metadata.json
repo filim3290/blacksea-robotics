@@ -1,0 +1,6 @@
+{
+  "name": "BLACKSEA ROBOTICS",
+  "description": "Ünye Fen Lisesi Robotik Takımı – Ekip İletişim ve Çalışma Platformu",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
