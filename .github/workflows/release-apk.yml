@@ -136,13 +136,18 @@ jobs:
           RESOLVED_KEY_PASS="${KEY_PASSWORD:-$LEGACY_KEY_PASSWORD}"
           RESOLVED_ALIAS="${KEY_ALIAS:-upload}"
 
-          if [ -z "$KEYSTORE_BASE64" ] || [ -z "$RESOLVED_STORE_PASS" ] || [ -z "$RESOLVED_KEY_PASS" ] || [ -z "$KEY_ALIAS" ]; then
-            echo "::error::Kalıcı release imza bilgileri eksik! GitHub Repository > Settings > Secrets and variables > Actions bölümüne şu 4 secret'ı ekleyin:"
-            echo "  - KEYSTORE_BASE64 (Release .jks dosyasının base64 çıktısı)"
-            echo "  - KEYSTORE_PASSWORD (Keystore parolası)"
-            echo "  - KEY_ALIAS (Anahtar takma adı / alias)"
-            echo "  - KEY_PASSWORD (Anahtar parolası)"
+          if [ -z "$KEYSTORE_BASE64" ] || [ -z "$RESOLVED_STORE_PASS" ] || [ -z "$RESOLVED_KEY_PASS" ]; then
+            echo "=== GitHub Actions Keystore Secrets Durumu ==="
+            [ -n "$KEYSTORE_BASE64" ] && echo "  [OK] KEYSTORE_BASE64: TANIMLI" || echo "  [X] KEYSTORE_BASE64: EKSİK"
+            [ -n "$RESOLVED_STORE_PASS" ] && echo "  [OK] KEYSTORE_PASSWORD: TANIMLI" || echo "  [X] KEYSTORE_PASSWORD: EKSİK"
+            [ -n "$KEY_ALIAS" ] && echo "  [OK] KEY_ALIAS: TANIMLI" || echo "  [!] KEY_ALIAS: EKSİK (varsayılan 'upload' veya kendi alias'ınız)"
+            [ -n "$RESOLVED_KEY_PASS" ] && echo "  [OK] KEY_PASSWORD: TANIMLI" || echo "  [X] KEY_PASSWORD: EKSİK"
+            echo "::error::Kalıcı release imza bilgileri eksik! Lütfen GitHub Secrets (https://github.com/${GITHUB_REPOSITORY}/settings/secrets/actions) bölümüne KEYSTORE_BASE64, KEYSTORE_PASSWORD, KEY_ALIAS ve KEY_PASSWORD ekleyin."
             exit 1
+          fi
+
+          if [ -z "$KEY_ALIAS" ]; then
+            echo "::warning::KEY_ALIAS secret tanımlı değil; varsayılan olarak 'upload' kullanılıyor. Keystore alias'ınız farklıysa KEY_ALIAS secret'ını ekleyin."
           fi
 
           echo "::add-mask::$RESOLVED_STORE_PASS"
