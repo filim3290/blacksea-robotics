@@ -90,7 +90,7 @@ jobs:
           invite_clients = matched[0].get("services", {}).get("appinvite_service", {}).get("other_platform_oauth_client", [])
           web_clients = [o for o in (oauth_clients + invite_clients) if o.get("client_type") == 3]
           if not web_clients:
-              print("::error::app/google-services.json içinde client_type=3 (default_web_client_id için Web Client ID) eksik! Firebase Console üzerinden Web/Google Sign-In yapılandırıp güncel google-services.json indirin.", file=sys.stderr)
+              print("::error::app/google-services.json içinde client_type=3 (default_web_client_id için Web Client ID) eksik!", file=sys.stderr)
               sys.exit(1)
           print(f"Firebase doğrulandı: package={pkg}, web_client_id={web_clients[0].get('client_id')}")
           PY
@@ -107,7 +107,6 @@ jobs:
               val = val.replace("\r", "").replace("\n", "").strip()
               if len(val) >= 2 and ((val[0] == '"' and val[-1] == '"') or (val[0] == "'" and val[-1] == "'")):
                   val = val[1:-1].strip()
-              # Prevent special characters from breaking Java String literals in BuildConfig.java
               val = val.replace("\\", "\\\\").replace('"', '\\"')
               return val
 
@@ -124,30 +123,106 @@ jobs:
           print(f".env hazırlandı ({len(lines)} geçerli değişken eklendi).")
           PY
 
-      - name: Setup Keystores
+      - name: Setup Permanent Release Keystore
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
           KEYSTORE_STORE_PASSWORD: ${{ secrets.KEYSTORE_STORE_PASSWORD }}
           KEYSTORE_KEY_PASSWORD: ${{ secrets.KEYSTORE_KEY_PASSWORD }}
         run: |
-          if [ -n "$KEYSTORE_BASE64" ] && [ -n "$KEYSTORE_STORE_PASSWORD" ] && [ -n "$KEYSTORE_KEY_PASSWORD" ]; then
-            echo "$KEYSTORE_BASE64" | base64 --decode > my-upload-key.jks
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            if [ -z "$KEYSTORE_STORE_PASSWORD" ] || [ -z "$KEYSTORE_KEY_PASSWORD" ]; then
+              echo "::error::KEYSTORE_BASE64 tanımlı fakat KEYSTORE_STORE_PASSWORD veya KEYSTORE_KEY_PASSWORD eksik!"
+              exit 1
+            fi
+            printf '%s' "$KEYSTORE_BASE64" | tr -d '[:space:]' | base64 --decode > my-upload-key.jks
             echo "STORE_PASSWORD=$KEYSTORE_STORE_PASSWORD" >> $GITHUB_ENV
             echo "KEY_PASSWORD=$KEYSTORE_KEY_PASSWORD" >> $GITHUB_ENV
-          else
-            if [ ! -f "my-upload-key.jks" ]; then
-              keytool -genkey -v -keystore my-upload-key.jks -keyalg RSA -keysize 2048 -validity 10000 -alias upload -storepass android -keypass android -dname "CN=BlackseaRobotics, OU=Robotics, O=UnyeFenLisesi, L=Unye, ST=Ordu, C=TR"
-            fi
+            echo "Kalıcı keystore GitHub Secrets (KEYSTORE_BASE64) üzerinden yüklendi."
+          elif [ -s "my-upload-key.jks" ]; then
             echo "STORE_PASSWORD=android" >> $GITHUB_ENV
             echo "KEY_PASSWORD=android" >> $GITHUB_ENV
+            echo "Kalıcı keystore repodaki my-upload-key.jks dosyasından kullanılıyor."
+          else
+            echo "::error::Kalıcı release keystore bulunamadı! Her derlemede farklı imza oluşmaması ve 'Uygulama yüklenemedi' hatasını önlemek için repoya my-upload-key.jks dosyasını ekleyin veya GitHub Secrets içine KEYSTORE_BASE64, KEYSTORE_STORE_PASSWORD ve KEYSTORE_KEY_PASSWORD ekleyin."
+            exit 1
           fi
+
           echo "KEYSTORE_PATH=${GITHUB_WORKSPACE}/my-upload-key.jks" >> $GITHUB_ENV
+
+          # Verify keystore integrity and log certificate SHA-256 fingerprint
+          PASS="${KEYSTORE_STORE_PASSWORD:-android}"
+          keytool -list -v -keystore my-upload-key.jks -storepass "$PASS" -alias upload | grep -E "Alias name|SHA1|SHA256"
 
           if [ ! -f "debug.keystore" ] && [ -f "debug.keystore.base64" ]; then
             base64 --decode debug.keystore.base64 > debug.keystore
-          elif [ ! -f "debug.keystore" ]; then
-            keytool -genkey -v -keystore debug.keystore -keyalg RSA -keysize 2048 -validity 10000 -alias androiddebugkey -storepass android -keypass android -dname "CN=Android Debug,O=Android,C=US"
           fi
+
+      - name: Compute Monotonic VersionCode & VersionName
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 - <<'PY'
+          import json, os, re, urllib.request
+
+          with open("app/build.gradle.kts", "r", encoding="utf-8") as f:
+              gradle_text = f.read()
+
+          m_code = re.search(r'versionCode\s*=.*?(\d+)\s*$', gradle_text, re.MULTILINE)
+          m_name = re.search(r'versionName\s*=.*?"([^"]+)"\s*$', gradle_text, re.MULTILINE)
+          base_code = int(m_code.group(1)) if m_code else 6
+          base_name = m_name.group(1) if m_name else "1.0.5"
+
+          repo = os.environ.get("GITHUB_REPOSITORY", "")
+          token = os.environ.get("GITHUB_TOKEN", "")
+          max_released_code = 0
+          existing_tags = set()
+
+          if repo:
+              try:
+                  req = urllib.request.Request(f"https://api.github.com/repos/{repo}/releases?per_page=30")
+                  req.add_header("Accept", "application/vnd.github.v3+json")
+                  req.add_header("User-Agent", "BSR-CI-Versioning")
+                  if token:
+                      req.add_header("Authorization", f"Bearer {token}")
+                  with urllib.request.urlopen(req, timeout=15) as resp:
+                      releases = json.loads(resp.read().decode("utf-8"))
+                      for rel in releases:
+                          tag = str(rel.get("tag_name", "")).strip()
+                          if tag:
+                              existing_tags.add(tag)
+                          body = str(rel.get("body", ""))
+                          for match in re.findall(r'versionCode(?:\s*\)\s*\*+)?\s*[:=]\s*(\d+)', body, re.IGNORECASE):
+                              max_released_code = max(max_released_code, int(match))
+              except Exception as e:
+                  print(f"Önceki release sorgulaması atlandı ({e})")
+
+          next_code = max(base_code, max_released_code + 1)
+
+          ref = os.environ.get("GITHUB_REF", "")
+          ref_name = os.environ.get("GITHUB_REF_NAME", "")
+          if ref.startswith("refs/tags/v"):
+              final_tag = ref_name
+              final_name = ref_name.lstrip("vV")
+          else:
+              parts = [int(p) for p in base_name.split(".") if p.isdigit()]
+              while len(parts) < 3:
+                  parts.append(0)
+              candidate_name = f"{parts[0]}.{parts[1]}.{parts[2]}"
+              while f"v{candidate_name}" in existing_tags:
+                  parts[2] += 1
+                  candidate_name = f"{parts[0]}.{parts[1]}.{parts[2]}"
+              final_name = candidate_name
+              final_tag = f"v{final_name}"
+
+          env_path = os.environ.get("GITHUB_ENV")
+          if env_path:
+              with open(env_path, "a", encoding="utf-8") as ef:
+                  ef.write(f"CI_VERSION_CODE={next_code}\n")
+                  ef.write(f"CI_VERSION_NAME={final_name}\n")
+                  ef.write(f"CI_RELEASE_TAG={final_tag}\n")
+
+          print(f"Computed Release Version -> versionName={final_name}, versionCode={next_code}, tag={final_tag} (max_released_code={max_released_code})")
+          PY
 
       - name: Grant Execute Permission to Gradle
         run: chmod +x gradlew
@@ -164,7 +239,7 @@ jobs:
       - name: Build Release Android APK
         run: ./gradlew :app:assembleRelease --no-daemon --stacktrace
 
-      - name: Locate & Rename Release APK
+      - name: Locate, Verify APK & Rename
         id: find_apk
         run: |
           set +e
@@ -179,22 +254,27 @@ jobs:
             exit 1
           fi
 
-          DETECTED_VERSION_NAME=$(grep -oE 'versionName\s*=\s*"[^"]+"' app/build.gradle.kts | head -n 1 | cut -d'"' -f2 || true)
-          DETECTED_VERSION_CODE=$(grep -oE 'versionCode\s*=\s*[0-9]+' app/build.gradle.kts | head -n 1 | awk '{print $NF}' || true)
+          # Verify APK signature and extract package/version/certificate metadata
+          APKSIGNER=$(find "$ANDROID_HOME/build-tools" "$ANDROID_SDK_ROOT/build-tools" -name "apksigner" 2>/dev/null | head -n 1)
+          AAPT2=$(find "$ANDROID_HOME/build-tools" "$ANDROID_SDK_ROOT/build-tools" -name "aapt2" 2>/dev/null | head -n 1)
 
-          if [ -z "$DETECTED_VERSION_NAME" ]; then
-            DETECTED_VERSION_NAME="1.0.4"
-          fi
-          if [ -z "$DETECTED_VERSION_CODE" ]; then
-            DETECTED_VERSION_CODE="5"
-          fi
-
-          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
-            TAG="${{ github.ref_name }}"
-          else
-            TAG="v${DETECTED_VERSION_NAME}"
+          CERT_SHA256=""
+          if [ -n "$APKSIGNER" ]; then
+            SIGN_OUT=$("$APKSIGNER" verify --print-certs "$APK_PATH")
+            echo "$SIGN_OUT"
+            CERT_SHA256=$(echo "$SIGN_OUT" | grep -i "SHA-256 digest" | head -n 1 | awk '{print $NF}')
           fi
 
+          if [ -n "$AAPT2" ]; then
+            BADGING=$("$AAPT2" dump badging "$APK_PATH" | head -n 3)
+            echo "$BADGING"
+            if ! echo "$BADGING" | grep -q "name='com.aistudio.blacksearobotics.kxnqpv'"; then
+              echo "::error::APK applicationId beklenen değerle (com.aistudio.blacksearobotics.kxnqpv) eşleşmiyor!"
+              exit 1
+            fi
+          fi
+
+          TAG="${CI_RELEASE_TAG:-v${CI_VERSION_NAME:-1.0.5}}"
           FINAL_APK_NAME="BlackseaRobotics-${TAG}.apk"
           cp "$APK_PATH" "${FINAL_APK_NAME}"
 
@@ -203,9 +283,10 @@ jobs:
           echo "apk_path=${FINAL_APK_NAME}" >> $GITHUB_OUTPUT
           echo "tag_name=${TAG}" >> $GITHUB_OUTPUT
           echo "sha256=${SHA256}" >> $GITHUB_OUTPUT
-          echo "version_code=${DETECTED_VERSION_CODE}" >> $GITHUB_OUTPUT
-          echo "version_name=${DETECTED_VERSION_NAME}" >> $GITHUB_OUTPUT
-          echo "Release APK Ready: ${FINAL_APK_NAME} (Version: ${DETECTED_VERSION_NAME}, Code: ${DETECTED_VERSION_CODE}, SHA256: ${SHA256})"
+          echo "cert_sha256=${CERT_SHA256}" >> $GITHUB_OUTPUT
+          echo "version_code=${CI_VERSION_CODE}" >> $GITHUB_OUTPUT
+          echo "version_name=${CI_VERSION_NAME}" >> $GITHUB_OUTPUT
+          echo "Release APK Verified: ${FINAL_APK_NAME} (Version: ${CI_VERSION_NAME}, Code: ${CI_VERSION_CODE}, SHA256: ${SHA256}, CertSHA256: ${CERT_SHA256})"
 
       - name: Upload Release APK to GitHub Actions Artifacts
         uses: actions/upload-artifact@v4
@@ -221,6 +302,9 @@ jobs:
           INPUT_LOG="${{ github.event.inputs.changelog }}"
           FORCE="${{ github.event.inputs.force_update }}"
           SHA="${{ steps.find_apk.outputs.sha256 }}"
+          CERT_SHA="${{ steps.find_apk.outputs.cert_sha256 }}"
+          VC="${{ steps.find_apk.outputs.version_code }}"
+          VN="${{ steps.find_apk.outputs.version_name }}"
 
           if [ -z "$INPUT_LOG" ]; then
             INPUT_LOG="Blacksea Robotics Mobil Uygulama Güncellemesi"
@@ -229,16 +313,17 @@ jobs:
             FORCE="false"
           fi
 
-          VC="${{ steps.find_apk.outputs.version_code }}"
-
           cat <<EOF > release_notes.md
           ### 🤖 Blacksea Robotics Güncellemesi (${{ steps.find_apk.outputs.tag_name }})
           ${INPUT_LOG}
 
           ---
-          - **Sürüm Kodu (versionCode):** ${VC}
-          - **SHA-256 Checksum:** \`${SHA}\`
-          - **Zorunlu Güncelleme:** ${FORCE}
+          versionCode: ${VC}
+          versionName: ${VN}
+          applicationId: com.aistudio.blacksearobotics.kxnqpv
+          sha256: ${SHA}
+          certSha256: ${CERT_SHA}
+          forceUpdate: ${FORCE}
           EOF
 
       - name: Publish GitHub Release via CLI

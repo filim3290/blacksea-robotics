@@ -16,8 +16,8 @@ android {
     applicationId = "com.aistudio.blacksearobotics.kxnqpv"
     minSdk = 24
     targetSdk = 36
-    versionCode = 5
-    versionName = "1.0.4"
+    versionCode = System.getenv("CI_VERSION_CODE")?.toIntOrNull() ?: 6
+    versionName = System.getenv("CI_VERSION_NAME")?.takeIf { it.isNotBlank() } ?: "1.0.5"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }

@@ -483,16 +483,6 @@ fun ProfileScreen(
                         Text("Web'den İndir", fontSize = 11.sp, color = Color(0xFF10B981))
                     }
                 }
-
-                TextButton(
-                    onClick = {
-                        val sim = mgr.getSimulatedReleaseInfo()
-                        onShowUpdateDialog(sim)
-                    },
-                    modifier = Modifier.fillMaxWidth().height(36.dp)
-                ) {
-                    Text("🚀 Güncelleme Ekranını Önizle (Test)", fontSize = 11.sp, color = ElectricBlue)
-                }
             }
         }
 

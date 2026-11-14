@@ -1,11 +1,6 @@
 package com.example.ui.components
 
-import android.os.Build
 import android.widget.Toast
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -24,14 +19,13 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowForward
+import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.InstallMobile
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.RocketLaunch
 import androidx.compose.material.icons.filled.Security
-import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -39,13 +33,14 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -69,7 +64,9 @@ import com.example.ui.theme.ElectricBlue
 import com.example.ui.theme.PhoenixAmber
 import com.example.update.AppReleaseInfo
 import com.example.update.AppUpdateManager
+import com.example.update.InstallResultState
 import com.example.update.UpdateDownloadState
+import com.example.update.UpdateInstallResultBus
 import kotlinx.coroutines.launch
 import java.io.File
 
@@ -86,19 +83,44 @@ fun AppUpdateDialog(
     var downloadState by remember { mutableStateOf<UpdateDownloadState>(UpdateDownloadState.Idle) }
     var downloadedApkFile by remember { mutableStateOf<File?>(null) }
     var showPermissionAlert by remember { mutableStateOf(false) }
+    val installState by UpdateInstallResultBus.state.collectAsState()
+
+    LaunchedEffect(releaseInfo.tagName) {
+        UpdateInstallResultBus.reset()
+    }
+
+    LaunchedEffect(installState) {
+        if (installState is InstallResultState.Success) {
+            updateManager.markVersionInstalled(releaseInfo.versionCode)
+            Toast.makeText(context, "Blacksea Robotics v${releaseInfo.versionName} başarıyla kuruldu!", Toast.LENGTH_LONG).show()
+            UpdateInstallResultBus.reset()
+            onDismiss()
+        }
+    }
+
+    fun startInstallation(file: File) {
+        if (updateManager.canInstallApks()) {
+            scope.launch {
+                val res = updateManager.installApkWithPackageInstaller(file)
+                if (res.isFailure) {
+                    Toast.makeText(
+                        context,
+                        "Kurulum başlatılamadı: ${res.exceptionOrNull()?.message}",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+            }
+        } else {
+            showPermissionAlert = true
+        }
+    }
 
     DisposableEffect(lifecycleOwner, showPermissionAlert, downloadedApkFile) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME && showPermissionAlert && updateManager.canInstallApks()) {
                 showPermissionAlert = false
                 downloadedApkFile?.let { file ->
-                    updateManager.markVersionInstalled(releaseInfo.versionCode)
-                    val res = updateManager.installApk(file)
-                    if (res.isFailure) {
-                        Toast.makeText(context, "Kurulum başlatılamadı: ${res.exceptionOrNull()?.message}", Toast.LENGTH_LONG).show()
-                    } else {
-                        onDismiss()
-                    }
+                    startInstallation(file)
                 }
             }
         }
@@ -108,15 +130,18 @@ fun AppUpdateDialog(
         }
     }
 
+    val isBusy = downloadState is UpdateDownloadState.Downloading || installState is InstallResultState.Installing
+
     Dialog(
         onDismissRequest = {
-            if (!releaseInfo.isForceUpdate && downloadState !is UpdateDownloadState.Downloading) {
+            if (!releaseInfo.isForceUpdate && !isBusy) {
+                UpdateInstallResultBus.reset()
                 onDismiss()
             }
         },
         properties = DialogProperties(
-            dismissOnBackPress = !releaseInfo.isForceUpdate && downloadState !is UpdateDownloadState.Downloading,
-            dismissOnClickOutside = !releaseInfo.isForceUpdate && downloadState !is UpdateDownloadState.Downloading,
+            dismissOnBackPress = !releaseInfo.isForceUpdate && !isBusy,
+            dismissOnClickOutside = !releaseInfo.isForceUpdate && !isBusy,
             usePlatformDefaultWidth = false
         )
     ) {
@@ -136,7 +161,6 @@ fun AppUpdateDialog(
                     .padding(24.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                // Header Badge
                 Surface(
                     shape = CircleShape,
                     color = ElectricBlue.copy(alpha = 0.18f),
@@ -167,7 +191,7 @@ fun AppUpdateDialog(
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     Text(
-                        text = "🚀 Yeni Güncelleme Mevcut",
+                        text = "Yeni Güncelleme Mevcut",
                         color = ElectricBlue,
                         fontSize = 14.sp,
                         fontWeight = FontWeight.Bold
@@ -190,7 +214,6 @@ fun AppUpdateDialog(
 
                 Spacer(modifier = Modifier.height(18.dp))
 
-                // Versions Comparison Card
                 Card(
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(14.dp),
@@ -207,15 +230,15 @@ fun AppUpdateDialog(
                             Text("Mevcut Sürüm", fontSize = 11.sp, color = Color(0xFF94A3B8))
                             Spacer(modifier = Modifier.height(2.dp))
                             Text(
-                                text = "v${updateManager.getCurrentVersionName()}",
-                                fontSize = 15.sp,
+                                text = "v${updateManager.getCurrentVersionName()} (${updateManager.getCurrentVersionCode()})",
+                                fontSize = 14.sp,
                                 fontWeight = FontWeight.Bold,
                                 color = Color(0xFFCBD5E1)
                             )
                         }
 
                         Icon(
-                            imageVector = Icons.Default.ArrowForward,
+                            imageVector = Icons.AutoMirrored.Filled.ArrowForward,
                             contentDescription = null,
                             tint = PhoenixAmber,
                             modifier = Modifier.size(18.dp)
@@ -225,8 +248,8 @@ fun AppUpdateDialog(
                             Text("Yeni Sürüm", fontSize = 11.sp, color = ElectricBlue)
                             Spacer(modifier = Modifier.height(2.dp))
                             Text(
-                                text = "v${releaseInfo.versionName}",
-                                fontSize = 16.sp,
+                                text = "v${releaseInfo.versionName} (${releaseInfo.versionCode})",
+                                fontSize = 15.sp,
                                 fontWeight = FontWeight.ExtraBold,
                                 color = ElectricBlue
                             )
@@ -236,11 +259,10 @@ fun AppUpdateDialog(
 
                 Spacer(modifier = Modifier.height(14.dp))
 
-                // Changelog Box
                 Card(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(120.dp),
+                        .height(110.dp),
                     shape = RoundedCornerShape(12.dp),
                     colors = CardDefaults.cardColors(containerColor = Color(0xFF0B1120))
                 ) {
@@ -268,159 +290,235 @@ fun AppUpdateDialog(
 
                 Spacer(modifier = Modifier.height(16.dp))
 
-                // Download Progress / Status Handling
-                when (val state = downloadState) {
-                    is UpdateDownloadState.Idle -> {
-                        // Regular buttons
-                        Button(
-                            onClick = {
-                                scope.launch {
-                                    downloadState = UpdateDownloadState.Downloading(0, 0, releaseInfo.apkSize)
-                                    val file = updateManager.downloadApk(releaseInfo) { progress ->
-                                        downloadState = progress
-                                    }
-                                    if (file != null) {
-                                        downloadedApkFile = file
-                                        // Attempt installation
-                                        if (updateManager.canInstallApks()) {
-                                            updateManager.markVersionInstalled(releaseInfo.versionCode)
-                                            val installRes = updateManager.installApk(file)
-                                            if (installRes.isFailure) {
-                                                Toast.makeText(context, "Kurulum başlatılamadı: ${installRes.exceptionOrNull()?.message}", Toast.LENGTH_LONG).show()
-                                            }
-                                        } else {
-                                            showPermissionAlert = true
-                                        }
-                                    }
-                                }
-                            },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(48.dp)
-                                .testTag("now_update_button"),
-                            shape = RoundedCornerShape(12.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = ElectricBlue)
-                        ) {
-                            Icon(imageVector = Icons.Default.Download, contentDescription = null, modifier = Modifier.size(18.dp))
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("ŞİMDİ GÜNCELLE", fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                        }
-
-                        if (!releaseInfo.isForceUpdate) {
-                            Spacer(modifier = Modifier.height(8.dp))
-                            TextButton(
-                                onClick = onDismiss,
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Text("Daha Sonra", color = Color(0xFF94A3B8), fontSize = 13.sp)
-                            }
-                        }
-                    }
-
-                    is UpdateDownloadState.Downloading -> {
+                // PackageInstaller failure card takes precedence if an install attempt failed
+                val installErr = installState as? InstallResultState.Error
+                if (installErr != null) {
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp),
+                        color = Color(0xFFEF4444).copy(alpha = 0.14f)
+                    ) {
                         Column(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalAlignment = Alignment.CenterHorizontally
+                            modifier = Modifier.padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
+                            Text(
+                                text = "Kurulum Başarısız: ${installErr.statusName}",
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color(0xFFFCA5A5)
+                            )
+                            Text(
+                                text = installErr.userMessage,
+                                fontSize = 12.sp,
+                                color = Color(0xFFE2E8F0),
+                                lineHeight = 16.sp
+                            )
+                            if (installErr.rawMessage.isNotBlank()) {
+                                Text(
+                                    text = "Sistem Detayı: ${installErr.rawMessage}",
+                                    fontSize = 10.sp,
+                                    color = Color(0xFFCBD5E1)
+                                )
+                            }
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
-                                Text("Güncelleme indiriliyor...", fontSize = 12.sp, color = Color.White, fontWeight = FontWeight.Medium)
-                                Text("%${state.progressPercent}", fontSize = 12.sp, color = ElectricBlue, fontWeight = FontWeight.Bold)
-                            }
-                            Spacer(modifier = Modifier.height(8.dp))
-                            LinearProgressIndicator(
-                                progress = { state.progressPercent / 100f },
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(8.dp),
-                                color = ElectricBlue,
-                                trackColor = Color(0xFF334155)
-                            )
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Text(
-                                text = "Lütfen uygulama ekranından ayrılmayın",
-                                fontSize = 11.sp,
-                                color = Color(0xFF94A3B8)
-                            )
-                        }
-                    }
+                                Button(
+                                    onClick = {
+                                        UpdateInstallResultBus.reset()
+                                        val file = downloadedApkFile
+                                        if (file != null && file.exists()) {
+                                            startInstallation(file)
+                                        } else {
+                                            downloadState = UpdateDownloadState.Idle
+                                        }
+                                    },
+                                    modifier = Modifier.weight(1f),
+                                    shape = RoundedCornerShape(10.dp),
+                                    colors = ButtonDefaults.buttonColors(containerColor = ElectricBlue)
+                                ) {
+                                    Text("Tekrar Dene", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                }
 
-                    is UpdateDownloadState.Ready -> {
-                        Column(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalAlignment = Alignment.CenterHorizontally
-                        ) {
-                            Surface(
-                                shape = CircleShape,
-                                color = Color(0xFF10B981).copy(alpha = 0.2f),
-                                modifier = Modifier.size(40.dp)
-                            ) {
-                                Box(contentAlignment = Alignment.Center) {
-                                    Icon(imageVector = Icons.Default.CheckCircle, contentDescription = null, tint = Color(0xFF10B981))
+                                val file = downloadedApkFile
+                                if (file != null && file.exists()) {
+                                    OutlinedButton(
+                                        onClick = {
+                                            val fallbackRes = updateManager.installApkViaFileProvider(file)
+                                            if (fallbackRes.isFailure) {
+                                                Toast.makeText(
+                                                    context,
+                                                    "Sistem yükleyicisi açılamadı: ${fallbackRes.exceptionOrNull()?.message}",
+                                                    Toast.LENGTH_LONG
+                                                ).show()
+                                            }
+                                        },
+                                        modifier = Modifier.weight(1f),
+                                        shape = RoundedCornerShape(10.dp)
+                                    ) {
+                                        Text("Sistem Yükleyici", fontSize = 11.sp, color = Color.White)
+                                    }
                                 }
                             }
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Text("Güncelleme Hazır!", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = Color.White)
-                            Spacer(modifier = Modifier.height(10.dp))
-
+                        }
+                    }
+                } else {
+                    when (val state = downloadState) {
+                        is UpdateDownloadState.Idle -> {
                             Button(
                                 onClick = {
-                                    val file = downloadedApkFile ?: state.apkFile
-                                    if (updateManager.canInstallApks()) {
-                                        updateManager.markVersionInstalled(releaseInfo.versionCode)
-                                        val installRes = updateManager.installApk(file)
-                                        if (installRes.isFailure) {
-                                            Toast.makeText(context, "Kurulum başlatılamadı: ${installRes.exceptionOrNull()?.message}", Toast.LENGTH_LONG).show()
-                                        } else {
-                                            onDismiss()
+                                    UpdateInstallResultBus.reset()
+                                    scope.launch {
+                                        downloadState = UpdateDownloadState.Downloading(0, 0, releaseInfo.apkSize)
+                                        val file = updateManager.downloadApk(releaseInfo) { progress ->
+                                            downloadState = progress
                                         }
-                                    } else {
-                                        showPermissionAlert = true
+                                        if (file != null) {
+                                            downloadedApkFile = file
+                                            startInstallation(file)
+                                        }
                                     }
                                 },
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .height(48.dp),
+                                    .height(48.dp)
+                                    .testTag("now_update_button"),
                                 shape = RoundedCornerShape(12.dp),
-                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF10B981))
-                            ) {
-                                Icon(imageVector = Icons.Default.InstallMobile, contentDescription = null, modifier = Modifier.size(18.dp))
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text("YÜKLEMEYİ BAŞLAT", fontWeight = FontWeight.Bold)
-                            }
-                        }
-                    }
-
-                    is UpdateDownloadState.Error -> {
-                        Column(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalAlignment = Alignment.CenterHorizontally
-                        ) {
-                            Text(
-                                text = state.message,
-                                color = Color(0xFFEF4444),
-                                fontSize = 12.sp,
-                                textAlign = TextAlign.Center
-                            )
-                            Spacer(modifier = Modifier.height(10.dp))
-                            Button(
-                                onClick = {
-                                    downloadState = UpdateDownloadState.Idle
-                                },
-                                shape = RoundedCornerShape(10.dp),
                                 colors = ButtonDefaults.buttonColors(containerColor = ElectricBlue)
                             ) {
-                                Icon(imageVector = Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text("Tekrar Dene")
+                                Icon(imageVector = Icons.Default.Download, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("ŞİMDİ GÜNCELLE", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                            }
+
+                            if (!releaseInfo.isForceUpdate) {
+                                Spacer(modifier = Modifier.height(8.dp))
+                                TextButton(
+                                    onClick = {
+                                        UpdateInstallResultBus.reset()
+                                        onDismiss()
+                                    },
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Text("Daha Sonra", color = Color(0xFF94A3B8), fontSize = 13.sp)
+                                }
+                            }
+                        }
+
+                        is UpdateDownloadState.Downloading -> {
+                            Column(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalAlignment = Alignment.CenterHorizontally
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Text("Güncelleme indiriliyor...", fontSize = 12.sp, color = Color.White, fontWeight = FontWeight.Medium)
+                                    Text("%${state.progressPercent}", fontSize = 12.sp, color = ElectricBlue, fontWeight = FontWeight.Bold)
+                                }
+                                Spacer(modifier = Modifier.height(8.dp))
+                                LinearProgressIndicator(
+                                    progress = { state.progressPercent / 100f },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(8.dp),
+                                    color = ElectricBlue,
+                                    trackColor = Color(0xFF334155)
+                                )
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Text(
+                                    text = "Lütfen indirme tamamlanana kadar bekleyin",
+                                    fontSize = 11.sp,
+                                    color = Color(0xFF94A3B8)
+                                )
+                            }
+                        }
+
+                        is UpdateDownloadState.Ready -> {
+                            Column(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalAlignment = Alignment.CenterHorizontally
+                            ) {
+                                if (installState is InstallResultState.Installing || installState is InstallResultState.PendingUserAction) {
+                                    CircularProgressIndicator(color = ElectricBlue, modifier = Modifier.size(32.dp))
+                                    Spacer(modifier = Modifier.height(10.dp))
+                                    Text(
+                                        text = if (installState is InstallResultState.PendingUserAction) {
+                                            "Lütfen Android kurulum onayını tamamlayın..."
+                                        } else {
+                                            "APK doğrulanıyor ve kurulum başlatılıyor..."
+                                        },
+                                        fontSize = 13.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = Color.White,
+                                        textAlign = TextAlign.Center
+                                    )
+                                } else {
+                                    Surface(
+                                        shape = CircleShape,
+                                        color = Color(0xFF10B981).copy(alpha = 0.2f),
+                                        modifier = Modifier.size(40.dp)
+                                    ) {
+                                        Box(contentAlignment = Alignment.Center) {
+                                            Icon(imageVector = Icons.Default.CheckCircle, contentDescription = null, tint = Color(0xFF10B981))
+                                        }
+                                    }
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                    Text("APK Doğrulandı ve Hazır!", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                                    Spacer(modifier = Modifier.height(10.dp))
+
+                                    Button(
+                                        onClick = {
+                                            val file = downloadedApkFile ?: state.apkFile
+                                            startInstallation(file)
+                                        },
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(48.dp),
+                                        shape = RoundedCornerShape(12.dp),
+                                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF10B981))
+                                    ) {
+                                        Icon(imageVector = Icons.Default.InstallMobile, contentDescription = null, modifier = Modifier.size(18.dp))
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Text("YÜKLEMEYİ BAŞLAT", fontWeight = FontWeight.Bold)
+                                    }
+                                }
+                            }
+                        }
+
+                        is UpdateDownloadState.Error -> {
+                            Column(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalAlignment = Alignment.CenterHorizontally
+                            ) {
+                                Text(
+                                    text = state.message,
+                                    color = Color(0xFFFCA5A5),
+                                    fontSize = 12.sp,
+                                    textAlign = TextAlign.Center,
+                                    lineHeight = 17.sp
+                                )
+                                Spacer(modifier = Modifier.height(10.dp))
+                                Button(
+                                    onClick = {
+                                        UpdateInstallResultBus.reset()
+                                        downloadState = UpdateDownloadState.Idle
+                                    },
+                                    shape = RoundedCornerShape(10.dp),
+                                    colors = ButtonDefaults.buttonColors(containerColor = ElectricBlue)
+                                ) {
+                                    Icon(imageVector = Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("Tekrar Dene")
+                                }
                             }
                         }
                     }
                 }
 
-                // Android Install Permission Dialog if needed
                 if (showPermissionAlert) {
                     Spacer(modifier = Modifier.height(12.dp))
                     Surface(
@@ -452,7 +550,6 @@ fun AppUpdateDialog(
                                 }
                                 Button(
                                     onClick = {
-                                        showPermissionAlert = false
                                         updateManager.openInstallPermissionSettings()
                                     },
                                     colors = ButtonDefaults.buttonColors(containerColor = PhoenixAmber),

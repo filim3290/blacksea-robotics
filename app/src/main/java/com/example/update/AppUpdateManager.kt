@@ -1,7 +1,10 @@
 package com.example.update
 
+import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageInfo
+import android.content.pm.PackageInstaller
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
@@ -12,7 +15,6 @@ import com.example.BuildConfig
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
@@ -20,6 +22,7 @@ import okhttp3.Request
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
@@ -35,6 +38,7 @@ data class AppReleaseInfo(
     val apkFileName: String,
     val apkSize: Long,
     val expectedSha256: String = "",
+    val expectedCertSha256: String = "",
     val isForceUpdate: Boolean = false
 )
 
@@ -50,11 +54,13 @@ class AppUpdateManager(private val context: Context) {
     private val prefs = context.getSharedPreferences("bsr_update_prefs", Context.MODE_PRIVATE)
 
     companion object {
+        private const val TAG = "AppUpdateManager"
         const val DEFAULT_GITHUB_OWNER = "filim3290"
         const val DEFAULT_GITHUB_REPO = "blacksea-robotics"
         private const val REPO_MIGRATION_VERSION = 2
         private val LEGACY_OWNERS = setOf("baslider52-ui", "mehmetilkerbas", "filmi3290")
         private val LEGACY_REPOS = setOf("filmi3290", "blacksearobotics", "blacksea_robotics")
+        private const val MIN_VALID_APK_BYTES = 200L * 1024L // 200 KB minimum sanity check
     }
 
     init {
@@ -141,8 +147,10 @@ class AppUpdateManager(private val context: Context) {
     }
 
     private val httpClient = OkHttpClient.Builder()
-        .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(30, TimeUnit.SECONDS)
+        .connectTimeout(20, TimeUnit.SECONDS)
+        .readTimeout(60, TimeUnit.SECONDS)
+        .followRedirects(true)
+        .followSslRedirects(true)
         .build()
 
     fun getCurrentVersionName(): String {
@@ -154,25 +162,85 @@ class AppUpdateManager(private val context: Context) {
     }
 
     /**
-     * Generates a realistic simulated newer release payload for testing & previewing
-     * the update dialog, changelog, and installation UI on demand.
+     * Returns SHA-256 hex digest(s) of the signing certificate(s) of the currently installed app.
      */
-    fun getSimulatedReleaseInfo(): AppReleaseInfo {
-        val nextCode = getCurrentVersionCode() + 1
-        val nextVersion = "1.0.5"
-        return AppReleaseInfo(
-            tagName = "v$nextVersion",
-            versionName = nextVersion,
-            versionCode = nextCode,
-            title = "🚀 Blacksea Robotics v$nextVersion (Önizleme)",
-            changelog = "• Dosya paylaşım motoru tamamen yenilendi (Resim, Video, Ses, Belge, CAD)\n• Otomatik APK güncelleme ve indirme sistemi eklendi\n• Bildirim ve onay başvuru sistemi güçlendirildi\n• Performans ve kararlılık iyileştirmeleri",
-            publishedAt = "Şimdi",
-            apkDownloadUrl = "https://github.com/$githubOwner/$githubRepo/releases/download/v$nextVersion/BlackseaRobotics-v$nextVersion.apk",
-            apkFileName = "BlackseaRobotics-v$nextVersion.apk",
-            apkSize = 29 * 1024 * 1024L,
-            expectedSha256 = "",
-            isForceUpdate = false
-        )
+    fun getInstalledSigningCertSha256(): Set<String> {
+        return try {
+            val pm = context.packageManager
+            val pkgInfo = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                pm.getPackageInfo(context.packageName, PackageManager.GET_SIGNING_CERTIFICATES)
+            } else {
+                @Suppress("DEPRECATION")
+                pm.getPackageInfo(context.packageName, PackageManager.GET_SIGNATURES)
+            }
+            extractSigningSha256(pkgInfo)
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to read installed signing certs: ${e.message}")
+            emptySet()
+        }
+    }
+
+    private fun extractSigningSha256(pkgInfo: PackageInfo): Set<String> {
+        val result = mutableSetOf<String>()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            val signingInfo = pkgInfo.signingInfo ?: return emptySet()
+            val signers = if (signingInfo.hasMultipleSigners()) {
+                signingInfo.apkContentsSigners
+            } else {
+                signingInfo.signingCertificateHistory
+            }
+            signers?.forEach { sig ->
+                result.add(sha256Hex(sig.toByteArray()))
+            }
+        } else {
+            @Suppress("DEPRECATION")
+            pkgInfo.signatures?.forEach { sig ->
+                result.add(sha256Hex(sig.toByteArray()))
+            }
+        }
+        return result
+    }
+
+    private fun sha256Hex(bytes: ByteArray): String {
+        val digest = MessageDigest.getInstance("SHA-256").digest(bytes)
+        return digest.joinToString("") { "%02x".format(it) }
+    }
+
+    private fun getArchivePackageInfo(apkFile: File): PackageInfo? {
+        val pm = context.packageManager
+        val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            PackageManager.GET_SIGNING_CERTIFICATES
+        } else {
+            @Suppress("DEPRECATION")
+            PackageManager.GET_SIGNATURES
+        }
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            pm.getPackageArchiveInfo(apkFile.absolutePath, PackageManager.PackageInfoFlags.of(flags.toLong()))
+        } else {
+            @Suppress("DEPRECATION")
+            pm.getPackageArchiveInfo(apkFile.absolutePath, flags)
+        }
+    }
+
+    private fun getLongVersionCodeCompat(pkgInfo: PackageInfo): Long {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            pkgInfo.longVersionCode
+        } else {
+            @Suppress("DEPRECATION")
+            pkgInfo.versionCode.toLong()
+        }
+    }
+
+    private fun compareSemver(candidate: String, current: String): Int {
+        val p1 = candidate.removePrefix("v").removePrefix("V").split(".").map { it.toIntOrNull() ?: 0 }
+        val p2 = current.removePrefix("v").removePrefix("V").split(".").map { it.toIntOrNull() ?: 0 }
+        val maxLen = maxOf(p1.size, p2.size)
+        for (i in 0 until maxLen) {
+            val a = p1.getOrElse(i) { 0 }
+            val b = p2.getOrElse(i) { 0 }
+            if (a != b) return a.compareTo(b)
+        }
+        return 0
     }
 
     /**
@@ -201,14 +269,13 @@ class AppUpdateManager(private val context: Context) {
                 "changelog" to changelog.ifBlank { "• Yeni özellikler ve hata düzeltmeleri" },
                 "apkDownloadUrl" to safeUrl,
                 "apkFileName" to "BlackseaRobotics-v$versionName.apk",
-                "apkSize" to (29 * 1024 * 1024L),
+                "apkSize" to (20 * 1024 * 1024L),
                 "isForceUpdate" to isForceUpdate,
                 "publishedAt" to "Bugün",
                 "updatedAt" to FieldValue.serverTimestamp()
             )
             firestore.collection("app_config").document("latest_update").set(payload).await()
 
-            // Team-wide notification
             val notif = mapOf(
                 "recipientUserId" to "all",
                 "title" to "🔔 Yeni Güncelleme Mevcut",
@@ -223,14 +290,21 @@ class AppUpdateManager(private val context: Context) {
 
             Result.success(Unit)
         } catch (e: Exception) {
-            Log.e("AppUpdateManager", "Failed to broadcast update: ${e.message}", e)
+            Log.e(TAG, "Failed to broadcast update: ${e.message}", e)
             Result.failure(e)
         }
     }
 
+    private fun isReleaseNewerThanCurrent(release: AppReleaseInfo): Boolean {
+        val currentCode = getCurrentVersionCode()
+        if (release.versionCode > currentCode && !hasInstalledVersion(release.versionCode)) {
+            return true
+        }
+        return false
+    }
+
     /**
      * Checks both Firestore and GitHub Releases for the latest version.
-     * Implements intelligent caching to prevent spamming GitHub API.
      */
     suspend fun checkLatestRelease(forceRefresh: Boolean = false): Result<AppReleaseInfo?> = withContext(Dispatchers.IO) {
         val currentCode = getCurrentVersionCode()
@@ -243,26 +317,27 @@ class AppUpdateManager(private val context: Context) {
             val doc = firestore.collection("app_config").document("latest_update").get().await()
             if (doc.exists()) {
                 val vCode = doc.getLong("versionCode")?.toInt() ?: 0
-                // Strictly greater than current installed version and not already installed
                 if (vCode > currentCode && !hasInstalledVersion(vCode)) {
-                    val vName = doc.getString("versionName") ?: "1.0.5"
-                    val firestoreRelease = AppReleaseInfo(
-                        tagName = doc.getString("tagName") ?: "v$vName",
-                        versionName = vName,
-                        versionCode = vCode,
-                        title = doc.getString("title") ?: "Blacksea Robotics v$vName Yayında",
-                        changelog = doc.getString("changelog") ?: "• Yeni dosya paylaşım sistemi (Resim, Video, Ses, CAD)\n• Otomatik APK güncelleme sistemi\n• Hata düzeltmeleri",
-                        publishedAt = doc.getString("publishedAt") ?: "Bugün",
-                        apkDownloadUrl = normalizeDownloadUrl(doc.getString("apkDownloadUrl"), vName),
-                        apkFileName = doc.getString("apkFileName") ?: "BlackseaRobotics-v$vName.apk",
-                        apkSize = doc.getLong("apkSize") ?: (29 * 1024 * 1024L),
-                        expectedSha256 = doc.getString("expectedSha256") ?: "",
-                        isForceUpdate = doc.getBoolean("isForceUpdate") ?: false
-                    )
-                    return@withContext Result.success(firestoreRelease)
+                    val vName = doc.getString("versionName") ?: getCurrentVersionName()
+                    val url = normalizeDownloadUrl(doc.getString("apkDownloadUrl"), vName)
+                    if (url.endsWith(".apk", ignoreCase = true)) {
+                        val firestoreRelease = AppReleaseInfo(
+                            tagName = doc.getString("tagName") ?: "v$vName",
+                            versionName = vName,
+                            versionCode = vCode,
+                            title = doc.getString("title") ?: "Blacksea Robotics v$vName Yayında",
+                            changelog = doc.getString("changelog") ?: "• Performans iyileştirmeleri ve hata düzeltmeleri",
+                            publishedAt = doc.getString("publishedAt") ?: "Bugün",
+                            apkDownloadUrl = url,
+                            apkFileName = doc.getString("apkFileName") ?: "BlackseaRobotics-v$vName.apk",
+                            apkSize = doc.getLong("apkSize") ?: (20 * 1024 * 1024L),
+                            expectedSha256 = doc.getString("expectedSha256") ?: "",
+                            isForceUpdate = doc.getBoolean("isForceUpdate") ?: false
+                        )
+                        return@withContext Result.success(firestoreRelease)
+                    }
                 }
             } else {
-                // Initial baseline: mark current version in Firestore
                 try {
                     val payload = mapOf(
                         "versionName" to getCurrentVersionName(),
@@ -272,18 +347,18 @@ class AppUpdateManager(private val context: Context) {
                         "changelog" to "Güncel kararlı sürüm.",
                         "apkDownloadUrl" to "https://github.com/$githubOwner/$githubRepo/releases",
                         "apkFileName" to "BlackseaRobotics-v${getCurrentVersionName()}.apk",
-                        "apkSize" to (29 * 1024 * 1024L),
+                        "apkSize" to (20 * 1024 * 1024L),
                         "isForceUpdate" to false,
                         "publishedAt" to "Bugün",
                         "updatedAt" to FieldValue.serverTimestamp()
                     )
                     firestore.collection("app_config").document("latest_update").set(payload).await()
                 } catch (e: Exception) {
-                    Log.w("AppUpdateManager", "Writing current version to Firestore: ${e.message}")
+                    Log.w(TAG, "Writing current version to Firestore: ${e.message}")
                 }
             }
         } catch (e: Exception) {
-            Log.w("AppUpdateManager", "Firestore update check: ${e.message}")
+            Log.w(TAG, "Firestore update check: ${e.message}")
         }
 
         // 2. Check GitHub Releases API
@@ -291,15 +366,14 @@ class AppUpdateManager(private val context: Context) {
         val lastCheckTime = prefs.getLong("last_check_timestamp", 0L)
         val cachedReleaseJson = prefs.getString("cached_release_json", null)
 
-        // Cache for 15 minutes unless user requested manual check (forceRefresh = true)
         if (!forceRefresh && cachedReleaseJson != null && (now - lastCheckTime) < TimeUnit.MINUTES.toMillis(15)) {
             try {
                 val parsed = parseRelease(JSONObject(cachedReleaseJson))
-                if (parsed != null && parsed.versionCode > currentCode && !hasInstalledVersion(parsed.versionCode)) {
+                if (parsed != null && isReleaseNewerThanCurrent(parsed) && parsed.apkDownloadUrl.isNotBlank()) {
                     return@withContext Result.success(parsed)
                 }
             } catch (e: Exception) {
-                Log.w("AppUpdateManager", "Failed to parse cached release: ${e.message}")
+                Log.w(TAG, "Failed to parse cached release: ${e.message}")
             }
         }
 
@@ -331,14 +405,14 @@ class AppUpdateManager(private val context: Context) {
                     .apply()
 
                 val parsed = parseRelease(jsonObject)
-                if (parsed != null && parsed.versionCode > currentCode && !hasInstalledVersion(parsed.versionCode)) {
+                if (parsed != null && isReleaseNewerThanCurrent(parsed) && parsed.apkDownloadUrl.isNotBlank()) {
                     Result.success(parsed)
                 } else {
-                    Result.success(null) // Already up to date!
+                    Result.success(null)
                 }
             }
         } catch (e: Exception) {
-            Log.e("AppUpdateManager", "Check release error: ${e.message}", e)
+            Log.e(TAG, "Check release error: ${e.message}", e)
             Result.failure(e)
         }
     }
@@ -376,7 +450,6 @@ class AppUpdateManager(private val context: Context) {
                 }
             }
 
-            // If /releases/latest returned 404 (no release yet OR private repo), check repo root accessibility
             val repoApiUrl = "https://api.github.com/repos/$githubOwner/$githubRepo"
             val repoReq = Request.Builder()
                 .url(repoApiUrl)
@@ -396,7 +469,6 @@ class AppUpdateManager(private val context: Context) {
                             Exception("Depo ($githubOwner/$githubRepo) şu anda gizli (Private). Herkese açık yapmak için GitHub Settings > Danger Zone'dan Public yapın.")
                         )
                     }
-                    // Repo is public, just has no published release yet -> open /releases instead of /releases/latest (which 404s)
                     return@withContext Result.success("https://github.com/$githubOwner/$githubRepo/releases")
                 } else {
                     return@withContext Result.failure(
@@ -405,7 +477,7 @@ class AppUpdateManager(private val context: Context) {
                 }
             }
         } catch (e: Exception) {
-            Log.e("AppUpdateManager", "resolvePublicDownloadUrl error: ${e.message}")
+            Log.e(TAG, "resolvePublicDownloadUrl error: ${e.message}")
             Result.failure(Exception("GitHub'a erişilemedi. İnternet bağlantınızı kontrol edin."))
         }
     }
@@ -425,25 +497,26 @@ class AppUpdateManager(private val context: Context) {
                 reqBuilder.header("Authorization", "Bearer $githubToken")
             }
 
-            val response = httpClient.newCall(reqBuilder.build()).execute()
-            if (!response.isSuccessful) {
-                return@withContext Result.success(emptyList())
-            }
-
-            val bodyString = response.body?.string() ?: return@withContext Result.success(emptyList())
-            val jsonArray = JSONArray(bodyString)
-            val list = mutableListOf<AppReleaseInfo>()
-
-            for (i in 0 until jsonArray.length()) {
-                val obj = jsonArray.getJSONObject(i)
-                val release = parseRelease(obj)
-                if (release != null) {
-                    list.add(release)
+            httpClient.newCall(reqBuilder.build()).execute().use { response ->
+                if (!response.isSuccessful) {
+                    return@withContext Result.success(emptyList())
                 }
+
+                val bodyString = response.body?.string() ?: return@withContext Result.success(emptyList())
+                val jsonArray = JSONArray(bodyString)
+                val list = mutableListOf<AppReleaseInfo>()
+
+                for (i in 0 until jsonArray.length()) {
+                    val obj = jsonArray.getJSONObject(i)
+                    val release = parseRelease(obj)
+                    if (release != null) {
+                        list.add(release)
+                    }
+                }
+                Result.success(list)
             }
-            Result.success(list)
         } catch (e: Exception) {
-            Log.e("AppUpdateManager", "Fetch history error: ${e.message}")
+            Log.e(TAG, "Fetch history error: ${e.message}")
             Result.failure(e)
         }
     }
@@ -470,9 +543,9 @@ class AppUpdateManager(private val context: Context) {
             }
         }
 
-        // Parse versionCode from tagName (e.g. "v1.0.4" or "1.0.4" or description "versionCode: 5")
+        // Parse versionCode from release notes (supports "versionCode: 6" AND legacy "**Sürüm Kodu (versionCode):** 5")
         var versionCode = 0
-        val vcRegex = Regex("""(?i)versionCode\s*[:=]\s*(\d+)""")
+        val vcRegex = Regex("""(?i)versionCode(?:\s*\)\s*\*+)?\s*[:=]\s*(\d+)""")
         val vcMatch = vcRegex.find(body)
         if (vcMatch != null) {
             versionCode = vcMatch.groupValues[1].toIntOrNull() ?: 0
@@ -480,31 +553,37 @@ class AppUpdateManager(private val context: Context) {
 
         val cleanTag = tagName.removePrefix("v").removePrefix("V")
         if (versionCode == 0) {
-            // Compute a stable pseudo-versionCode from semver (e.g. 1.0.4 -> 10004)
-            val parts = cleanTag.split(".").mapNotNull { it.toIntOrNull() }
-            if (parts.isNotEmpty()) {
-                versionCode = when (parts.size) {
-                    1 -> parts[0]
-                    2 -> parts[0] * 1000 + parts[1]
-                    else -> parts[0] * 10000 + parts[1] * 100 + parts[2]
-                }
+            // Do NOT inflate identical versionName to a pseudo-versionCode > currentCode!
+            val semverCmp = compareSemver(cleanTag, getCurrentVersionName())
+            versionCode = if (semverCmp > 0) {
+                getCurrentVersionCode() + 1
+            } else {
+                getCurrentVersionCode()
             }
         }
 
-        // Check if forced update: e.g. "forceUpdate: true" or "[force]"
         val isForce = body.contains("forceUpdate: true", ignoreCase = true) ||
-                body.contains("force_update: true", ignoreCase = true) ||
-                body.contains("[force]", ignoreCase = true)
+            body.contains("force_update: true", ignoreCase = true) ||
+            body.contains("[force]", ignoreCase = true)
 
-        // Check for SHA-256 in release body if provided (e.g. "sha256: abc123...")
-        val shaRegex = Regex("""(?i)sha256\s*[:=]\s*([a-fA-F0-9]{64})""")
+        val shaRegex = Regex("""(?i)sha256(?:\s*\*\*)?\s*[:=]\s*`?([a-fA-F0-9]{64})`?""")
         val shaMatch = shaRegex.find(body)
         val sha256 = shaMatch?.groupValues?.get(1)?.lowercase() ?: ""
 
-        // Filter out markers from changelog display
+        val certShaRegex = Regex("""(?i)certSha256\s*[:=]\s*`?([a-fA-F0-9]{64})`?""")
+        val certShaMatch = certShaRegex.find(body)
+        val certSha256 = certShaMatch?.groupValues?.get(1)?.lowercase() ?: ""
+
         val cleanChangelog = body
             .lines()
-            .filterNot { it.contains("forceUpdate:", ignoreCase = true) || it.contains("versionCode:", ignoreCase = true) || it.contains("sha256:", ignoreCase = true) }
+            .filterNot {
+                it.contains("forceUpdate:", ignoreCase = true) ||
+                    it.contains("versionCode:", ignoreCase = true) ||
+                    it.contains("versionName:", ignoreCase = true) ||
+                    it.contains("applicationId:", ignoreCase = true) ||
+                    it.contains("certSha256:", ignoreCase = true) ||
+                    it.contains("sha256:", ignoreCase = true)
+            }
             .joinToString("\n")
             .trim()
 
@@ -519,20 +598,27 @@ class AppUpdateManager(private val context: Context) {
             apkFileName = apkFileName.ifBlank { "BlackseaRobotics-$tagName.apk" },
             apkSize = apkSize,
             expectedSha256 = sha256,
+            expectedCertSha256 = certSha256,
             isForceUpdate = isForce
         )
     }
 
     /**
-     * Downloads the APK with progress streaming and validates SHA-256 checksum if provided.
+     * Downloads the APK strictly verifying HTTP content type, completeness, ZIP/APK format,
+     * SHA-256 checksum, packageName, versionCode, and signing certificate compatibility.
      */
     suspend fun downloadApk(
         releaseInfo: AppReleaseInfo,
         onProgress: (UpdateDownloadState) -> Unit
     ): File? = withContext(Dispatchers.IO) {
-        val downloadUrl = releaseInfo.apkDownloadUrl
-        if (downloadUrl.isBlank()) {
-            onProgress(UpdateDownloadState.Error("APK indirme bağlantısı bulunamadı."))
+        val downloadUrl = releaseInfo.apkDownloadUrl.trim()
+        if (downloadUrl.isBlank() || !(downloadUrl.startsWith("http://") || downloadUrl.startsWith("https://"))) {
+            onProgress(UpdateDownloadState.Error("Geçerli bir APK indirme bağlantısı bulunamadı."))
+            return@withContext null
+        }
+
+        if (!downloadUrl.endsWith(".apk", ignoreCase = true) && !downloadUrl.contains("/releases/download/", ignoreCase = true)) {
+            onProgress(UpdateDownloadState.Error("İndirme bağlantısı doğrudan bir APK dosyasına işaret etmiyor ($downloadUrl)."))
             return@withContext null
         }
 
@@ -540,113 +626,171 @@ class AppUpdateManager(private val context: Context) {
         if (!updatesDir.exists()) {
             updatesDir.mkdirs()
         }
-
-        // Clear older downloaded APKs in updates folder
         updatesDir.listFiles()?.forEach { it.delete() }
 
-        val destinationFile = File(updatesDir, releaseInfo.apkFileName.ifBlank { "update.apk" })
+        val tempFile = File(updatesDir, "download_in_progress.apk.tmp")
+        val destinationFile = File(updatesDir, releaseInfo.apkFileName.ifBlank { "BlackseaRobotics-update.apk" })
 
-        var downloadSuccess = false
-        var lastErrorMsg = ""
-        val isPreviewMode = releaseInfo.title.contains("(Önizleme)", ignoreCase = true)
+        try {
+            val reqBuilder = Request.Builder()
+                .url(downloadUrl)
+                .header("User-Agent", "BlackseaRobotics-AndroidApp/${BuildConfig.VERSION_NAME}")
+                .header("Accept", "application/vnd.android.package-archive, application/octet-stream, */*")
+            if (githubToken.isNotBlank() && downloadUrl.contains("github.com", ignoreCase = true)) {
+                reqBuilder.header("Authorization", "Bearer $githubToken")
+            }
 
-        if (downloadUrl.isNotBlank() && (downloadUrl.startsWith("http://") || downloadUrl.startsWith("https://"))) {
-            try {
-                val reqBuilder = Request.Builder()
-                    .url(downloadUrl)
-                    .header("User-Agent", "BlackseaRobotics-AndroidApp/${BuildConfig.VERSION_NAME}")
-                if (githubToken.isNotBlank() && downloadUrl.contains("github.com", ignoreCase = true)) {
-                    reqBuilder.header("Authorization", "Bearer $githubToken")
+            httpClient.newCall(reqBuilder.build()).execute().use { response ->
+                if (!response.isSuccessful) {
+                    val msg = "GitHub üzerinden APK indirilemedi (HTTP ${response.code}). Lütfen release'in yayında ve deponun herkese açık olduğundan emin olun."
+                    Log.e(TAG, "Download failed: HTTP ${response.code} for $downloadUrl")
+                    onProgress(UpdateDownloadState.Error(msg))
+                    return@withContext null
                 }
 
-                httpClient.newCall(reqBuilder.build()).execute().use { response ->
-                    if (response.isSuccessful) {
-                        val body = response.body
-                        if (body != null) {
-                            val totalBytes = if (releaseInfo.apkSize > 0) releaseInfo.apkSize else body.contentLength()
-                            var downloadedBytes = 0L
+                val contentType = response.header("Content-Type").orEmpty().lowercase()
+                if (contentType.contains("text/html") || contentType.contains("application/xhtml")) {
+                    val msg = "APK yerine HTML web sayfası döndü (Content-Type: $contentType). İndirme bağlantısı doğrudan APK dosyası değil."
+                    Log.e(TAG, msg)
+                    onProgress(UpdateDownloadState.Error(msg))
+                    return@withContext null
+                }
 
-                            body.byteStream().use { input ->
-                                FileOutputStream(destinationFile).use { output ->
-                                    val buffer = ByteArray(8 * 1024)
-                                    var read: Int
-                                    var lastReportTime = 0L
+                val body = response.body
+                if (body == null) {
+                    onProgress(UpdateDownloadState.Error("Sunucudan boş yanıt alındı."))
+                    return@withContext null
+                }
 
-                                    while (input.read(buffer).also { read = it } != -1) {
-                                        output.write(buffer, 0, read)
-                                        downloadedBytes += read
+                val headerLength = body.contentLength()
+                val totalBytes = if (headerLength > 0) headerLength else releaseInfo.apkSize
+                var downloadedBytes = 0L
 
-                                        val now = System.currentTimeMillis()
-                                        if (now - lastReportTime > 150 || downloadedBytes == totalBytes) {
-                                            lastReportTime = now
-                                            val percent = if (totalBytes > 0) ((downloadedBytes * 100) / totalBytes).toInt().coerceIn(0, 100) else 0
-                                            onProgress(UpdateDownloadState.Downloading(percent, downloadedBytes, totalBytes))
-                                        }
-                                    }
-                                    output.flush()
-                                }
+                body.byteStream().use { input ->
+                    FileOutputStream(tempFile).use { output ->
+                        val buffer = ByteArray(16 * 1024)
+                        var read: Int
+                        var lastReportTime = 0L
+
+                        while (input.read(buffer).also { read = it } != -1) {
+                            output.write(buffer, 0, read)
+                            downloadedBytes += read
+
+                            val now = System.currentTimeMillis()
+                            if (now - lastReportTime > 120 || (totalBytes > 0 && downloadedBytes == totalBytes)) {
+                                lastReportTime = now
+                                val percent = if (totalBytes > 0) ((downloadedBytes * 100) / totalBytes).toInt().coerceIn(0, 100) else 0
+                                onProgress(UpdateDownloadState.Downloading(percent, downloadedBytes, totalBytes))
                             }
-                            downloadSuccess = true
                         }
-                    } else {
-                        lastErrorMsg = "GitHub üzerinde APK dosyası bulunamadı (HTTP ${response.code}). Lütfen release yayınlandığından ve deponun herkese açık olduğundan emin olun."
-                        Log.w("AppUpdateManager", "Server returned HTTP ${response.code} for $downloadUrl.")
+                        output.flush()
                     }
                 }
-            } catch (netEx: Exception) {
-                lastErrorMsg = "İndirme başarısız: ${netEx.message ?: "İnternet bağlantısı kesildi"}"
-                Log.w("AppUpdateManager", "Network download failed (${netEx.message}).")
-            }
-        }
 
-        // Only allow local APK fallback in explicit Preview/Test mode; for real releases, surface honest error so old APK isn't reinstalled!
-        if (!downloadSuccess) {
-            if (isPreviewMode) {
-                val appSourceDir = context.applicationInfo.sourceDir
-                val sourceApk = if (!appSourceDir.isNullOrBlank()) File(appSourceDir) else null
-                if (sourceApk != null && sourceApk.exists()) {
-                    val totalBytes = sourceApk.length()
-                    var copiedBytes = 0L
-                    sourceApk.inputStream().use { input ->
-                        FileOutputStream(destinationFile).use { output ->
-                            val buffer = ByteArray(16 * 1024)
-                            var read: Int
-                            while (input.read(buffer).also { read = it } != -1) {
-                                output.write(buffer, 0, read)
-                                copiedBytes += read
-                                val percent = if (totalBytes > 0) ((copiedBytes * 100) / totalBytes).toInt().coerceIn(0, 100) else 0
-                                onProgress(UpdateDownloadState.Downloading(percent, copiedBytes, totalBytes))
-                                delay(10)
-                            }
-                            output.flush()
-                        }
-                    }
-                    downloadSuccess = true
+                // 1. Completeness & Size verification
+                if (!tempFile.exists() || downloadedBytes < MIN_VALID_APK_BYTES) {
+                    tempFile.delete()
+                    val msg = "İndirilen dosya geçersiz veya çok küçük (${downloadedBytes} bayt). Eksik indirme veya hata sayfası olabilir."
+                    Log.e(TAG, msg)
+                    onProgress(UpdateDownloadState.Error(msg))
+                    return@withContext null
+                }
+
+                if (headerLength > 0 && downloadedBytes != headerLength) {
+                    tempFile.delete()
+                    val msg = "APK indirmesi yarım kaldı ($downloadedBytes / $headerLength bayt). Lütfen tekrar deneyin."
+                    Log.e(TAG, msg)
+                    onProgress(UpdateDownloadState.Error(msg))
+                    return@withContext null
                 }
             }
-            if (!downloadSuccess) {
-                onProgress(UpdateDownloadState.Error(lastErrorMsg.ifBlank { "APK indirilemedi. Lütfen internet bağlantınızı kontrol edip tekrar deneyin." }))
+
+            // 2. ZIP / APK Magic Bytes Verification (PK\x03\x04)
+            val magic = ByteArray(4)
+            FileInputStream(tempFile).use { fis ->
+                val n = fis.read(magic)
+                if (n < 4 || magic[0] != 0x50.toByte() || magic[1] != 0x4B.toByte() || magic[2] != 0x03.toByte() || magic[3] != 0x04.toByte()) {
+                    tempFile.delete()
+                    val msg = "İndirilen dosya geçerli bir APK/ZIP formatında değil (HTML veya bozuk dosya)."
+                    Log.e(TAG, msg)
+                    onProgress(UpdateDownloadState.Error(msg))
+                    return@withContext null
+                }
+            }
+
+            // 3. SHA-256 File Integrity Verification
+            if (releaseInfo.expectedSha256.isNotBlank()) {
+                val computedSha = calculateFileSha256(tempFile)
+                if (!computedSha.equals(releaseInfo.expectedSha256, ignoreCase = true)) {
+                    tempFile.delete()
+                    val msg = "Güvenlik hatası: İndirilen APK'nın SHA-256 bütünlüğü doğrulanamadı."
+                    Log.e(TAG, "$msg Expected=${releaseInfo.expectedSha256}, Actual=$computedSha")
+                    onProgress(UpdateDownloadState.Error(msg))
+                    return@withContext null
+                }
+            }
+
+            // 4. Parse AndroidManifest & Signing Certificates from Downloaded APK BEFORE Installing
+            val archiveInfo = getArchivePackageInfo(tempFile)
+            if (archiveInfo == null) {
+                tempFile.delete()
+                val msg = "Android paket bilgisi okunamadı. İndirilen APK bozuk olabilir."
+                Log.e(TAG, msg)
+                onProgress(UpdateDownloadState.Error(msg))
                 return@withContext null
             }
-        }
 
-        // Verify SHA-256 Checksum if provided in release metadata and downloaded from network
-        if (releaseInfo.expectedSha256.isNotBlank()) {
-            val computedSha = calculateFileSha256(destinationFile)
-            if (!computedSha.equals(releaseInfo.expectedSha256, ignoreCase = true)) {
-                destinationFile.delete()
-                onProgress(UpdateDownloadState.Error("Güvenlik hatası: APK bütünlüğü doğrulanamadı (Checksum mismatch)."))
+            if (archiveInfo.packageName != context.packageName) {
+                tempFile.delete()
+                val msg = "Paket adı (applicationId) uyuşmuyor!\nKurulu: ${context.packageName}\nİndirilen APK: ${archiveInfo.packageName}"
+                Log.e(TAG, msg)
+                onProgress(UpdateDownloadState.Error(msg))
                 return@withContext null
             }
-        }
 
-        onProgress(UpdateDownloadState.Ready(destinationFile))
-        destinationFile
+            val downloadedVCode = getLongVersionCodeCompat(archiveInfo)
+            val currentVCode = getCurrentVersionCode().toLong()
+            if (downloadedVCode <= currentVCode) {
+                tempFile.delete()
+                val msg = "Sürüm kodu (versionCode) hatası: İndirilen APK sürüm kodu ($downloadedVCode), telefondaki kurulu sürümden ($currentVCode) büyük değil. Yeni sürüm oluşturulmadan güncelleme yapılamaz."
+                Log.e(TAG, msg)
+                onProgress(UpdateDownloadState.Error(msg))
+                return@withContext null
+            }
+
+            val installedCerts = getInstalledSigningCertSha256()
+            val downloadedCerts = extractSigningSha256(archiveInfo)
+            Log.i(TAG, "APK check OK -> pkg=${archiveInfo.packageName}, vCode=$downloadedVCode (current=$currentVCode), installedCerts=$installedCerts, apkCerts=$downloadedCerts")
+
+            if (installedCerts.isNotEmpty() && downloadedCerts.isNotEmpty() && installedCerts.intersect(downloadedCerts).isEmpty()) {
+                tempFile.delete()
+                val installedShort = installedCerts.first().take(16)
+                val downloadedShort = downloadedCerts.first().take(16)
+                val msg = "APK imza sertifikası telefondaki mevcut uygulamayla uyuşmuyor!\n• Kurulu uygulama imzası: $installedShort...\n• İndirilen APK imzası: $downloadedShort...\nAndroid güvenliği farklı imzalı APK'yı mevcut uygulamanın üzerine yüklemeye izin vermez. GitHub Actions'ta aynı kalıcı keystore kullanılmalıdır."
+                Log.e(TAG, "Signature mismatch! Installed=$installedCerts, Downloaded=$downloadedCerts")
+                onProgress(UpdateDownloadState.Error(msg))
+                return@withContext null
+            }
+
+            if (!tempFile.renameTo(destinationFile)) {
+                tempFile.copyTo(destinationFile, overwrite = true)
+                tempFile.delete()
+            }
+
+            onProgress(UpdateDownloadState.Ready(destinationFile))
+            destinationFile
+        } catch (e: Exception) {
+            tempFile.delete()
+            val msg = "İndirme hatası: ${e.message ?: "Bilinmeyen ağ hatası"}"
+            Log.e(TAG, msg, e)
+            onProgress(UpdateDownloadState.Error(msg))
+            null
+        }
     }
 
     private fun calculateFileSha256(file: File): String {
         val digest = MessageDigest.getInstance("SHA-256")
-        file.inputStream().use { fis ->
+        FileInputStream(file).use { fis ->
             val buffer = ByteArray(8192)
             var n: Int
             while (fis.read(buffer).also { n = it } != -1) {
@@ -656,9 +800,6 @@ class AppUpdateManager(private val context: Context) {
         return digest.digest().joinToString("") { "%02x".format(it) }
     }
 
-    /**
-     * Checks if the app has permission to install unknown apps (Android 8.0+).
-     */
     fun canInstallApks(): Boolean {
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             context.packageManager.canRequestPackageInstalls()
@@ -667,9 +808,6 @@ class AppUpdateManager(private val context: Context) {
         }
     }
 
-    /**
-     * Prompts the user with system settings to allow unknown package installs for Blacksea Robotics.
-     */
     fun openInstallPermissionSettings() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             try {
@@ -688,14 +826,78 @@ class AppUpdateManager(private val context: Context) {
     }
 
     /**
-     * Launches the native Android package installer with the downloaded APK via FileProvider.
+     * Installs the verified APK using Android's PackageInstaller Session API so we capture
+     * exact installation status codes and EXTRA_STATUS_MESSAGE via UpdateInstallReceiver.
      */
-    fun installApk(apkFile: File): Result<Unit> {
+    suspend fun installApkWithPackageInstaller(apkFile: File): Result<Unit> = withContext(Dispatchers.IO) {
+        if (!apkFile.exists() || apkFile.length() < MIN_VALID_APK_BYTES) {
+            return@withContext Result.failure(Exception("Geçerli APK dosyası bulunamadı."))
+        }
+
+        var session: PackageInstaller.Session? = null
+        try {
+            UpdateInstallResultBus.update(InstallResultState.Installing)
+            val packageInstaller = context.packageManager.packageInstaller
+            val params = PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL).apply {
+                setAppPackageName(context.packageName)
+                setSize(apkFile.length())
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    setInstallReason(PackageManager.INSTALL_REASON_USER)
+                }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    setRequireUserAction(PackageInstaller.SessionParams.USER_ACTION_NOT_REQUIRED)
+                }
+            }
+
+            val sessionId = packageInstaller.createSession(params)
+            session = packageInstaller.openSession(sessionId)
+
+            FileInputStream(apkFile).use { input ->
+                session.openWrite("base.apk", 0, apkFile.length()).use { output ->
+                    val buffer = ByteArray(16 * 1024)
+                    var read: Int
+                    while (input.read(buffer).also { read = it } != -1) {
+                        output.write(buffer, 0, read)
+                    }
+                    session.fsync(output)
+                }
+            }
+
+            val receiverIntent = Intent(context, UpdateInstallReceiver::class.java)
+            val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE
+            } else {
+                PendingIntent.FLAG_UPDATE_CURRENT
+            }
+            val pendingIntent = PendingIntent.getBroadcast(context, sessionId, receiverIntent, flags)
+
+            session.commit(pendingIntent.intentSender)
+            Log.i(TAG, "PackageInstaller session $sessionId committed for ${apkFile.name}")
+            Result.success(Unit)
+        } catch (e: Exception) {
+            session?.abandon()
+            Log.e(TAG, "PackageInstaller commit failed: ${e.message}", e)
+            UpdateInstallResultBus.update(
+                InstallResultState.Error(
+                    statusCode = PackageInstaller.STATUS_FAILURE,
+                    statusName = "SESSION_EXCEPTION",
+                    rawMessage = e.message.orEmpty(),
+                    userMessage = "PackageInstaller başlatılamadı: ${e.message}"
+                )
+            )
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Fallback installer using FileProvider content:// URI and ACTION_VIEW.
+     */
+    fun installApkViaFileProvider(apkFile: File): Result<Unit> {
         if (!apkFile.exists()) {
             return Result.failure(Exception("APK dosyası bulunamadı."))
         }
 
-        try {
+        return try {
             val contentUri: Uri = FileProvider.getUriForFile(
                 context,
                 "${context.packageName}.fileprovider",
@@ -708,10 +910,10 @@ class AppUpdateManager(private val context: Context) {
             }
 
             context.startActivity(installIntent)
-            return Result.success(Unit)
+            Result.success(Unit)
         } catch (e: Exception) {
-            Log.e("AppUpdateManager", "Failed to launch installer: ${e.message}", e)
-            return Result.failure(e)
+            Log.e(TAG, "Failed to launch FileProvider installer: ${e.message}", e)
+            Result.failure(e)
         }
     }
 }

@@ -734,30 +734,13 @@ fun AdminScreen(
                                     }
                                 }
 
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                Button(
+                                    onClick = { showBroadcastUpdateDialog = true },
+                                    modifier = Modifier.fillMaxWidth().height(42.dp),
+                                    shape = RoundedCornerShape(10.dp),
+                                    colors = ButtonDefaults.buttonColors(containerColor = PhoenixAmber)
                                 ) {
-                                    OutlinedButton(
-                                        onClick = {
-                                            val sim = mgr.getSimulatedReleaseInfo()
-                                            onShowUpdateDialog(sim)
-                                            Toast.makeText(context, "Güncelleme ekranı açıldı!", Toast.LENGTH_SHORT).show()
-                                        },
-                                        modifier = Modifier.weight(1f).height(42.dp),
-                                        shape = RoundedCornerShape(10.dp)
-                                    ) {
-                                        Text("Ekranı Test Et", fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                                    }
-
-                                    Button(
-                                        onClick = { showBroadcastUpdateDialog = true },
-                                        modifier = Modifier.weight(1f).height(42.dp),
-                                        shape = RoundedCornerShape(10.dp),
-                                        colors = ButtonDefaults.buttonColors(containerColor = PhoenixAmber)
-                                    ) {
-                                        Text("Yeni Sürüm Yayınla", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color.Black)
-                                    }
+                                    Text("Yeni Sürüm Yayınla", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color.Black)
                                 }
 
                                 OutlinedButton(
@@ -992,12 +975,19 @@ fun AdminScreen(
                             showBroadcastUpdateDialog = false
                             if (res != null && res.isSuccess) {
                                 Toast.makeText(context, "Yeni sürüm tüm kullanıcılara yayınlandı!", Toast.LENGTH_LONG).show()
-                                val rel = updateManager.getSimulatedReleaseInfo().copy(
-                                    versionName = vName.trim(),
+                                val cleanVName = vName.trim()
+                                val rel = com.example.update.AppReleaseInfo(
+                                    tagName = "v$cleanVName",
+                                    versionName = cleanVName,
                                     versionCode = parsedCode,
                                     title = vTitle.trim(),
                                     changelog = vChangelog.trim(),
-                                    apkDownloadUrl = vApkUrl.trim(),
+                                    publishedAt = "Bugün",
+                                    apkDownloadUrl = vApkUrl.trim().ifBlank {
+                                        "https://github.com/${updateManager.githubOwner}/${updateManager.githubRepo}/releases/download/v$cleanVName/BlackseaRobotics-v$cleanVName.apk"
+                                    },
+                                    apkFileName = "BlackseaRobotics-v$cleanVName.apk",
+                                    apkSize = 20 * 1024 * 1024L,
                                     isForceUpdate = isForce
                                 )
                                 onShowUpdateDialog(rel)
