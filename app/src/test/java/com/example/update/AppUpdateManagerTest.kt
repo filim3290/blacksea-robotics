@@ -234,4 +234,15 @@ class AppUpdateManagerTest {
         assertTrue(err.isSignatureMismatch)
         assertTrue(err.manualDownloadUrl.startsWith("https://"))
     }
+
+    @Test
+    fun `detects incompatible release certificate before downloading`() {
+        val mgr = AppUpdateManager(context)
+        val parsed = mgr.parseReleaseJson(liveGithubV105Json())!!
+        val matchingInstalled = setOf("5136f564a112fda07fa70a344e73eb2b30ab18f1efa68e730acd86baa1f84b16")
+        val differentInstalled = setOf(AppUpdateManager.AI_STUDIO_DEBUG_CERT_SHA256)
+
+        assertTrue(mgr.isReleaseSignatureCompatible(parsed, matchingInstalled))
+        assertFalse(mgr.isReleaseSignatureCompatible(parsed, differentInstalled))
+    }
 }

@@ -54,7 +54,11 @@ sealed class UpdateDownloadState {
 }
 
 sealed class UpdateCheckResult {
-    data class UpdateAvailable(val release: AppReleaseInfo) : UpdateCheckResult()
+    data class UpdateAvailable(
+        val release: AppReleaseInfo,
+        val isSignatureCompatible: Boolean = true,
+        val installedCertSha256: String = ""
+    ) : UpdateCheckResult()
     data class UpToDate(
         val currentVersionName: String,
         val currentVersionCode: Int,
@@ -216,6 +220,18 @@ class AppUpdateManager(private val context: Context) {
         }
     }
 
+    /**
+     * Checks whether the remote release's published signing certificate SHA-256 matches the
+     * currently installed APK's certificate before downloading any bytes.
+     */
+    fun isReleaseSignatureCompatible(
+        release: AppReleaseInfo,
+        installedCerts: Set<String> = getInstalledSigningCertSha256()
+    ): Boolean {
+        if (release.expectedCertSha256.isBlank() || installedCerts.isEmpty()) return true
+        return installedCerts.any { it.equals(release.expectedCertSha256, ignoreCase = true) }
+    }
+
     private fun extractSigningSha256(pkgInfo: PackageInfo): Set<String> {
         val result = mutableSetOf<String>()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
@@ -348,16 +364,28 @@ class AppUpdateManager(private val context: Context) {
             return UpdateCheckResult.ApkAssetMissing(release.tagName.ifBlank { release.versionName })
         }
 
+        val installedCerts = getInstalledSigningCertSha256()
+        val installedFirst = installedCerts.firstOrNull().orEmpty()
+        val signatureCompatible = isReleaseSignatureCompatible(release, installedCerts)
+
         return if (release.versionCode > 0) {
             when {
-                release.versionCode > currentCode -> UpdateCheckResult.UpdateAvailable(release)
+                release.versionCode > currentCode -> UpdateCheckResult.UpdateAvailable(
+                    release = release,
+                    isSignatureCompatible = signatureCompatible,
+                    installedCertSha256 = installedFirst
+                )
                 release.versionCode == currentCode -> UpdateCheckResult.UpToDate(currentName, currentCode, release, isRemoteOlder = false)
                 else -> UpdateCheckResult.UpToDate(currentName, currentCode, release, isRemoteOlder = true)
             }
         } else {
             val semverCmp = compareSemver(release.versionName, currentName)
             when {
-                semverCmp > 0 -> UpdateCheckResult.UpdateAvailable(release.copy(versionCode = currentCode + 1))
+                semverCmp > 0 -> UpdateCheckResult.UpdateAvailable(
+                    release = release.copy(versionCode = currentCode + 1),
+                    isSignatureCompatible = signatureCompatible,
+                    installedCertSha256 = installedFirst
+                )
                 semverCmp == 0 -> UpdateCheckResult.UpToDate(currentName, currentCode, release, isRemoteOlder = false)
                 else -> UpdateCheckResult.UpToDate(currentName, currentCode, release, isRemoteOlder = true)
             }
@@ -718,6 +746,21 @@ class AppUpdateManager(private val context: Context) {
             return@withContext null
         }
 
+        val installedPreCheck = getInstalledSigningCertSha256()
+        if (!isReleaseSignatureCompatible(releaseInfo, installedPreCheck)) {
+            val installedShort = installedPreCheck.firstOrNull().orEmpty().take(16).uppercase()
+            val expectedShort = releaseInfo.expectedCertSha256.take(16).uppercase()
+            val msg = "İmza Uyuşmazlığı: Bu sürüm mevcut uygulamanın imza sertifikasıyla eşleşmiyor; üzerine güncellenemez.\n• Kurulu imza: $installedShort...\n• Release imza: $expectedShort...\nTemiz kurulum için eski uygulamayı kaldırıp yeni APK'yı tarayıcıdan kurabilirsiniz."
+            onProgress(
+                UpdateDownloadState.Error(
+                    message = msg,
+                    isSignatureMismatch = true,
+                    manualDownloadUrl = downloadUrl
+                )
+            )
+            return@withContext null
+        }
+
         val updatesDir = File(context.cacheDir, "updates")
         if (!updatesDir.exists()) {
             updatesDir.mkdirs()
@@ -863,11 +906,11 @@ class AppUpdateManager(private val context: Context) {
                 val installedShort = installedCerts.first().take(16).uppercase()
                 val downloadedShort = downloadedCerts.first().take(16).uppercase()
                 val sourceHint = if (isRunningAiStudioDebugSignature()) {
-                    "Telefondaki uygulama birleşik AI Studio imzasını taşıyor; indirilen APK farklı bir sertifikayla imzalanmış."
+                    "Telefondaki uygulama geliştirme/önizleme (debug) imzası taşıyor; GitHub Release APK ise kalıcı release keystore ile imzalanmış."
                 } else {
-                    "Telefondaki eski sürüm farklı bir imza sertifikası taşıyor (ör. geçiş dönemi v1.0.5/v1.0.6)."
+                    "Telefondaki uygulama ile indirilen APK farklı imza sertifikalarıyla imzalanmış."
                 }
-                val msg = "İmza Uyuşmazlığı: $sourceHint\n• Kurulu imza: $installedShort...\n• Yeni APK imzası: $downloadedShort...\nÇözüm: Yeni APK'yı tarayıcıdan indirip mevcut uygulamayı bir kez kaldırarak temiz kurulum yapın. Sonraki tüm AI Studio ve GitHub güncellemeleri aynı imzayla otomatik yüklenecektir."
+                val msg = "İmza Uyuşmazlığı: $sourceHint\n• Kurulu imza: $installedShort...\n• Yeni APK imzası: $downloadedShort...\nAndroid güvenlik kuralı gereği farklı imzalı APK eski sürümün üzerine yazılamaz. İlk kurulum için mevcut uygulamayı kaldırıp yeni imzalı APK'yı kurabilir veya GitHub Actions'ta kurulu sürümle aynı keystore'u kullanabilirsiniz."
                 Log.e(TAG, "Signature mismatch! Installed=$installedCerts, Downloaded=$downloadedCerts")
                 onProgress(
                     UpdateDownloadState.Error(

@@ -139,7 +139,7 @@ fun AppContent(repository: BlackseaRepository) {
 
     suspend fun performUpdateCheckAndNotify() {
         val result = updateManager.checkLatestReleaseDetailed(forceRefresh = false)
-        if (result is com.example.update.UpdateCheckResult.UpdateAvailable) {
+        if (result is com.example.update.UpdateCheckResult.UpdateAvailable && result.isSignatureCompatible) {
             val update = result.release
             availableUpdate = update
 
@@ -210,9 +210,12 @@ fun AppContent(repository: BlackseaRepository) {
                                     apkFileName = doc.getString("apkFileName") ?: "BlackseaRobotics-v$vName.apk",
                                     apkSize = doc.getLong("apkSize") ?: (29 * 1024 * 1024L),
                                     expectedSha256 = doc.getString("expectedSha256") ?: "",
+                                    expectedCertSha256 = doc.getString("expectedCertSha256") ?: "",
                                     isForceUpdate = doc.getBoolean("isForceUpdate") ?: false
                                 )
-                                availableUpdate = release
+                                if (updateManager.isReleaseSignatureCompatible(release)) {
+                                    availableUpdate = release
+                                }
                             }
                         }
                     }

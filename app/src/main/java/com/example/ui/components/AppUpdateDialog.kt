@@ -370,30 +370,87 @@ fun AppUpdateDialog(
                 } else {
                     when (val state = downloadState) {
                         is UpdateDownloadState.Idle -> {
-                            Button(
-                                onClick = {
-                                    UpdateInstallResultBus.reset()
-                                    scope.launch {
-                                        downloadState = UpdateDownloadState.Downloading(0, 0, releaseInfo.apkSize)
-                                        val file = updateManager.downloadApk(releaseInfo) { progress ->
-                                            downloadState = progress
-                                        }
-                                        if (file != null) {
-                                            downloadedApkFile = file
-                                            startInstallation(file)
-                                        }
+                            val isSignatureCompatible = remember(releaseInfo) {
+                                updateManager.isReleaseSignatureCompatible(releaseInfo)
+                            }
+                            val installedCertShort = remember { updateManager.getInstalledSigningCertSha256Short() }
+
+                            if (!isSignatureCompatible) {
+                                Surface(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    shape = RoundedCornerShape(12.dp),
+                                    color = Color(0xFFEF4444).copy(alpha = 0.14f)
+                                ) {
+                                    Column(
+                                        modifier = Modifier.padding(12.dp),
+                                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        Text(
+                                            text = "Farklı İmza Sertifikası — Üzerine Güncellenemez",
+                                            fontSize = 12.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = Color(0xFFFCA5A5)
+                                        )
+                                        Text(
+                                            text = "Yeni sürüm (${releaseInfo.tagName}) telefondaki kurulu uygulamanın imzasından farklı bir sertifikayla imzalanmış.\n• Kurulu: $installedCertShort\n• Release: ${releaseInfo.expectedCertSha256.take(16).uppercase()}...\n\nAndroid kuralı gereği üzerine yazılamaz; eski uygulamayı bir kez kaldırıp yeni APK'yı tarayıcıdan kurmanız gerekir.",
+                                            fontSize = 11.sp,
+                                            color = Color(0xFFE2E8F0),
+                                            lineHeight = 16.sp
+                                        )
                                     }
-                                },
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(48.dp)
-                                    .testTag("now_update_button"),
-                                shape = RoundedCornerShape(12.dp),
-                                colors = ButtonDefaults.buttonColors(containerColor = ElectricBlue)
-                            ) {
-                                Icon(imageVector = Icons.Default.Download, contentDescription = null, modifier = Modifier.size(18.dp))
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text("ŞİMDİ GÜNCELLE", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                                }
+                                Spacer(modifier = Modifier.height(10.dp))
+                                Button(
+                                    onClick = {
+                                        try {
+                                            context.startActivity(
+                                                Intent(Intent.ACTION_VIEW, Uri.parse(releaseInfo.apkDownloadUrl)).apply {
+                                                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                                }
+                                            )
+                                        } catch (e: Exception) {
+                                            Toast.makeText(context, "Tarayıcı açılamadı.", Toast.LENGTH_SHORT).show()
+                                        }
+                                    },
+                                    modifier = Modifier.fillMaxWidth().height(46.dp),
+                                    shape = RoundedCornerShape(12.dp),
+                                    colors = ButtonDefaults.buttonColors(containerColor = PhoenixAmber)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.AutoMirrored.Filled.OpenInNew,
+                                        contentDescription = null,
+                                        tint = Color.Black,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text("Tarayıcıdan İndir (Temiz Kurulum)", color = Color.Black, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                                }
+                            } else {
+                                Button(
+                                    onClick = {
+                                        UpdateInstallResultBus.reset()
+                                        scope.launch {
+                                            downloadState = UpdateDownloadState.Downloading(0, 0, releaseInfo.apkSize)
+                                            val file = updateManager.downloadApk(releaseInfo) { progress ->
+                                                downloadState = progress
+                                            }
+                                            if (file != null) {
+                                                downloadedApkFile = file
+                                                startInstallation(file)
+                                            }
+                                        }
+                                    },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(48.dp)
+                                        .testTag("now_update_button"),
+                                    shape = RoundedCornerShape(12.dp),
+                                    colors = ButtonDefaults.buttonColors(containerColor = ElectricBlue)
+                                ) {
+                                    Icon(imageVector = Icons.Default.Download, contentDescription = null, modifier = Modifier.size(18.dp))
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text("ŞİMDİ GÜNCELLE", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                                }
                             }
 
                             if (!releaseInfo.isForceUpdate) {
@@ -405,7 +462,7 @@ fun AppUpdateDialog(
                                     },
                                     modifier = Modifier.fillMaxWidth()
                                 ) {
-                                    Text("Daha Sonra", color = Color(0xFF94A3B8), fontSize = 13.sp)
+                                    Text(if (isSignatureCompatible) "Daha Sonra" else "Kapat", color = Color(0xFF94A3B8), fontSize = 13.sp)
                                 }
                             }
                         }
