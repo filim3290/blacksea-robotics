@@ -126,32 +126,85 @@ jobs:
       - name: Setup Permanent Release Keystore
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
-          KEYSTORE_STORE_PASSWORD: ${{ secrets.KEYSTORE_STORE_PASSWORD }}
-          KEYSTORE_KEY_PASSWORD: ${{ secrets.KEYSTORE_KEY_PASSWORD }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          LEGACY_STORE_PASSWORD: ${{ secrets.KEYSTORE_STORE_PASSWORD }}
+          LEGACY_KEY_PASSWORD: ${{ secrets.KEYSTORE_KEY_PASSWORD }}
         run: |
-          if [ -n "$KEYSTORE_BASE64" ]; then
-            if [ -z "$KEYSTORE_STORE_PASSWORD" ] || [ -z "$KEYSTORE_KEY_PASSWORD" ]; then
-              echo "::error::KEYSTORE_BASE64 tanımlı fakat KEYSTORE_STORE_PASSWORD veya KEYSTORE_KEY_PASSWORD eksik!"
-              exit 1
-            fi
-            printf '%s' "$KEYSTORE_BASE64" | tr -d '[:space:]' | base64 --decode > my-upload-key.jks
-            echo "STORE_PASSWORD=$KEYSTORE_STORE_PASSWORD" >> $GITHUB_ENV
-            echo "KEY_PASSWORD=$KEYSTORE_KEY_PASSWORD" >> $GITHUB_ENV
-            echo "Kalıcı keystore GitHub Secrets (KEYSTORE_BASE64) üzerinden yüklendi."
-          elif [ -s "my-upload-key.jks" ]; then
-            echo "STORE_PASSWORD=android" >> $GITHUB_ENV
-            echo "KEY_PASSWORD=android" >> $GITHUB_ENV
-            echo "Kalıcı keystore repodaki my-upload-key.jks dosyasından kullanılıyor."
-          else
-            echo "::error::Kalıcı release keystore bulunamadı! Her derlemede farklı imza oluşmaması ve 'Uygulama yüklenemedi' hatasını önlemek için repoya my-upload-key.jks dosyasını ekleyin veya GitHub Secrets içine KEYSTORE_BASE64, KEYSTORE_STORE_PASSWORD ve KEYSTORE_KEY_PASSWORD ekleyin."
+          RESOLVED_STORE_PASS="${KEYSTORE_PASSWORD:-$LEGACY_STORE_PASSWORD}"
+          RESOLVED_KEY_PASS="${KEY_PASSWORD:-$LEGACY_KEY_PASSWORD}"
+          RESOLVED_ALIAS="${KEY_ALIAS:-upload}"
+
+          if [ -z "$KEYSTORE_BASE64" ] || [ -z "$RESOLVED_STORE_PASS" ] || [ -z "$RESOLVED_KEY_PASS" ] || [ -z "$KEY_ALIAS" ]; then
+            echo "::error::Kalıcı release imza bilgileri eksik! GitHub Repository > Settings > Secrets and variables > Actions bölümüne şu 4 secret'ı ekleyin:"
+            echo "  - KEYSTORE_BASE64 (Release .jks dosyasının base64 çıktısı)"
+            echo "  - KEYSTORE_PASSWORD (Keystore parolası)"
+            echo "  - KEY_ALIAS (Anahtar takma adı / alias)"
+            echo "  - KEY_PASSWORD (Anahtar parolası)"
             exit 1
           fi
 
-          echo "KEYSTORE_PATH=${GITHUB_WORKSPACE}/my-upload-key.jks" >> $GITHUB_ENV
+          echo "::add-mask::$RESOLVED_STORE_PASS"
+          echo "::add-mask::$RESOLVED_KEY_PASS"
 
-          # Verify keystore integrity and log certificate SHA-256 fingerprint
-          PASS="${KEYSTORE_STORE_PASSWORD:-android}"
-          keytool -list -v -keystore my-upload-key.jks -storepass "$PASS" -alias upload | grep -E "Alias name|SHA1|SHA256"
+          KEYSTORE_TMP="${RUNNER_TEMP:-/tmp}/release-upload-key.jks"
+          rm -f "$KEYSTORE_TMP"
+
+          if ! printf '%s' "$KEYSTORE_BASE64" | tr -d '[:space:]' | base64 --decode > "$KEYSTORE_TMP"; then
+            echo "::error::KEYSTORE_BASE64 geçerli bir Base64 keystore verisi değil!"
+            exit 1
+          fi
+
+          if [ ! -s "$KEYSTORE_TMP" ]; then
+            echo "::error::Çözümlenen keystore dosyası boş!"
+            exit 1
+          fi
+
+          # Verify keystore password, detect keystore type (PKCS12 vs JKS), verify key alias, and extract SHA-256
+          STORE_META=$(keytool -list -keystore "$KEYSTORE_TMP" -storepass "$RESOLVED_STORE_PASS" 2>&1) || {
+            echo "::error::Keystore doğrulaması başarısız! KEYSTORE_PASSWORD hatalı veya dosya bozuk."
+            echo "$STORE_META"
+            rm -f "$KEYSTORE_TMP"
+            exit 1
+          }
+
+          CERT_INFO=$(keytool -list -v -keystore "$KEYSTORE_TMP" -storepass "$RESOLVED_STORE_PASS" -alias "$RESOLVED_ALIAS" 2>&1) || {
+            echo "::error::Keystore içinde '$RESOLVED_ALIAS' alias'ı bulunamadı! KEY_ALIAS secret değerini kontrol edin."
+            echo "$CERT_INFO"
+            rm -f "$KEYSTORE_TMP"
+            exit 1
+          }
+
+          EXPECTED_CERT_SHA256=$(echo "$CERT_INFO" | grep -i "SHA256:" | head -n 1 | sed 's/.*SHA256:[[:space:]]*//I' | tr -d ':' | tr '[:upper:]' '[:lower:]')
+          if [ -z "$EXPECTED_CERT_SHA256" ]; then
+            echo "::error::Keystore içinden SHA-256 sertifika parmak izi okunamadı!"
+            rm -f "$KEYSTORE_TMP"
+            exit 1
+          fi
+
+          # Gradle signingConfigs.release uses keyAlias = "upload". Map custom KEY_ALIAS on the temp copy without modifying build.gradle.kts.
+          EFFECTIVE_KEY_PASS="$RESOLVED_KEY_PASS"
+          if echo "$STORE_META" | grep -qi "Keystore type: PKCS12" && [ "$RESOLVED_KEY_PASS" != "$RESOLVED_STORE_PASS" ]; then
+            echo "::warning::PKCS12 keystore tespit edildi; PKCS12 biçiminde anahtar parolası keystore parolasıyla aynı olmalıdır. Store parolası kullanılıyor."
+            EFFECTIVE_KEY_PASS="$RESOLVED_STORE_PASS"
+          fi
+
+          if [ "$RESOLVED_ALIAS" != "upload" ]; then
+            keytool -changealias \
+              -keystore "$KEYSTORE_TMP" \
+              -storepass "$RESOLVED_STORE_PASS" \
+              -alias "$RESOLVED_ALIAS" \
+              -destalias "upload" \
+              -keypass "$EFFECTIVE_KEY_PASS"
+            echo "Geçici keystore alias'ı '$RESOLVED_ALIAS' -> 'upload' olarak eşlendi (sertifika değişmedi)."
+          fi
+
+          echo "KEYSTORE_PATH=$KEYSTORE_TMP" >> "$GITHUB_ENV"
+          echo "STORE_PASSWORD=$RESOLVED_STORE_PASS" >> "$GITHUB_ENV"
+          echo "KEY_PASSWORD=$EFFECTIVE_KEY_PASS" >> "$GITHUB_ENV"
+          echo "EXPECTED_CERT_SHA256=$EXPECTED_CERT_SHA256" >> "$GITHUB_ENV"
+          echo "Kalıcı release keystore doğrulandı. SHA-256: $EXPECTED_CERT_SHA256"
 
           if [ ! -f "debug.keystore" ] && [ -f "debug.keystore.base64" ]; then
             base64 --decode debug.keystore.base64 > debug.keystore
@@ -262,7 +315,11 @@ jobs:
           if [ -n "$APKSIGNER" ]; then
             SIGN_OUT=$("$APKSIGNER" verify --print-certs "$APK_PATH")
             echo "$SIGN_OUT"
-            CERT_SHA256=$(echo "$SIGN_OUT" | grep -i "SHA-256 digest" | head -n 1 | awk '{print $NF}')
+            CERT_SHA256=$(echo "$SIGN_OUT" | grep -i "SHA-256 digest" | head -n 1 | awk '{print $NF}' | tr '[:upper:]' '[:lower:]')
+            if [ -n "$EXPECTED_CERT_SHA256" ] && [ "$CERT_SHA256" != "$EXPECTED_CERT_SHA256" ]; then
+              echo "::error::APK imzası keystore parmak iziyle uyuşmuyor! Beklenen: $EXPECTED_CERT_SHA256, Gerçekleşen: $CERT_SHA256"
+              exit 1
+            fi
           fi
 
           if [ -n "$AAPT2" ]; then
@@ -347,3 +404,8 @@ jobs:
               --notes-file release_notes.md \
               --latest
           fi
+
+      - name: Cleanup Temporary Keystore & Secrets
+        if: always()
+        run: |
+          rm -f "${RUNNER_TEMP:-/tmp}/release-upload-key.jks" ".env" "release_notes.md"

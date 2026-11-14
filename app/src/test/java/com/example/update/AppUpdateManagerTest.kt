@@ -219,4 +219,19 @@ class AppUpdateManagerTest {
         val parsed = mgr.parseReleaseJson(json)!!
         assertEquals(6, parsed.versionCode)
     }
+
+    @Test
+    fun `exposes AI Studio debug cert constant and signature mismatch download state`() {
+        assertEquals(
+            64,
+            AppUpdateManager.AI_STUDIO_DEBUG_CERT_SHA256.length
+        )
+        val err = UpdateDownloadState.Error(
+            message = "İmza Uyuşmazlığı",
+            isSignatureMismatch = true,
+            manualDownloadUrl = "https://github.com/filim3290/blacksea-robotics/releases/latest"
+        )
+        assertTrue(err.isSignatureMismatch)
+        assertTrue(err.manualDownloadUrl.startsWith("https://"))
+    }
 }

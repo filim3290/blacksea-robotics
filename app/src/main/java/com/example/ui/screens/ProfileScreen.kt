@@ -329,17 +329,31 @@ fun ProfileScreen(
                     color = Color(0xFF94A3B8)
                 )
 
+                val isDebugSig = remember { mgr.isRunningAiStudioDebugSignature() }
+                val certShort = remember { mgr.getInstalledSigningCertSha256Short() }
+
                 Surface(
                     shape = RoundedCornerShape(8.dp),
                     color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
                 ) {
-                    Text(
-                        text = "Bağlı Depo: ${mgr.githubOwner}/${mgr.githubRepo}",
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = ElectricBlue,
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
-                    )
+                    Column(modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)) {
+                        Text(
+                            text = "Bağlı Depo: ${mgr.githubOwner}/${mgr.githubRepo}",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = ElectricBlue
+                        )
+                        Text(
+                            text = if (isDebugSig) {
+                                "İmza: AI Studio Test ($certShort) • Kalıcı güncelleme için GitHub Release APK kurun"
+                            } else {
+                                "İmza: Release ($certShort)"
+                            },
+                            fontSize = 10.sp,
+                            color = if (isDebugSig) Color(0xFFF59E0B) else Color(0xFF10B981),
+                            fontWeight = FontWeight.Medium
+                        )
+                    }
                 }
 
                 Spacer(modifier = Modifier.height(4.dp))

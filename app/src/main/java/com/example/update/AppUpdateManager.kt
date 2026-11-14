@@ -46,7 +46,11 @@ sealed class UpdateDownloadState {
     object Idle : UpdateDownloadState()
     data class Downloading(val progressPercent: Int, val downloadedBytes: Long, val totalBytes: Long) : UpdateDownloadState()
     data class Ready(val apkFile: File) : UpdateDownloadState()
-    data class Error(val message: String) : UpdateDownloadState()
+    data class Error(
+        val message: String,
+        val isSignatureMismatch: Boolean = false,
+        val manualDownloadUrl: String = ""
+    ) : UpdateDownloadState()
 }
 
 sealed class UpdateCheckResult {
@@ -75,6 +79,7 @@ class AppUpdateManager(private val context: Context) {
         private val LEGACY_OWNERS = setOf("baslider52-ui", "mehmetilkerbas", "filmi3290")
         private val LEGACY_REPOS = setOf("filmi3290", "blacksearobotics", "blacksea_robotics")
         private const val MIN_VALID_APK_BYTES = 200L * 1024L // 200 KB minimum sanity check
+        const val AI_STUDIO_DEBUG_CERT_SHA256 = "5371103212da06ed36fe2d071cd18613e3296dcff6cf66f581020bc763904e88"
     }
 
     init {
@@ -197,6 +202,17 @@ class AppUpdateManager(private val context: Context) {
         } catch (e: Exception) {
             Log.w(TAG, "Failed to read installed signing certs: ${e.message}")
             emptySet()
+        }
+    }
+
+    fun getInstalledSigningCertSha256Short(): String {
+        val cert = getInstalledSigningCertSha256().firstOrNull() ?: return "Bilinmiyor"
+        return cert.uppercase().chunked(2).take(8).joinToString(":") + "..."
+    }
+
+    fun isRunningAiStudioDebugSignature(): Boolean {
+        return getInstalledSigningCertSha256().any {
+            it.equals(AI_STUDIO_DEBUG_CERT_SHA256, ignoreCase = true)
         }
     }
 
@@ -844,11 +860,22 @@ class AppUpdateManager(private val context: Context) {
 
             if (installedCerts.isNotEmpty() && downloadedCerts.isNotEmpty() && installedCerts.intersect(downloadedCerts).isEmpty()) {
                 tempFile.delete()
-                val installedShort = installedCerts.first().take(16)
-                val downloadedShort = downloadedCerts.first().take(16)
-                val msg = "APK imza sertifikası telefondaki mevcut uygulamayla uyuşmuyor!\n• Kurulu uygulama imzası: $installedShort...\n• İndirilen APK imzası: $downloadedShort...\nAndroid güvenliği farklı imzalı APK'yı mevcut uygulamanın üzerine yüklemeye izin vermez. GitHub Actions'ta aynı kalıcı keystore kullanılmalıdır."
+                val installedShort = installedCerts.first().take(16).uppercase()
+                val downloadedShort = downloadedCerts.first().take(16).uppercase()
+                val sourceHint = if (isRunningAiStudioDebugSignature()) {
+                    "Telefondaki mevcut uygulama Google AI Studio Test (Debug) imzası taşıyor; GitHub Actions Release APK farklı kalıcı release anahtarıyla imzalanmış."
+                } else {
+                    "Telefondaki uygulama ile indirilen APK farklı imza sertifikalarıyla imzalanmış."
+                }
+                val msg = "İmza Uyuşmazlığı: $sourceHint\n• Kurulu imza: $installedShort...\n• Yeni APK imzası: $downloadedShort...\nÇözüm: Yeni APK'yı tarayıcıdan indirin, mevcut uygulamayı bir kez kaldırın ve GitHub Actions APK'sını kurun. Sonraki tüm güncellemeler otomatik yüklenecektir."
                 Log.e(TAG, "Signature mismatch! Installed=$installedCerts, Downloaded=$downloadedCerts")
-                onProgress(UpdateDownloadState.Error(msg))
+                onProgress(
+                    UpdateDownloadState.Error(
+                        message = msg,
+                        isSignatureMismatch = true,
+                        manualDownloadUrl = releaseInfo.apkDownloadUrl
+                    )
+                )
                 return@withContext null
             }
 
