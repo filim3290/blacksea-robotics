@@ -40,6 +40,46 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v4
 
+      - name: Install Required Android SDK Components & Accept Licenses
+        run: |
+          yes | sdkmanager --licenses >/dev/null 2>&1 || true
+          sdkmanager "platform-tools" "platforms;android-36" "build-tools;36.0.0" || true
+
+      - name: Verify & Configure Firebase (google-services.json)
+        env:
+          GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
+          GOOGLE_SERVICES_JSON_BASE64: ${{ secrets.GOOGLE_SERVICES_JSON_BASE64 }}
+        run: |
+          if [ -n "$GOOGLE_SERVICES_JSON_BASE64" ]; then
+            echo "GOOGLE_SERVICES_JSON_BASE64 secret kullanılıyor..."
+            echo "$GOOGLE_SERVICES_JSON_BASE64" | base64 --decode > app/google-services.json
+          elif [ -n "$GOOGLE_SERVICES_JSON" ]; then
+            echo "GOOGLE_SERVICES_JSON secret kullanılıyor..."
+            printf '%s' "$GOOGLE_SERVICES_JSON" > app/google-services.json
+          fi
+
+          if [ ! -f "app/google-services.json" ]; then
+            echo "::error::app/google-services.json dosyası bulunamadı! Google Sign-In (default_web_client_id) ve Firebase için app/google-services.json dosyasını repoya ekleyin veya GitHub Secrets içine GOOGLE_SERVICES_JSON_BASE64 / GOOGLE_SERVICES_JSON ekleyin."
+            exit 1
+          fi
+
+          python3 - <<'PY'
+          import json, sys
+          with open("app/google-services.json", "r", encoding="utf-8") as f:
+              data = json.load(f)
+          clients = data.get("client", [])
+          pkg = "com.aistudio.blacksearobotics.kxnqpv"
+          matched = [c for c in clients if c.get("client_info", {}).get("android_client_info", {}).get("package_name") == pkg]
+          if not matched:
+              print(f"::error::app/google-services.json içinde '{pkg}' paket adı bulunamadı!", file=sys.stderr)
+              sys.exit(1)
+          web_clients = [o for o in matched[0].get("oauth_client", []) if o.get("client_type") == 3]
+          if not web_clients:
+              print("::error::app/google-services.json içinde client_type=3 (default_web_client_id için Web Client ID) eksik!", file=sys.stderr)
+              sys.exit(1)
+          print(f"Firebase doğrulandı: package={pkg}, web_client_id={web_clients[0].get('client_id')}")
+          PY
+
       - name: Prepare Secrets & Environment (.env)
         run: |
           touch .env
@@ -49,11 +89,13 @@ jobs:
       - name: Setup Keystores
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_STORE_PASSWORD: ${{ secrets.KEYSTORE_STORE_PASSWORD }}
+          KEYSTORE_KEY_PASSWORD: ${{ secrets.KEYSTORE_KEY_PASSWORD }}
         run: |
-          if [ -n "$KEYSTORE_BASE64" ]; then
+          if [ -n "$KEYSTORE_BASE64" ] && [ -n "$KEYSTORE_STORE_PASSWORD" ] && [ -n "$KEYSTORE_KEY_PASSWORD" ]; then
             echo "$KEYSTORE_BASE64" | base64 --decode > my-upload-key.jks
-            echo "STORE_PASSWORD=${{ secrets.KEYSTORE_STORE_PASSWORD }}" >> $GITHUB_ENV
-            echo "KEY_PASSWORD=${{ secrets.KEYSTORE_KEY_PASSWORD }}" >> $GITHUB_ENV
+            echo "STORE_PASSWORD=$KEYSTORE_STORE_PASSWORD" >> $GITHUB_ENV
+            echo "KEY_PASSWORD=$KEYSTORE_KEY_PASSWORD" >> $GITHUB_ENV
           else
             if [ ! -f "my-upload-key.jks" ]; then
               keytool -genkey -v -keystore my-upload-key.jks -keyalg RSA -keysize 2048 -validity 10000 -alias upload -storepass android -keypass android -dname "CN=BlackseaRobotics, OU=Robotics, O=UnyeFenLisesi, L=Unye, ST=Ordu, C=TR"
@@ -72,11 +114,19 @@ jobs:
       - name: Grant Execute Permission to Gradle
         run: chmod +x gradlew
 
-      - name: Build Android APK
+      - name: Generate Firebase Resources & Verify default_web_client_id
         run: |
-          ./gradlew assembleRelease -x lintVitalAnalyzeRelease --no-daemon --stacktrace || ./gradlew assembleDebug --no-daemon --stacktrace
+          ./gradlew :app:processReleaseGoogleServices --no-daemon --stacktrace
+          if ! grep -q "default_web_client_id" app/build/generated/res/processReleaseGoogleServices/values/values.xml; then
+            echo "::error::default_web_client_id resource'u Google Services tarafından üretilemedi!"
+            exit 1
+          fi
+          echo "default_web_client_id resource başarıyla doğrulandı."
 
-      - name: Locate & Rename APK
+      - name: Build Release Android APK
+        run: ./gradlew :app:assembleRelease --no-daemon --stacktrace
+
+      - name: Locate & Rename Release APK
         id: find_apk
         run: |
           set +e
@@ -84,16 +134,10 @@ jobs:
           if [ -d "app/build/outputs/apk/release" ]; then
             APK_PATH=$(find app/build/outputs/apk/release -name "*.apk" 2>/dev/null | head -n 1)
           fi
-          if [ -z "$APK_PATH" ] && [ -d "app/build/outputs/apk/debug" ]; then
-            APK_PATH=$(find app/build/outputs/apk/debug -name "*.apk" 2>/dev/null | head -n 1)
-          fi
-          if [ -z "$APK_PATH" ] && [ -d "app/build/outputs/apk" ]; then
-            APK_PATH=$(find app/build/outputs/apk -name "*.apk" 2>/dev/null | head -n 1)
-          fi
           set -e
 
           if [ -z "$APK_PATH" ] || [ ! -f "$APK_PATH" ]; then
-            echo "HATA: Derlenen APK bulunamadı!"
+            echo "::error::Derlenen Release APK bulunamadı!"
             exit 1
           fi
 
@@ -123,7 +167,15 @@ jobs:
           echo "sha256=${SHA256}" >> $GITHUB_OUTPUT
           echo "version_code=${DETECTED_VERSION_CODE}" >> $GITHUB_OUTPUT
           echo "version_name=${DETECTED_VERSION_NAME}" >> $GITHUB_OUTPUT
-          echo "APK Ready: ${FINAL_APK_NAME} (Version: ${DETECTED_VERSION_NAME}, Code: ${DETECTED_VERSION_CODE}, SHA256: ${SHA256})"
+          echo "Release APK Ready: ${FINAL_APK_NAME} (Version: ${DETECTED_VERSION_NAME}, Code: ${DETECTED_VERSION_CODE}, SHA256: ${SHA256})"
+
+      - name: Upload Release APK to GitHub Actions Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: BlackseaRobotics-${{ steps.find_apk.outputs.tag_name }}-APK
+          path: ${{ steps.find_apk.outputs.apk_path }}
+          if-no-files-found: error
+          retention-days: 30
 
       - name: Extract Release Notes & Metadata
         id: notes
