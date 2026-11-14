@@ -863,11 +863,11 @@ class AppUpdateManager(private val context: Context) {
                 val installedShort = installedCerts.first().take(16).uppercase()
                 val downloadedShort = downloadedCerts.first().take(16).uppercase()
                 val sourceHint = if (isRunningAiStudioDebugSignature()) {
-                    "Telefondaki mevcut uygulama Google AI Studio Test (Debug) imzası taşıyor; GitHub Actions Release APK farklı kalıcı release anahtarıyla imzalanmış."
+                    "Telefondaki uygulama birleşik AI Studio imzasını taşıyor; indirilen APK farklı bir sertifikayla imzalanmış."
                 } else {
-                    "Telefondaki uygulama ile indirilen APK farklı imza sertifikalarıyla imzalanmış."
+                    "Telefondaki eski sürüm farklı bir imza sertifikası taşıyor (ör. geçiş dönemi v1.0.5/v1.0.6)."
                 }
-                val msg = "İmza Uyuşmazlığı: $sourceHint\n• Kurulu imza: $installedShort...\n• Yeni APK imzası: $downloadedShort...\nÇözüm: Yeni APK'yı tarayıcıdan indirin, mevcut uygulamayı bir kez kaldırın ve GitHub Actions APK'sını kurun. Sonraki tüm güncellemeler otomatik yüklenecektir."
+                val msg = "İmza Uyuşmazlığı: $sourceHint\n• Kurulu imza: $installedShort...\n• Yeni APK imzası: $downloadedShort...\nÇözüm: Yeni APK'yı tarayıcıdan indirip mevcut uygulamayı bir kez kaldırarak temiz kurulum yapın. Sonraki tüm AI Studio ve GitHub güncellemeleri aynı imzayla otomatik yüklenecektir."
                 Log.e(TAG, "Signature mismatch! Installed=$installedCerts, Downloaded=$downloadedCerts")
                 onProgress(
                     UpdateDownloadState.Error(

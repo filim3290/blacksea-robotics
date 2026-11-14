@@ -4,13 +4,13 @@
 
 ---
 
-## 📲 APK İNDİR VE YÜKLE (Tek Yetkili Dağıtım Kanalı: GitHub Releases)
+## 📲 APK İNDİR VE YÜKLE
 
-Telefonlara ilk kurulum ve sonraki tüm otomatik güncellemelerin **aynı kalıcı Release imza sertifikasıyla** sorunsuz çalışabilmesi için uygulama **yalnızca GitHub Releases üzerinden** indirilebilir:
+En güncel Android APK sürümünü doğrudan GitHub Releases üzerinden indirebilirsiniz:
 
-👉 **[En Son GitHub Release APK Sürümünü İndir](https://github.com/filim3290/blacksea-robotics/releases/latest)**
+👉 **[En Son APK Sürümünü İndir](https://github.com/filim3290/blacksea-robotics/releases/latest)**
 
-> **Önemli İmza Notu:** Google AI Studio önizleme/test APK'sı (`app-debug.apk`) geliştirme debug anahtarıyla (`53:71:10:32:...`) imzalanır. Telefonunuzda daha önce AI Studio'dan yüklenmiş sürüm varsa, GitHub Releases'tan indireceğiniz ilk Release APK'yı kurmadan önce eski sürümü bir kez kaldırın. Bu tek seferlik geçişten sonra uygulama içi tüm güncellemeler aynı kalıcı imzayla otomatik yüklenecektir.
+> **Birleşik APK İmzalama:** Hem Google AI Studio üzerinden oluşturulan APK'lar hem de GitHub Actions tarafından yayınlanan Release APK'lar aynı imza sertifikasıyla (`SHA-256: 53:71:10:32:...`) imzalanır. Telefonunuzdaki mevcut AI Studio APK'sının üzerine GitHub Releases güncellemeleri doğrudan kurulabilir. *(Yalnızca daha önce geçiş sürümü `v1.0.5` veya `v1.0.6` yüklendiyse bir defalık kaldırıp yeniden kurulum gerekir.)*
 
 ---
 
@@ -26,17 +26,12 @@ Telefonlara ilk kurulum ve sonraki tüm otomatik güncellemelerin **aynı kalıc
 
 ---
 
-## 🔐 GitHub Actions Kalıcı Release İmzalama Yapılandırması
+## 🛠️ GitHub Actions APK Derleme Yapılandırması
 
-`release-apk.yml` iş akışı keystore dosyasını repodan okumaz; yalnızca **GitHub Repository Secrets** üzerinden alır:
+`release-apk.yml` iş akışı varsayılan olarak projedeki `debug.keystore.base64` anahtarını kullanır; böylece hiçbir ek keystore secret'ı gerektirmeden Google AI Studio ile %100 aynı imzaya sahip APK üretir. İstenirse ileride Play Store yayını için `KEYSTORE_BASE64`, `KEYSTORE_PASSWORD`, `KEY_ALIAS` ve `KEY_PASSWORD` secret'ları eklenerek özel release keystore'a da geçilebilir.
 
-| Secret Adı | Açıklama |
-|---|---|
-| `KEYSTORE_BASE64` | Kalıcı `.jks` keystore dosyasının Base64 çıktısı |
-| `KEYSTORE_PASSWORD` | Keystore parolası (`storePassword`) |
-| `KEY_ALIAS` | Anahtar takma adı (`alias`) |
-| `KEY_PASSWORD` | Anahtar parolası (`keyPassword`) |
-| `GOOGLE_SERVICES_JSON` | Firebase yapılandırması (`app/google-services.json`) |
+Gerekli temel secret:
+- `GOOGLE_SERVICES_JSON`: Firebase yapılandırması (`app/google-services.json`)
 
 ---
 

@@ -123,7 +123,7 @@ jobs:
           print(f".env hazırlandı ({len(lines)} geçerli değişken eklendi).")
           PY
 
-      - name: Setup Permanent Release Keystore
+      - name: Setup Unified Signing Keystore
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
@@ -134,30 +134,29 @@ jobs:
         run: |
           RESOLVED_STORE_PASS="${KEYSTORE_PASSWORD:-$LEGACY_STORE_PASSWORD}"
           RESOLVED_KEY_PASS="${KEY_PASSWORD:-$LEGACY_KEY_PASSWORD}"
-          RESOLVED_ALIAS="${KEY_ALIAS:-upload}"
-
-          if [ -z "$KEYSTORE_BASE64" ] || [ -z "$RESOLVED_STORE_PASS" ] || [ -z "$RESOLVED_KEY_PASS" ]; then
-            echo "=== GitHub Actions Keystore Secrets Durumu ==="
-            [ -n "$KEYSTORE_BASE64" ] && echo "  [OK] KEYSTORE_BASE64: TANIMLI" || echo "  [X] KEYSTORE_BASE64: EKSİK"
-            [ -n "$RESOLVED_STORE_PASS" ] && echo "  [OK] KEYSTORE_PASSWORD: TANIMLI" || echo "  [X] KEYSTORE_PASSWORD: EKSİK"
-            [ -n "$KEY_ALIAS" ] && echo "  [OK] KEY_ALIAS: TANIMLI" || echo "  [!] KEY_ALIAS: EKSİK (varsayılan 'upload' veya kendi alias'ınız)"
-            [ -n "$RESOLVED_KEY_PASS" ] && echo "  [OK] KEY_PASSWORD: TANIMLI" || echo "  [X] KEY_PASSWORD: EKSİK"
-            echo "::error::Kalıcı release imza bilgileri eksik! Lütfen GitHub Secrets (https://github.com/${GITHUB_REPOSITORY}/settings/secrets/actions) bölümüne KEYSTORE_BASE64, KEYSTORE_PASSWORD, KEY_ALIAS ve KEY_PASSWORD ekleyin."
-            exit 1
-          fi
-
-          if [ -z "$KEY_ALIAS" ]; then
-            echo "::warning::KEY_ALIAS secret tanımlı değil; varsayılan olarak 'upload' kullanılıyor. Keystore alias'ınız farklıysa KEY_ALIAS secret'ını ekleyin."
-          fi
-
-          echo "::add-mask::$RESOLVED_STORE_PASS"
-          echo "::add-mask::$RESOLVED_KEY_PASS"
-
           KEYSTORE_TMP="${RUNNER_TEMP:-/tmp}/release-upload-key.jks"
           rm -f "$KEYSTORE_TMP"
 
-          if ! printf '%s' "$KEYSTORE_BASE64" | tr -d '[:space:]' | base64 --decode > "$KEYSTORE_TMP"; then
-            echo "::error::KEYSTORE_BASE64 geçerli bir Base64 keystore verisi değil!"
+          if [ -n "$KEYSTORE_BASE64" ] && [ -n "$RESOLVED_STORE_PASS" ] && [ -n "$RESOLVED_KEY_PASS" ]; then
+            echo "Özel GitHub Secrets release keystore kullanılıyor..."
+            RESOLVED_ALIAS="${KEY_ALIAS:-upload}"
+            echo "::add-mask::$RESOLVED_STORE_PASS"
+            echo "::add-mask::$RESOLVED_KEY_PASS"
+            if ! printf '%s' "$KEYSTORE_BASE64" | tr -d '[:space:]' | base64 --decode > "$KEYSTORE_TMP"; then
+              echo "::error::KEYSTORE_BASE64 geçerli bir Base64 keystore verisi değil!"
+              exit 1
+            fi
+          elif [ -s "debug.keystore.base64" ]; then
+            echo "Birleşik AI Studio & GitHub APK imzalama anahtarı (debug.keystore.base64) kullanılıyor..."
+            RESOLVED_STORE_PASS="android"
+            RESOLVED_KEY_PASS="android"
+            RESOLVED_ALIAS="androiddebugkey"
+            if ! tr -d '[:space:]' < debug.keystore.base64 | base64 --decode > "$KEYSTORE_TMP"; then
+              echo "::error::debug.keystore.base64 çözümlenemedi!"
+              exit 1
+            fi
+          else
+            echo "::error::Ne KEYSTORE_BASE64 secret'ı ne de debug.keystore.base64 bulundu!"
             exit 1
           fi
 

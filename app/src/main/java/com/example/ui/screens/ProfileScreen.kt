@@ -329,7 +329,7 @@ fun ProfileScreen(
                     color = Color(0xFF94A3B8)
                 )
 
-                val isDebugSig = remember { mgr.isRunningAiStudioDebugSignature() }
+                val isUnifiedSig = remember { mgr.isRunningAiStudioDebugSignature() }
                 val certShort = remember { mgr.getInstalledSigningCertSha256Short() }
 
                 Surface(
@@ -344,13 +344,13 @@ fun ProfileScreen(
                             color = ElectricBlue
                         )
                         Text(
-                            text = if (isDebugSig) {
-                                "İmza: AI Studio Test ($certShort) • Kalıcı güncelleme için GitHub Release APK kurun"
+                            text = if (isUnifiedSig) {
+                                "İmza: Birleşik APK Anahtarı ($certShort) • AI Studio & GitHub Uyumlu"
                             } else {
-                                "İmza: Release ($certShort)"
+                                "İmza Parmak İzi: $certShort"
                             },
                             fontSize = 10.sp,
-                            color = if (isDebugSig) Color(0xFFF59E0B) else Color(0xFF10B981),
+                            color = if (isUnifiedSig) Color(0xFF10B981) else Color(0xFFF59E0B),
                             fontWeight = FontWeight.Medium
                         )
                     }
