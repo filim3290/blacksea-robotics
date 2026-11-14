@@ -50,32 +50,47 @@ jobs:
           GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
           GOOGLE_SERVICES_JSON_BASE64: ${{ secrets.GOOGLE_SERVICES_JSON_BASE64 }}
         run: |
+          mkdir -p app
           if [ -n "$GOOGLE_SERVICES_JSON_BASE64" ]; then
             echo "GOOGLE_SERVICES_JSON_BASE64 secret kullanılıyor..."
-            echo "$GOOGLE_SERVICES_JSON_BASE64" | base64 --decode > app/google-services.json
+            if ! printf '%s' "$GOOGLE_SERVICES_JSON_BASE64" | tr -d '[:space:]' | base64 --decode > app/google-services.json; then
+              echo "::error::GOOGLE_SERVICES_JSON_BASE64 geçerli bir Base64 metni değil! Lütfen google-services.json dosyasını doğru Base64 formatında ekleyin veya doğrudan GOOGLE_SERVICES_JSON secret'ını kullanın."
+              exit 1
+            fi
           elif [ -n "$GOOGLE_SERVICES_JSON" ]; then
             echo "GOOGLE_SERVICES_JSON secret kullanılıyor..."
             printf '%s' "$GOOGLE_SERVICES_JSON" > app/google-services.json
           fi
 
-          if [ ! -f "app/google-services.json" ]; then
-            echo "::error::app/google-services.json dosyası bulunamadı! Google Sign-In (default_web_client_id) ve Firebase için app/google-services.json dosyasını repoya ekleyin veya GitHub Secrets içine GOOGLE_SERVICES_JSON_BASE64 / GOOGLE_SERVICES_JSON ekleyin."
+          if [ ! -s "app/google-services.json" ]; then
+            echo "::error::app/google-services.json dosyası repoda bulunamadı ve GitHub Secrets (GOOGLE_SERVICES_JSON / GOOGLE_SERVICES_JSON_BASE64) tanımlı değil!"
+            echo "Çözüm 1: GitHub > Settings > Secrets and variables > Actions bölümüne GOOGLE_SERVICES_JSON secret'ı olarak google-services.json içeriğini ekleyin."
+            echo "Çözüm 2: Base64 kullanmak isterseniz GOOGLE_SERVICES_JSON_BASE64 secret'ını ekleyin."
+            echo "Çözüm 3: app/google-services.json dosyasını doğrudan GitHub reposunun app/ klasörüne yükleyin."
             exit 1
           fi
 
           python3 - <<'PY'
           import json, sys
-          with open("app/google-services.json", "r", encoding="utf-8") as f:
-              data = json.load(f)
+          try:
+              with open("app/google-services.json", "r", encoding="utf-8") as f:
+                  data = json.load(f)
+          except Exception as e:
+              print(f"::error::app/google-services.json geçerli bir JSON dosyası değil: {e}", file=sys.stderr)
+              sys.exit(1)
+
           clients = data.get("client", [])
           pkg = "com.aistudio.blacksearobotics.kxnqpv"
           matched = [c for c in clients if c.get("client_info", {}).get("android_client_info", {}).get("package_name") == pkg]
           if not matched:
               print(f"::error::app/google-services.json içinde '{pkg}' paket adı bulunamadı!", file=sys.stderr)
               sys.exit(1)
-          web_clients = [o for o in matched[0].get("oauth_client", []) if o.get("client_type") == 3]
+
+          oauth_clients = matched[0].get("oauth_client", [])
+          invite_clients = matched[0].get("services", {}).get("appinvite_service", {}).get("other_platform_oauth_client", [])
+          web_clients = [o for o in (oauth_clients + invite_clients) if o.get("client_type") == 3]
           if not web_clients:
-              print("::error::app/google-services.json içinde client_type=3 (default_web_client_id için Web Client ID) eksik!", file=sys.stderr)
+              print("::error::app/google-services.json içinde client_type=3 (default_web_client_id için Web Client ID) eksik! Firebase Console üzerinden Web/Google Sign-In yapılandırıp güncel google-services.json indirin.", file=sys.stderr)
               sys.exit(1)
           print(f"Firebase doğrulandı: package={pkg}, web_client_id={web_clients[0].get('client_id')}")
           PY
