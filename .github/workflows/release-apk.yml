@@ -96,10 +96,33 @@ jobs:
           PY
 
       - name: Prepare Secrets & Environment (.env)
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          FIREBASE_APPCHECK_DEBUG_TOKEN: ${{ secrets.FIREBASE_APPCHECK_DEBUG_TOKEN }}
         run: |
-          touch .env
-          echo "GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}" >> .env
-          echo "FIREBASE_APPCHECK_DEBUG_TOKEN=${{ secrets.FIREBASE_APPCHECK_DEBUG_TOKEN }}" >> .env
+          python3 - <<'PY'
+          import os
+
+          def sanitize_for_properties(val: str) -> str:
+              val = val.replace("\r", "").replace("\n", "").strip()
+              if len(val) >= 2 and ((val[0] == '"' and val[-1] == '"') or (val[0] == "'" and val[-1] == "'")):
+                  val = val[1:-1].strip()
+              # Prevent special characters from breaking Java String literals in BuildConfig.java
+              val = val.replace("\\", "\\\\").replace('"', '\\"')
+              return val
+
+          lines = []
+          for key in ("GEMINI_API_KEY", "FIREBASE_APPCHECK_DEBUG_TOKEN"):
+              raw = os.environ.get(key, "")
+              cleaned = sanitize_for_properties(raw)
+              if cleaned:
+                  lines.append(f"{key}={cleaned}")
+
+          with open(".env", "w", encoding="utf-8") as f:
+              if lines:
+                  f.write("\n".join(lines) + "\n")
+          print(f".env hazırlandı ({len(lines)} geçerli değişken eklendi).")
+          PY
 
       - name: Setup Keystores
         env:
