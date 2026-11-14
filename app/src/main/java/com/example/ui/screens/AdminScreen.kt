@@ -660,8 +660,18 @@ fun AdminScreen(
                                             }
                                         },
                                         dismissButton = {
-                                            TextButton(onClick = { showRepoEditDialog = false }) {
-                                                Text("İptal")
+                                            Row {
+                                                TextButton(onClick = {
+                                                    mgr.resetToDefaultRepo()
+                                                    repoOwnerInput = mgr.githubOwner
+                                                    repoNameInput = mgr.githubRepo
+                                                    Toast.makeText(context, "Varsayılan depo geri yüklendi!", Toast.LENGTH_SHORT).show()
+                                                }) {
+                                                    Text("Varsayılana Sıfırla", color = PhoenixAmber)
+                                                }
+                                                TextButton(onClick = { showRepoEditDialog = false }) {
+                                                    Text("İptal")
+                                                }
                                             }
                                         }
                                     )
@@ -748,6 +758,34 @@ fun AdminScreen(
                                     ) {
                                         Text("Yeni Sürüm Yayınla", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color.Black)
                                     }
+                                }
+
+                                OutlinedButton(
+                                    onClick = {
+                                        scope.launch {
+                                            val res = mgr.resolvePublicDownloadUrl()
+                                            res.fold(
+                                                onSuccess = { targetUrl ->
+                                                    try {
+                                                        val browserIntent = android.content.Intent(
+                                                            android.content.Intent.ACTION_VIEW,
+                                                            android.net.Uri.parse(targetUrl)
+                                                        )
+                                                        context.startActivity(browserIntent)
+                                                    } catch (e: Exception) {
+                                                        Toast.makeText(context, "Tarayıcı açılamadı.", Toast.LENGTH_SHORT).show()
+                                                    }
+                                                },
+                                                onFailure = { err ->
+                                                    Toast.makeText(context, err.message ?: "Releases sayfası doğrulanamadı.", Toast.LENGTH_LONG).show()
+                                                }
+                                            )
+                                        }
+                                    },
+                                    modifier = Modifier.fillMaxWidth().height(40.dp),
+                                    shape = RoundedCornerShape(10.dp)
+                                ) {
+                                    Text("GitHub Releases Sayfasını Aç", fontSize = 12.sp, color = Color(0xFF10B981), fontWeight = FontWeight.SemiBold)
                                 }
                             }
                         }
@@ -867,11 +905,11 @@ fun AdminScreen(
 
     // Broadcast Update Dialog
     if (showBroadcastUpdateDialog) {
-        var vName by remember { mutableStateOf("1.0.4") }
-        var vCodeStr by remember { mutableStateOf("${updateManager?.getCurrentVersionCode()?.plus(1) ?: 5}") }
-        var vTitle by remember { mutableStateOf("Blacksea Robotics v1.0.4 Yayında") }
-        var vChangelog by remember { mutableStateOf("• Dosya paylaşım motoru tamamen yenilendi (Resim, Video, Ses, Belge, CAD)\n• Otomatik APK güncelleme ve indirme sistemi eklendi\n• Bildirim ve onay başvuru sistemi güçlendirildi") }
-        var vApkUrl by remember { mutableStateOf("https://github.com/${updateManager?.githubOwner ?: "filim3290"}/${updateManager?.githubRepo ?: "blacksea-robotics"}/releases/download/v1.0.4/BlackseaRobotics-v1.0.4.apk") }
+        var vName by remember { mutableStateOf("1.0.5") }
+        var vCodeStr by remember { mutableStateOf("${updateManager?.getCurrentVersionCode()?.plus(1) ?: 6}") }
+        var vTitle by remember { mutableStateOf("Blacksea Robotics v1.0.5 Yayında") }
+        var vChangelog by remember { mutableStateOf("• GitHub Releases bağlantı kararlılığı ve 404 koruması eklendi\n• Otomatik APK güncelleme ve indirme sistemi geliştirildi\n• Bildirim ve onay başvuru sistemi güçlendirildi") }
+        var vApkUrl by remember { mutableStateOf("https://github.com/${updateManager?.githubOwner ?: "filim3290"}/${updateManager?.githubRepo ?: "blacksea-robotics"}/releases/download/v1.0.5/BlackseaRobotics-v1.0.5.apk") }
         var isForce by remember { mutableStateOf(false) }
         var isBroadcasting by remember { mutableStateOf(false) }
 

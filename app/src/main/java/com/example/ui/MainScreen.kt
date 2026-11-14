@@ -256,6 +256,8 @@ fun MainScreen(
                         currentTab = currentTab,
                         repository = repository,
                         currentUserProfile = currentUserProfile,
+                        updateManager = updateManager,
+                        onShowUpdateDialog = onShowUpdateDialog,
                         selectedRoomIdForNavigation = selectedRoomIdForNavigation,
                         onNavigateToRoom = { roomId ->
                             selectedRoomIdForNavigation = roomId

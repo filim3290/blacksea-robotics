@@ -2,6 +2,7 @@ package com.example
 
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
@@ -31,6 +32,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -38,7 +40,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.app.NotificationManagerCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.google.firebase.firestore.snapshots
+import kotlinx.coroutines.launch
 import com.example.data.BlackseaRepository
 import com.example.ui.MainScreen
 import com.example.ui.screens.AuthScreen
@@ -128,7 +134,48 @@ fun AppContent(repository: BlackseaRepository) {
         }
     }
 
-    // Check updates and notification permissions on app launch
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val scope = rememberCoroutineScope()
+
+    suspend fun performUpdateCheckAndNotify() {
+        val updateResult = updateManager.checkLatestRelease(forceRefresh = false)
+        val update = updateResult.getOrNull()
+        if (update != null && update.versionCode > updateManager.getCurrentVersionCode() && !updateManager.hasInstalledVersion(update.versionCode)) {
+            availableUpdate = update
+
+            // Dispatch a local system notification ONCE for this new version
+            if (!updateManager.hasNotifiedForVersion(update.versionCode)) {
+                try {
+                    if (NotificationManagerCompat.from(context).areNotificationsEnabled()) {
+                        val tapIntent = Intent(context, MainActivity::class.java).apply {
+                            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                            putExtra("open_update_dialog", true)
+                        }
+                        val pendingIntent = PendingIntent.getActivity(
+                            context,
+                            1001,
+                            tapIntent,
+                            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                        )
+                        val notifManager = context.getSystemService(NotificationManager::class.java)
+                        val builder = androidx.core.app.NotificationCompat.Builder(context, "bsr_updates")
+                            .setSmallIcon(R.mipmap.ic_launcher)
+                            .setContentTitle("🔔 Yeni Güncelleme Mevcut")
+                            .setContentText("Blacksea Robotics için yeni bir sürüm (v${update.versionName}) yayınlandı.")
+                            .setPriority(androidx.core.app.NotificationCompat.PRIORITY_HIGH)
+                            .setContentIntent(pendingIntent)
+                            .setAutoCancel(true)
+                        notifManager?.notify(1001, builder.build())
+                        updateManager.markVersionNotified(update.versionCode)
+                    }
+                } catch (e: Exception) {
+                    Log.w("MainActivity", "Failed to trigger system notification: ${e.message}")
+                }
+            }
+        }
+    }
+
+    // Check updates on app launch and listen to Firestore real-time updates
     LaunchedEffect(Unit) {
         val enabled = NotificationManagerCompat.from(context).areNotificationsEnabled()
         if (!enabled) {
@@ -139,31 +186,7 @@ fun AppContent(repository: BlackseaRepository) {
             }
         }
 
-        // Automatic Update check (Firestore & GitHub Releases)
-        val updateResult = updateManager.checkLatestRelease(forceRefresh = false)
-        val update = updateResult.getOrNull()
-        if (update != null && update.versionCode > updateManager.getCurrentVersionCode() && !updateManager.hasInstalledVersion(update.versionCode)) {
-            availableUpdate = update
-
-            // Dispatch a local system notification ONCE for this new version
-            if (!updateManager.hasNotifiedForVersion(update.versionCode)) {
-                try {
-                    if (NotificationManagerCompat.from(context).areNotificationsEnabled()) {
-                        val notifManager = context.getSystemService(NotificationManager::class.java)
-                        val builder = androidx.core.app.NotificationCompat.Builder(context, "bsr_updates")
-                            .setSmallIcon(R.mipmap.ic_launcher)
-                            .setContentTitle("🔔 Yeni Güncelleme Mevcut")
-                            .setContentText("Blacksea Robotics için yeni bir sürüm (v${update.versionName}) yayınlandı.")
-                            .setPriority(androidx.core.app.NotificationCompat.PRIORITY_HIGH)
-                            .setAutoCancel(true)
-                        notifManager?.notify(1001, builder.build())
-                        updateManager.markVersionNotified(update.versionCode)
-                    }
-                } catch (e: Exception) {
-                    Log.w("MainActivity", "Failed to trigger system notification: ${e.message}")
-                }
-            }
-        }
+        performUpdateCheckAndNotify()
 
         // Real-time listener for Firestore app_config/latest_update
         try {
@@ -181,7 +204,7 @@ fun AppContent(repository: BlackseaRepository) {
                                 title = doc.getString("title") ?: "Yeni Güncelleme Mevcut",
                                 changelog = doc.getString("changelog") ?: "• Yeni dosya paylaşım sistemi (Resim, Video, Ses, CAD)\n• Otomatik APK güncelleme sistemi\n• Hata düzeltmeleri",
                                 publishedAt = doc.getString("publishedAt") ?: "Bugün",
-                                apkDownloadUrl = doc.getString("apkDownloadUrl") ?: "https://github.com/${updateManager.githubOwner}/${updateManager.githubRepo}/releases/download/v$vName/BlackseaRobotics-v$vName.apk",
+                                apkDownloadUrl = updateManager.normalizeDownloadUrl(doc.getString("apkDownloadUrl"), vName),
                                 apkFileName = doc.getString("apkFileName") ?: "BlackseaRobotics-v$vName.apk",
                                 apkSize = doc.getLong("apkSize") ?: (29 * 1024 * 1024L),
                                 expectedSha256 = doc.getString("expectedSha256") ?: "",
@@ -193,6 +216,28 @@ fun AppContent(repository: BlackseaRepository) {
                 }
         } catch (e: Exception) {
             Log.w("MainActivity", "Live update stream error: ${e.message}")
+        }
+    }
+
+    // Check updates after user logs in
+    LaunchedEffect(isAuthCompleted) {
+        if (isAuthCompleted) {
+            performUpdateCheckAndNotify()
+        }
+    }
+
+    // Check updates when returning from background (uses 15-min cache)
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                scope.launch {
+                    performUpdateCheckAndNotify()
+                }
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
         }
     }
 

@@ -45,6 +45,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -61,6 +62,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.example.ui.theme.ElectricBlue
 import com.example.ui.theme.PhoenixAmber
 import com.example.update.AppReleaseInfo
@@ -77,10 +81,32 @@ fun AppUpdateDialog(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    val lifecycleOwner = LocalLifecycleOwner.current
 
     var downloadState by remember { mutableStateOf<UpdateDownloadState>(UpdateDownloadState.Idle) }
     var downloadedApkFile by remember { mutableStateOf<File?>(null) }
     var showPermissionAlert by remember { mutableStateOf(false) }
+
+    DisposableEffect(lifecycleOwner, showPermissionAlert, downloadedApkFile) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME && showPermissionAlert && updateManager.canInstallApks()) {
+                showPermissionAlert = false
+                downloadedApkFile?.let { file ->
+                    updateManager.markVersionInstalled(releaseInfo.versionCode)
+                    val res = updateManager.installApk(file)
+                    if (res.isFailure) {
+                        Toast.makeText(context, "Kurulum başlatılamadı: ${res.exceptionOrNull()?.message}", Toast.LENGTH_LONG).show()
+                    } else {
+                        onDismiss()
+                    }
+                }
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
+    }
 
     Dialog(
         onDismissRequest = {
@@ -257,7 +283,11 @@ fun AppUpdateDialog(
                                         downloadedApkFile = file
                                         // Attempt installation
                                         if (updateManager.canInstallApks()) {
-                                            updateManager.installApk(file)
+                                            updateManager.markVersionInstalled(releaseInfo.versionCode)
+                                            val installRes = updateManager.installApk(file)
+                                            if (installRes.isFailure) {
+                                                Toast.makeText(context, "Kurulum başlatılamadı: ${installRes.exceptionOrNull()?.message}", Toast.LENGTH_LONG).show()
+                                            }
                                         } else {
                                             showPermissionAlert = true
                                         }
@@ -338,10 +368,14 @@ fun AppUpdateDialog(
                             Button(
                                 onClick = {
                                     val file = downloadedApkFile ?: state.apkFile
-                                    updateManager.markVersionInstalled(releaseInfo.versionCode)
                                     if (updateManager.canInstallApks()) {
-                                        updateManager.installApk(file)
-                                        onDismiss()
+                                        updateManager.markVersionInstalled(releaseInfo.versionCode)
+                                        val installRes = updateManager.installApk(file)
+                                        if (installRes.isFailure) {
+                                            Toast.makeText(context, "Kurulum başlatılamadı: ${installRes.exceptionOrNull()?.message}", Toast.LENGTH_LONG).show()
+                                        } else {
+                                            onDismiss()
+                                        }
                                     } else {
                                         showPermissionAlert = true
                                     }

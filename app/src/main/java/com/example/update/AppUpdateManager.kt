@@ -49,17 +49,80 @@ class AppUpdateManager(private val context: Context) {
 
     private val prefs = context.getSharedPreferences("bsr_update_prefs", Context.MODE_PRIVATE)
 
+    companion object {
+        const val DEFAULT_GITHUB_OWNER = "filim3290"
+        const val DEFAULT_GITHUB_REPO = "blacksea-robotics"
+        private const val REPO_MIGRATION_VERSION = 2
+        private val LEGACY_OWNERS = setOf("baslider52-ui", "mehmetilkerbas", "filmi3290")
+        private val LEGACY_REPOS = setOf("filmi3290", "blacksearobotics", "blacksea_robotics")
+    }
+
+    init {
+        val currentMigration = prefs.getInt("repo_migration_version", 0)
+        val savedOwner = prefs.getString("github_owner", null)?.trim().orEmpty()
+        val savedRepo = prefs.getString("github_repo", null)?.trim().orEmpty()
+        val isLegacyOwner = savedOwner.lowercase() in LEGACY_OWNERS
+        val isLegacyRepo = savedRepo.lowercase() in LEGACY_REPOS
+
+        if (currentMigration < REPO_MIGRATION_VERSION || isLegacyOwner || isLegacyRepo) {
+            prefs.edit()
+                .putString("github_owner", DEFAULT_GITHUB_OWNER)
+                .putString("github_repo", DEFAULT_GITHUB_REPO)
+                .putInt("repo_migration_version", REPO_MIGRATION_VERSION)
+                .remove("cached_release_json")
+                .remove("last_check_timestamp")
+                .apply()
+        }
+    }
+
     var githubOwner: String
-        get() = prefs.getString("github_owner", "filim3290") ?: "filim3290"
-        set(value) = prefs.edit().putString("github_owner", value.trim()).apply()
+        get() {
+            val v = prefs.getString("github_owner", DEFAULT_GITHUB_OWNER)?.trim().orEmpty()
+            return if (v.isBlank() || v.lowercase() in LEGACY_OWNERS) DEFAULT_GITHUB_OWNER else v
+        }
+        set(value) {
+            prefs.edit()
+                .putString("github_owner", value.trim().ifBlank { DEFAULT_GITHUB_OWNER })
+                .remove("cached_release_json")
+                .remove("last_check_timestamp")
+                .apply()
+        }
 
     var githubRepo: String
-        get() = prefs.getString("github_repo", "blacksea-robotics") ?: "blacksea-robotics"
-        set(value) = prefs.edit().putString("github_repo", value.trim()).apply()
+        get() {
+            val v = prefs.getString("github_repo", DEFAULT_GITHUB_REPO)?.trim().orEmpty()
+            return if (v.isBlank() || v.lowercase() in LEGACY_REPOS) DEFAULT_GITHUB_REPO else v
+        }
+        set(value) {
+            prefs.edit()
+                .putString("github_repo", value.trim().ifBlank { DEFAULT_GITHUB_REPO })
+                .remove("cached_release_json")
+                .remove("last_check_timestamp")
+                .apply()
+        }
 
     var githubToken: String
         get() = prefs.getString("github_token", "") ?: ""
         set(value) = prefs.edit().putString("github_token", value.trim()).apply()
+
+    fun resetToDefaultRepo() {
+        prefs.edit()
+            .putString("github_owner", DEFAULT_GITHUB_OWNER)
+            .putString("github_repo", DEFAULT_GITHUB_REPO)
+            .putInt("repo_migration_version", REPO_MIGRATION_VERSION)
+            .remove("cached_release_json")
+            .remove("last_check_timestamp")
+            .apply()
+    }
+
+    fun normalizeDownloadUrl(rawUrl: String?, versionName: String): String {
+        val defaultUrl = "https://github.com/$githubOwner/$githubRepo/releases/download/v$versionName/BlackseaRobotics-v$versionName.apk"
+        if (rawUrl.isNullOrBlank()) return defaultUrl
+        val lower = rawUrl.lowercase()
+        val hasLegacyRef = LEGACY_OWNERS.any { lower.contains("/$it/") } ||
+            LEGACY_REPOS.any { lower.contains("/$it/") }
+        return if (hasLegacyRef) defaultUrl else rawUrl
+    }
 
     fun hasNotifiedForVersion(versionCode: Int): Boolean {
         return prefs.getInt("last_notified_version", 0) >= versionCode
@@ -182,15 +245,16 @@ class AppUpdateManager(private val context: Context) {
                 val vCode = doc.getLong("versionCode")?.toInt() ?: 0
                 // Strictly greater than current installed version and not already installed
                 if (vCode > currentCode && !hasInstalledVersion(vCode)) {
+                    val vName = doc.getString("versionName") ?: "1.0.5"
                     val firestoreRelease = AppReleaseInfo(
-                        tagName = doc.getString("tagName") ?: "v${doc.getString("versionName") ?: "1.0.5"}",
-                        versionName = doc.getString("versionName") ?: "1.0.5",
+                        tagName = doc.getString("tagName") ?: "v$vName",
+                        versionName = vName,
                         versionCode = vCode,
-                        title = doc.getString("title") ?: "Blacksea Robotics v${doc.getString("versionName") ?: "1.0.5"} Yayında",
+                        title = doc.getString("title") ?: "Blacksea Robotics v$vName Yayında",
                         changelog = doc.getString("changelog") ?: "• Yeni dosya paylaşım sistemi (Resim, Video, Ses, CAD)\n• Otomatik APK güncelleme sistemi\n• Hata düzeltmeleri",
                         publishedAt = doc.getString("publishedAt") ?: "Bugün",
-                        apkDownloadUrl = doc.getString("apkDownloadUrl") ?: "https://github.com/$githubOwner/$githubRepo/releases/download/v${doc.getString("versionName") ?: "1.0.5"}/BlackseaRobotics-v${doc.getString("versionName") ?: "1.0.5"}.apk",
-                        apkFileName = doc.getString("apkFileName") ?: "BlackseaRobotics-v${doc.getString("versionName") ?: "1.0.5"}.apk",
+                        apkDownloadUrl = normalizeDownloadUrl(doc.getString("apkDownloadUrl"), vName),
+                        apkFileName = doc.getString("apkFileName") ?: "BlackseaRobotics-v$vName.apk",
                         apkSize = doc.getLong("apkSize") ?: (29 * 1024 * 1024L),
                         expectedSha256 = doc.getString("expectedSha256") ?: "",
                         isForceUpdate = doc.getBoolean("isForceUpdate") ?: false
@@ -206,7 +270,7 @@ class AppUpdateManager(private val context: Context) {
                         "tagName" to "v${getCurrentVersionName()}",
                         "title" to "Blacksea Robotics v${getCurrentVersionName()}",
                         "changelog" to "Güncel kararlı sürüm.",
-                        "apkDownloadUrl" to "https://github.com/$githubOwner/$githubRepo/releases/latest",
+                        "apkDownloadUrl" to "https://github.com/$githubOwner/$githubRepo/releases",
                         "apkFileName" to "BlackseaRobotics-v${getCurrentVersionName()}.apk",
                         "apkSize" to (29 * 1024 * 1024L),
                         "isForceUpdate" to false,
@@ -250,31 +314,99 @@ class AppUpdateManager(private val context: Context) {
                 reqBuilder.header("Authorization", "Bearer $githubToken")
             }
 
-            val response = httpClient.newCall(reqBuilder.build()).execute()
-            if (!response.isSuccessful) {
-                if (response.code == 404) {
-                    return@withContext Result.success(null)
+            httpClient.newCall(reqBuilder.build()).execute().use { response ->
+                if (!response.isSuccessful) {
+                    if (response.code == 404) {
+                        return@withContext Result.success(null)
+                    }
+                    return@withContext Result.failure(Exception("GitHub API yanıtı: ${response.code}"))
                 }
-                return@withContext Result.failure(Exception("GitHub API yanıtı: ${response.code}"))
-            }
 
-            val bodyString = response.body?.string() ?: return@withContext Result.failure(Exception("Boş yanıt alındı"))
-            val jsonObject = JSONObject(bodyString)
+                val bodyString = response.body?.string() ?: return@withContext Result.failure(Exception("Boş yanıt alındı"))
+                val jsonObject = JSONObject(bodyString)
 
-            prefs.edit()
-                .putLong("last_check_timestamp", now)
-                .putString("cached_release_json", bodyString)
-                .apply()
+                prefs.edit()
+                    .putLong("last_check_timestamp", now)
+                    .putString("cached_release_json", bodyString)
+                    .apply()
 
-            val parsed = parseRelease(jsonObject)
-            if (parsed != null && parsed.versionCode > currentCode && !hasInstalledVersion(parsed.versionCode)) {
-                Result.success(parsed)
-            } else {
-                Result.success(null) // Already up to date!
+                val parsed = parseRelease(jsonObject)
+                if (parsed != null && parsed.versionCode > currentCode && !hasInstalledVersion(parsed.versionCode)) {
+                    Result.success(parsed)
+                } else {
+                    Result.success(null) // Already up to date!
+                }
             }
         } catch (e: Exception) {
             Log.e("AppUpdateManager", "Check release error: ${e.message}", e)
             Result.failure(e)
+        }
+    }
+
+    /**
+     * Resolves a verified, non-404 public download or releases URL for sharing and browser opening.
+     */
+    suspend fun resolvePublicDownloadUrl(): Result<String> = withContext(Dispatchers.IO) {
+        try {
+            val latestApiUrl = "https://api.github.com/repos/$githubOwner/$githubRepo/releases/latest"
+            val reqBuilder = Request.Builder()
+                .url(latestApiUrl)
+                .header("Accept", "application/vnd.github.v3+json")
+                .header("User-Agent", "BlackseaRobotics-AndroidApp/${BuildConfig.VERSION_NAME}")
+
+            if (githubToken.isNotBlank()) {
+                reqBuilder.header("Authorization", "Bearer $githubToken")
+            }
+
+            httpClient.newCall(reqBuilder.build()).execute().use { response ->
+                if (response.isSuccessful) {
+                    val bodyStr = response.body?.string().orEmpty()
+                    if (bodyStr.isNotBlank()) {
+                        val json = JSONObject(bodyStr)
+                        val parsed = parseRelease(json)
+                        if (parsed != null && parsed.apkDownloadUrl.isNotBlank()) {
+                            return@withContext Result.success(parsed.apkDownloadUrl)
+                        }
+                        val htmlUrl = json.optString("html_url", "")
+                        if (htmlUrl.isNotBlank()) {
+                            return@withContext Result.success(htmlUrl)
+                        }
+                    }
+                    return@withContext Result.success("https://github.com/$githubOwner/$githubRepo/releases")
+                }
+            }
+
+            // If /releases/latest returned 404 (no release yet OR private repo), check repo root accessibility
+            val repoApiUrl = "https://api.github.com/repos/$githubOwner/$githubRepo"
+            val repoReq = Request.Builder()
+                .url(repoApiUrl)
+                .header("Accept", "application/vnd.github.v3+json")
+                .header("User-Agent", "BlackseaRobotics-AndroidApp/${BuildConfig.VERSION_NAME}")
+                .apply {
+                    if (githubToken.isNotBlank()) header("Authorization", "Bearer $githubToken")
+                }
+                .build()
+
+            httpClient.newCall(repoReq).execute().use { repoRes ->
+                if (repoRes.isSuccessful) {
+                    val repoJson = JSONObject(repoRes.body?.string().orEmpty())
+                    val isPrivate = repoJson.optBoolean("private", false)
+                    if (isPrivate) {
+                        return@withContext Result.failure(
+                            Exception("Depo ($githubOwner/$githubRepo) şu anda gizli (Private). Herkese açık yapmak için GitHub Settings > Danger Zone'dan Public yapın.")
+                        )
+                    }
+                    // Repo is public, just has no published release yet -> open /releases instead of /releases/latest (which 404s)
+                    return@withContext Result.success("https://github.com/$githubOwner/$githubRepo/releases")
+                } else {
+                    return@withContext Result.failure(
+                        Exception("GitHub deposu bulunamadı veya gizli (Private): https://github.com/$githubOwner/$githubRepo")
+                    )
+                }
+            }
+        } catch (e: Exception) {
+            Log.e("AppUpdateManager", "resolvePublicDownloadUrl error: ${e.message}")
+            Result.failure(Exception("GitHub'a erişilemedi. İnternet bağlantınızı kontrol edin."))
         }
     }
 
@@ -284,13 +416,16 @@ class AppUpdateManager(private val context: Context) {
     suspend fun fetchReleaseHistory(): Result<List<AppReleaseInfo>> = withContext(Dispatchers.IO) {
         val url = "https://api.github.com/repos/$githubOwner/$githubRepo/releases?per_page=10"
         try {
-            val request = Request.Builder()
+            val reqBuilder = Request.Builder()
                 .url(url)
                 .header("Accept", "application/vnd.github.v3+json")
                 .header("User-Agent", "BlackseaRobotics-AndroidApp/${BuildConfig.VERSION_NAME}")
-                .build()
 
-            val response = httpClient.newCall(request).execute()
+            if (githubToken.isNotBlank()) {
+                reqBuilder.header("Authorization", "Bearer $githubToken")
+            }
+
+            val response = httpClient.newCall(reqBuilder.build()).execute()
             if (!response.isSuccessful) {
                 return@withContext Result.success(emptyList())
             }
@@ -412,76 +547,85 @@ class AppUpdateManager(private val context: Context) {
         val destinationFile = File(updatesDir, releaseInfo.apkFileName.ifBlank { "update.apk" })
 
         var downloadSuccess = false
+        var lastErrorMsg = ""
+        val isPreviewMode = releaseInfo.title.contains("(Önizleme)", ignoreCase = true)
 
         if (downloadUrl.isNotBlank() && (downloadUrl.startsWith("http://") || downloadUrl.startsWith("https://"))) {
             try {
-                val request = Request.Builder()
+                val reqBuilder = Request.Builder()
                     .url(downloadUrl)
                     .header("User-Agent", "BlackseaRobotics-AndroidApp/${BuildConfig.VERSION_NAME}")
-                    .build()
+                if (githubToken.isNotBlank() && downloadUrl.contains("github.com", ignoreCase = true)) {
+                    reqBuilder.header("Authorization", "Bearer $githubToken")
+                }
 
-                val response = httpClient.newCall(request).execute()
-                if (response.isSuccessful) {
-                    val body = response.body
-                    if (body != null) {
-                        val totalBytes = if (releaseInfo.apkSize > 0) releaseInfo.apkSize else body.contentLength()
-                        var downloadedBytes = 0L
+                httpClient.newCall(reqBuilder.build()).execute().use { response ->
+                    if (response.isSuccessful) {
+                        val body = response.body
+                        if (body != null) {
+                            val totalBytes = if (releaseInfo.apkSize > 0) releaseInfo.apkSize else body.contentLength()
+                            var downloadedBytes = 0L
 
-                        body.byteStream().use { input ->
-                            FileOutputStream(destinationFile).use { output ->
-                                val buffer = ByteArray(8 * 1024)
-                                var read: Int
-                                var lastReportTime = 0L
+                            body.byteStream().use { input ->
+                                FileOutputStream(destinationFile).use { output ->
+                                    val buffer = ByteArray(8 * 1024)
+                                    var read: Int
+                                    var lastReportTime = 0L
 
-                                while (input.read(buffer).also { read = it } != -1) {
-                                    output.write(buffer, 0, read)
-                                    downloadedBytes += read
+                                    while (input.read(buffer).also { read = it } != -1) {
+                                        output.write(buffer, 0, read)
+                                        downloadedBytes += read
 
-                                    val now = System.currentTimeMillis()
-                                    if (now - lastReportTime > 150 || downloadedBytes == totalBytes) {
-                                        lastReportTime = now
-                                        val percent = if (totalBytes > 0) ((downloadedBytes * 100) / totalBytes).toInt().coerceIn(0, 100) else 0
-                                        onProgress(UpdateDownloadState.Downloading(percent, downloadedBytes, totalBytes))
+                                        val now = System.currentTimeMillis()
+                                        if (now - lastReportTime > 150 || downloadedBytes == totalBytes) {
+                                            lastReportTime = now
+                                            val percent = if (totalBytes > 0) ((downloadedBytes * 100) / totalBytes).toInt().coerceIn(0, 100) else 0
+                                            onProgress(UpdateDownloadState.Downloading(percent, downloadedBytes, totalBytes))
+                                        }
                                     }
+                                    output.flush()
                                 }
-                                output.flush()
                             }
+                            downloadSuccess = true
                         }
-                        downloadSuccess = true
+                    } else {
+                        lastErrorMsg = "GitHub üzerinde APK dosyası bulunamadı (HTTP ${response.code}). Lütfen release yayınlandığından ve deponun herkese açık olduğundan emin olun."
+                        Log.w("AppUpdateManager", "Server returned HTTP ${response.code} for $downloadUrl.")
                     }
-                } else {
-                    Log.w("AppUpdateManager", "Server returned HTTP ${response.code} for $downloadUrl. Falling back to local verified package.")
                 }
             } catch (netEx: Exception) {
-                Log.w("AppUpdateManager", "Network download failed (${netEx.message}). Falling back to local verified package.")
+                lastErrorMsg = "İndirme başarısız: ${netEx.message ?: "İnternet bağlantısı kesildi"}"
+                Log.w("AppUpdateManager", "Network download failed (${netEx.message}).")
             }
         }
 
-        // Resilient Fallback: If network URL was 404, unreleased tag, or offline:
-        // Use the actual verified installed APK package so download & install NEVER fails with 404!
+        // Only allow local APK fallback in explicit Preview/Test mode; for real releases, surface honest error so old APK isn't reinstalled!
         if (!downloadSuccess) {
-            val appSourceDir = context.applicationInfo.sourceDir
-            val sourceApk = if (!appSourceDir.isNullOrBlank()) File(appSourceDir) else null
-            if (sourceApk != null && sourceApk.exists()) {
-                val totalBytes = sourceApk.length()
-                var copiedBytes = 0L
-                sourceApk.inputStream().use { input ->
-                    FileOutputStream(destinationFile).use { output ->
-                        val buffer = ByteArray(16 * 1024)
-                        var read: Int
-                        while (input.read(buffer).also { read = it } != -1) {
-                            output.write(buffer, 0, read)
-                            copiedBytes += read
-                            val percent = if (totalBytes > 0) ((copiedBytes * 100) / totalBytes).toInt().coerceIn(0, 100) else 0
-                            onProgress(UpdateDownloadState.Downloading(percent, copiedBytes, totalBytes))
-                            delay(10)
+            if (isPreviewMode) {
+                val appSourceDir = context.applicationInfo.sourceDir
+                val sourceApk = if (!appSourceDir.isNullOrBlank()) File(appSourceDir) else null
+                if (sourceApk != null && sourceApk.exists()) {
+                    val totalBytes = sourceApk.length()
+                    var copiedBytes = 0L
+                    sourceApk.inputStream().use { input ->
+                        FileOutputStream(destinationFile).use { output ->
+                            val buffer = ByteArray(16 * 1024)
+                            var read: Int
+                            while (input.read(buffer).also { read = it } != -1) {
+                                output.write(buffer, 0, read)
+                                copiedBytes += read
+                                val percent = if (totalBytes > 0) ((copiedBytes * 100) / totalBytes).toInt().coerceIn(0, 100) else 0
+                                onProgress(UpdateDownloadState.Downloading(percent, copiedBytes, totalBytes))
+                                delay(10)
+                            }
+                            output.flush()
                         }
-                        output.flush()
                     }
+                    downloadSuccess = true
                 }
-                downloadSuccess = true
-            } else {
-                onProgress(UpdateDownloadState.Error("APK indirilemedi (Sunucu 404 döndü ve yerel paket bulunamadı)."))
+            }
+            if (!downloadSuccess) {
+                onProgress(UpdateDownloadState.Error(lastErrorMsg.ifBlank { "APK indirilemedi. Lütfen internet bağlantınızı kontrol edip tekrar deneyin." }))
                 return@withContext null
             }
         }

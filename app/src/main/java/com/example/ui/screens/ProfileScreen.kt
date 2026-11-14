@@ -20,12 +20,14 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.ExitToApp
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.School
 import androidx.compose.material.icons.filled.Security
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -277,6 +279,8 @@ fun ProfileScreen(
         var releaseHistory by remember { mutableStateOf<List<com.example.update.AppReleaseInfo>>(emptyList()) }
         var isLoadingHistory by remember { mutableStateOf(false) }
 
+        var isResolvingLink by remember { mutableStateOf(false) }
+
         Card(
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(16.dp),
@@ -325,6 +329,19 @@ fun ProfileScreen(
                     color = Color(0xFF94A3B8)
                 )
 
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
+                ) {
+                    Text(
+                        text = "Bağlı Depo: ${mgr.githubOwner}/${mgr.githubRepo}",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = ElectricBlue,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                    )
+                }
+
                 Spacer(modifier = Modifier.height(4.dp))
 
                 Row(
@@ -342,7 +359,11 @@ fun ProfileScreen(
                                         if (release != null) {
                                             onShowUpdateDialog(release)
                                         } else {
-                                            Toast.makeText(context, "Uygulamanız güncel! En son sürümü kullanıyorsunuz.", Toast.LENGTH_SHORT).show()
+                                            Toast.makeText(
+                                                context,
+                                                "Uygulamanız güncel! (v${mgr.getCurrentVersionName()})",
+                                                Toast.LENGTH_SHORT
+                                            ).show()
                                         }
                                     },
                                     onFailure = { err ->
@@ -390,37 +411,74 @@ fun ProfileScreen(
                 ) {
                     OutlinedButton(
                         onClick = {
-                            val downloadUrl = "https://github.com/${mgr.githubOwner}/${mgr.githubRepo}/releases/latest"
-                            val shareIntent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
-                                type = "text/plain"
-                                putExtra(android.content.Intent.EXTRA_SUBJECT, "Blacksea Robotics Android APK İndir")
-                                putExtra(
-                                    android.content.Intent.EXTRA_TEXT,
-                                    "🤖 Blacksea Robotics Android uygulamasını doğrudan indirmek için tıkla:\n$downloadUrl"
+                            if (isResolvingLink) return@OutlinedButton
+                            isResolvingLink = true
+                            scope.launch {
+                                val res = mgr.resolvePublicDownloadUrl()
+                                isResolvingLink = false
+                                res.fold(
+                                    onSuccess = { downloadUrl ->
+                                        try {
+                                            val shareIntent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                                                type = "text/plain"
+                                                putExtra(android.content.Intent.EXTRA_SUBJECT, "Blacksea Robotics Android APK İndir")
+                                                putExtra(
+                                                    android.content.Intent.EXTRA_TEXT,
+                                                    "🤖 Blacksea Robotics Android uygulamasını indirmek için tıkla:\n$downloadUrl"
+                                                )
+                                            }
+                                            context.startActivity(
+                                                android.content.Intent.createChooser(shareIntent, "Uygulama İndirme Bağlantısını Paylaş")
+                                            )
+                                        } catch (e: Exception) {
+                                            Toast.makeText(context, "Paylaşım ekranı açılamadı.", Toast.LENGTH_SHORT).show()
+                                        }
+                                    },
+                                    onFailure = { err ->
+                                        Toast.makeText(context, err.message ?: "İndirme bağlantısı doğrulanamadı.", Toast.LENGTH_LONG).show()
+                                    }
                                 )
                             }
-                            context.startActivity(android.content.Intent.createChooser(shareIntent, "Uygulama İndirme Bağlantısını Paylaş"))
                         },
-                        modifier = Modifier.weight(1f).height(38.dp),
+                        enabled = !isResolvingLink,
+                        modifier = Modifier.weight(1f).height(42.dp).testTag("share_download_link_button"),
                         shape = RoundedCornerShape(10.dp)
                     ) {
-                        Icon(imageVector = Icons.Default.ExitToApp, contentDescription = null, modifier = Modifier.size(16.dp), tint = ElectricBlue)
+                        Icon(imageVector = Icons.Default.Share, contentDescription = null, modifier = Modifier.size(16.dp), tint = ElectricBlue)
                         Spacer(modifier = Modifier.width(6.dp))
                         Text("İndirme Linkini Paylaş", fontSize = 11.sp, color = ElectricBlue)
                     }
 
                     OutlinedButton(
                         onClick = {
-                            val browserIntent = android.content.Intent(
-                                android.content.Intent.ACTION_VIEW,
-                                android.net.Uri.parse("https://github.com/${mgr.githubOwner}/${mgr.githubRepo}/releases/latest")
-                            )
-                            context.startActivity(browserIntent)
+                            if (isResolvingLink) return@OutlinedButton
+                            isResolvingLink = true
+                            scope.launch {
+                                val res = mgr.resolvePublicDownloadUrl()
+                                isResolvingLink = false
+                                res.fold(
+                                    onSuccess = { targetUrl ->
+                                        try {
+                                            val browserIntent = android.content.Intent(
+                                                android.content.Intent.ACTION_VIEW,
+                                                android.net.Uri.parse(targetUrl)
+                                            )
+                                            context.startActivity(browserIntent)
+                                        } catch (e: Exception) {
+                                            Toast.makeText(context, "Tarayıcı açılamadı.", Toast.LENGTH_SHORT).show()
+                                        }
+                                    },
+                                    onFailure = { err ->
+                                        Toast.makeText(context, err.message ?: "Sayfa doğrulanamadı.", Toast.LENGTH_LONG).show()
+                                    }
+                                )
+                            }
                         },
-                        modifier = Modifier.weight(1f).height(38.dp),
+                        enabled = !isResolvingLink,
+                        modifier = Modifier.weight(1f).height(42.dp).testTag("open_web_download_button"),
                         shape = RoundedCornerShape(10.dp)
                     ) {
-                        Icon(imageVector = Icons.Default.Info, contentDescription = null, modifier = Modifier.size(16.dp), tint = Color(0xFF10B981))
+                        Icon(imageVector = Icons.Default.Download, contentDescription = null, modifier = Modifier.size(16.dp), tint = Color(0xFF10B981))
                         Spacer(modifier = Modifier.width(6.dp))
                         Text("Web'den İndir", fontSize = 11.sp, color = Color(0xFF10B981))
                     }
