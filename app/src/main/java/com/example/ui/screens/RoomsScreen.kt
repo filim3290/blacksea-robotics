@@ -3,6 +3,7 @@ package com.example.ui.screens
 import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
@@ -17,7 +18,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -25,6 +26,7 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -33,20 +35,13 @@ import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Download
-import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Mic
-import androidx.compose.material.icons.filled.OpenInNew
-import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Reply
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.UploadFile
-import androidx.compose.material.icons.filled.Visibility
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.layout.ContentScale
-import coil.compose.AsyncImage
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -63,6 +58,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -84,14 +80,13 @@ import com.example.data.BlackseaRepository
 import com.example.model.ChatMessage
 import com.example.model.SharedProjectFile
 import com.example.model.UserProfile
-import com.example.ui.components.CodeSnippetViewer
 import com.example.ui.components.FileUploadProgressDialog
 import com.example.ui.components.InAppFileViewerDialog
+import com.example.ui.components.MediaThumbnailPreview
 import com.example.ui.components.TeamBadge
 import com.example.ui.components.UserRolesRow
 import com.example.ui.components.getFileIcon
 import com.example.ui.components.getFileIconColor
-import com.example.ui.components.openFileExternally
 import com.example.ui.theme.ElectricBlue
 import com.example.ui.theme.PhoenixAmber
 import com.example.util.AudioRecorderManager
@@ -167,6 +162,14 @@ fun RoomsScreen(
         }
     }
 
+    DisposableEffect(Unit) {
+        onDispose {
+            if (isRecordingVoice) {
+                audioRecorder.cancelRecording()
+            }
+        }
+    }
+
     LaunchedEffect(isRecordingVoice) {
         if (isRecordingVoice) {
             recordDurationSeconds = 0
@@ -177,32 +180,46 @@ fun RoomsScreen(
         }
     }
 
-    // Real Device File Picker Launcher
+    fun handlePickedUri(uri: Uri) {
+        pickedFileUri = uri
+        val (name, size) = repository.queryFileMetadata(context, uri)
+        val mimeType = try { context.contentResolver.getType(uri) } catch (_: Exception) { null }
+        val type = repository.detectFileType(name, mimeType)
+        pickedFileName = name
+        pickedFileType = type
+
+        val kb = size / 1024.0
+        val mb = kb / 1024.0
+        pickedFileSizeFormatted = if (mb >= 1.0) {
+            String.format(Locale.US, "%.1f MB", mb)
+        } else if (kb >= 1.0) {
+            String.format(Locale.US, "%.0f KB", kb)
+        } else {
+            "$size B"
+        }
+
+        uploadErrorMessage = if (size > 100L * 1024L * 1024L) {
+            "Dosya boyutu 100 MB sınırını aşıyor."
+        } else {
+            null
+        }
+        uploadProgress = 0
+        isUploadingFile = false
+        showUploadModal = true
+    }
+
+    // Zero-permission Photo & Video Picker Launcher (Google Play Policy compliant)
+    val visualMediaLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia()
+    ) { uri: Uri? ->
+        if (uri != null) handlePickedUri(uri)
+    }
+
+    // General Device File Picker Launcher (PDF, Code, CAD, ZIP, etc.)
     val filePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
     ) { uri: Uri? ->
-        if (uri != null) {
-            pickedFileUri = uri
-            val (name, size) = repository.queryFileMetadata(context, uri)
-            val type = repository.detectFileType(name)
-            pickedFileName = name
-            pickedFileType = type
-
-            val kb = size / 1024.0
-            val mb = kb / 1024.0
-            pickedFileSizeFormatted = if (mb >= 1.0) {
-                String.format(java.util.Locale.US, "%.1f MB", mb)
-            } else if (kb >= 1.0) {
-                String.format(java.util.Locale.US, "%.0f KB", kb)
-            } else {
-                "$size B"
-            }
-
-            uploadErrorMessage = null
-            uploadProgress = 0
-            isUploadingFile = false
-            showUploadModal = true
-        }
+        if (uri != null) handlePickedUri(uri)
     }
 
     // Auto scroll to bottom when new message arrives
@@ -229,6 +246,7 @@ fun RoomsScreen(
     Column(
         modifier = modifier
             .fillMaxSize()
+            .imePadding()
             .testTag("rooms_screen")
     ) {
         // Room Filter Tabs (All rooms are open to everyone!)
@@ -328,7 +346,10 @@ fun RoomsScreen(
                 }
             }
 
-            items(messages, key = { it.id.ifBlank { it.text + it.createdAt?.seconds } }) { message ->
+            itemsIndexed(
+                items = messages,
+                key = { index, msg -> "${msg.id.ifBlank { "msg_${msg.createdAt?.seconds ?: 0}" }}_$index" }
+            ) { _, message ->
                 AnimatedVisibility(
                     visible = true,
                     enter = fadeIn() + slideInVertically(initialOffsetY = { 20 })
@@ -529,6 +550,7 @@ fun RoomsScreen(
                                     } catch (e: Exception) {
                                         Toast.makeText(context, "Ses kaydı gönderilemedi: ${e.message}", Toast.LENGTH_SHORT).show()
                                     } finally {
+                                        file.delete()
                                         isVoiceUploading = false
                                     }
                                 }
@@ -665,16 +687,52 @@ fun RoomsScreen(
             },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text("Cihazınızdaki dosyayı yükleyebilir veya kod bloğu yapıştırabilirsiniz:", fontSize = 13.sp, color = Color(0xFF94A3B8))
+                    Text("Görsel/video galeriden veya tüm cihaz dosyalarından yükleyebilir ya da kod yapıştırabilirsiniz:", fontSize = 13.sp, color = Color(0xFF94A3B8))
 
-                    // Option 1: Real Device File Picker
+                    // Option 1: Zero-permission Photo & Video Picker with Preview
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                showAttachmentOptions = false
+                                visualMediaLauncher.launch(
+                                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)
+                                )
+                            }
+                            .testTag("pick_visual_media_option"),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(14.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            Surface(
+                                shape = CircleShape,
+                                color = Color(0xFF10B981).copy(alpha = 0.15f),
+                                modifier = Modifier.size(40.dp)
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Icon(Icons.Default.PhotoLibrary, contentDescription = null, tint = Color(0xFF10B981), modifier = Modifier.size(22.dp))
+                                }
+                            }
+                            Column {
+                                Text("Fotoğraf / Video Seç", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                                Text("Galeriden önizlemeli fotoğraf veya video paylaşın", fontSize = 11.sp, color = Color(0xFF94A3B8))
+                            }
+                        }
+                    }
+
+                    // Option 2: Real Device File Picker
                     Card(
                         modifier = Modifier
                             .fillMaxWidth()
                             .clickable {
                                 showAttachmentOptions = false
                                 filePickerLauncher.launch("*/*")
-                            },
+                            }
+                            .testTag("pick_any_file_option"),
                         shape = RoundedCornerShape(12.dp),
                         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
                     ) {
@@ -694,12 +752,12 @@ fun RoomsScreen(
                             }
                             Column {
                                 Text("Cihazdan Dosya Seç", fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                                Text("Resim, Video, Ses, PDF, Kod (.py, .cpp, .ino), CAD, ZIP (Maks 100 MB)", fontSize = 11.sp, color = Color(0xFF94A3B8))
+                                Text("PDF, Kod (.py, .cpp, .ino), CAD, ZIP, Ses (Maks 100 MB)", fontSize = 11.sp, color = Color(0xFF94A3B8))
                             }
                         }
                     }
 
-                    // Option 2: Quick Code Snippet / Link Paste
+                    // Option 3: Quick Code Snippet / Link Paste
                     Card(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -790,7 +848,9 @@ fun RoomsScreen(
                             description = "Oda içi paylaşılan dosya ($selectedRoomId)",
                             content = result.textContent,
                             downloadUrl = result.downloadUrl,
-                            storagePath = "",
+                            storagePath = result.storagePath,
+                            thumbnailUrl = result.thumbnailUrl,
+                            mediaDurationMs = result.mediaDurationMs,
                             uploadedByName = currentUserProfile?.getFullName() ?: "Takım Üyesi",
                             uploadedByTeam = currentUserProfile?.team ?: "",
                             uploadedByRoles = currentUserProfile?.roles ?: emptyList()
@@ -807,7 +867,10 @@ fun RoomsScreen(
                             fileName = result.fileName,
                             fileType = result.fileType,
                             fileUrl = result.downloadUrl.ifBlank { result.textContent },
-                            fileSize = result.fileSize
+                            fileSize = result.fileSize,
+                            thumbnailUrl = result.thumbnailUrl,
+                            storagePath = result.storagePath,
+                            mediaDurationMs = result.mediaDurationMs
                         )
 
                         isUploadingFile = false
@@ -954,6 +1017,9 @@ fun MessageItemBubble(
                     fileSize = message.fileSize,
                     content = if (message.fileType == "code" || message.fileType == "text") message.fileUrl else "",
                     downloadUrl = message.fileUrl,
+                    storagePath = message.storagePath,
+                    thumbnailUrl = message.thumbnailUrl,
+                    mediaDurationMs = message.mediaDurationMs,
                     uploadedByName = message.senderName,
                     uploadedByTeam = message.senderTeam
                 )
@@ -969,133 +1035,49 @@ fun MessageItemBubble(
                             downloadFileToDevice(context, message.fileName.ifBlank { "Ses_Kaydı.m4a" }, message.fileUrl)
                         }
                     )
-                } else if (message.fileType == "image" && message.fileUrl.isNotBlank()) {
-                    // INLINE IMAGE PREVIEW with tap to zoom / open full-screen viewer
+                } else if (message.fileType == "image" && (message.fileUrl.isNotBlank() || message.thumbnailUrl.isNotBlank() || message.storagePath.isNotBlank())) {
+                    // INLINE IMAGE PREVIEW with Base64/local support and tap to zoom
                     Spacer(modifier = Modifier.height(8.dp))
-                    Surface(
-                        shape = RoundedCornerShape(12.dp),
-                        color = Color.Black.copy(alpha = 0.2f),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { onOpenFile(projectFile) }
-                    ) {
-                        Box(modifier = Modifier.fillMaxWidth()) {
-                            AsyncImage(
-                                model = message.fileUrl,
-                                contentDescription = message.fileName.ifBlank { "Görsel Önizleme" },
-                                contentScale = ContentScale.Crop,
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .heightIn(min = 140.dp, max = 220.dp)
-                                    .clip(RoundedCornerShape(12.dp))
+                    MediaThumbnailPreview(
+                        mediaType = "image",
+                        mediaUrl = message.fileUrl,
+                        thumbnailUrl = message.thumbnailUrl,
+                        storagePath = message.storagePath,
+                        fileName = message.fileName.ifBlank { "Görsel" },
+                        fileSizeText = projectFile.getFormattedSize(),
+                        height = 190.dp,
+                        onClick = { onOpenFile(projectFile) },
+                        onDownload = {
+                            downloadFileToDevice(
+                                context,
+                                message.fileName.ifBlank { "gorsel.jpg" },
+                                message.fileUrl.ifBlank { message.storagePath }
                             )
-                            // Overlay bar with file name and download button
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .align(Alignment.BottomCenter)
-                                    .background(Color.Black.copy(alpha = 0.6f))
-                                    .padding(horizontal = 8.dp, vertical = 4.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.SpaceBetween
-                            ) {
-                                Text(
-                                    text = message.fileName.ifBlank { "Görsel" },
-                                    fontSize = 11.sp,
-                                    color = Color.White,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                    modifier = Modifier.weight(1f)
-                                )
-                                IconButton(
-                                    onClick = {
-                                        downloadFileToDevice(context, message.fileName.ifBlank { "gorsel.jpg" }, message.fileUrl)
-                                    },
-                                    modifier = Modifier.size(24.dp)
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.Download,
-                                        contentDescription = "Görseli İndir",
-                                        tint = Color.White,
-                                        modifier = Modifier.size(16.dp)
-                                    )
-                                }
-                            }
-                        }
-                    }
-                } else if (message.fileType == "video" && message.fileUrl.isNotBlank()) {
-                    // INLINE VIDEO PREVIEW CARD with play badge and tap to play in-app
+                        },
+                        testTag = "chat_image_preview_${message.id}"
+                    )
+                } else if (message.fileType == "video" && (message.fileUrl.isNotBlank() || message.thumbnailUrl.isNotBlank() || message.storagePath.isNotBlank())) {
+                    // INLINE VIDEO THUMBNAIL PREVIEW with real frame, duration badge, and tap to play in ExoPlayer
                     Spacer(modifier = Modifier.height(8.dp))
-                    Surface(
-                        shape = RoundedCornerShape(12.dp),
-                        color = Color(0xFF0F172A),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { onOpenFile(projectFile) }
-                    ) {
-                        Column(
-                            modifier = Modifier.padding(10.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(110.dp)
-                                    .background(Color(0xFF1E293B), RoundedCornerShape(8.dp)),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Surface(
-                                    shape = CircleShape,
-                                    color = Color(0xFFF43F5E),
-                                    modifier = Modifier.size(44.dp)
-                                ) {
-                                    Box(contentAlignment = Alignment.Center) {
-                                        Icon(
-                                            imageVector = Icons.Default.PlayArrow,
-                                            contentDescription = "Videoyu Oynat",
-                                            tint = Color.White,
-                                            modifier = Modifier.size(28.dp)
-                                        )
-                                    }
-                                }
-                            }
-                            Spacer(modifier = Modifier.height(6.dp))
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.SpaceBetween
-                            ) {
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(
-                                        text = message.fileName.ifBlank { "Video.mp4" },
-                                        fontSize = 12.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        color = Color.White,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-                                    Text(
-                                        text = "Video • Uygulama içinde oynatmak için dokunun",
-                                        fontSize = 10.sp,
-                                        color = Color(0xFF94A3B8)
-                                    )
-                                }
-                                IconButton(
-                                    onClick = {
-                                        downloadFileToDevice(context, message.fileName.ifBlank { "video.mp4" }, message.fileUrl)
-                                    },
-                                    modifier = Modifier.size(28.dp)
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.Download,
-                                        contentDescription = "Videoyu İndir",
-                                        tint = Color.White,
-                                        modifier = Modifier.size(16.dp)
-                                    )
-                                }
-                            }
-                        }
-                    }
+                    MediaThumbnailPreview(
+                        mediaType = "video",
+                        mediaUrl = message.fileUrl,
+                        thumbnailUrl = message.thumbnailUrl,
+                        storagePath = message.storagePath,
+                        fileName = message.fileName.ifBlank { "Video.mp4" },
+                        fileSizeText = projectFile.getFormattedSize(),
+                        durationMs = message.mediaDurationMs,
+                        height = 190.dp,
+                        onClick = { onOpenFile(projectFile) },
+                        onDownload = {
+                            downloadFileToDevice(
+                                context,
+                                message.fileName.ifBlank { "video.mp4" },
+                                message.fileUrl.ifBlank { message.storagePath }
+                            )
+                        },
+                        testTag = "chat_video_preview_${message.id}"
+                    )
                 } else if (message.fileName.isNotBlank()) {
                     // DOCUMENT / CODE / CAD / ZIP PREVIEW CARD
                     Spacer(modifier = Modifier.height(6.dp))

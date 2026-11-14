@@ -19,7 +19,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -99,12 +99,12 @@ fun AdminScreen(
     val allUsers by repository.observeAllUsers().collectAsState(initial = emptyList())
     val announcements by repository.observeAnnouncements().collectAsState(initial = emptyList())
 
-    val pendingUsers = allUsers.filter { it.status == UserStatus.PENDING.value }
-    val approvedUsers = allUsers.filter { it.status != UserStatus.PENDING.value && it.status != UserStatus.REJECTED.value }
+    val pendingUsers = allUsers.filter { UserStatus.isPending(it.status) }
+    val approvedUsers = allUsers.filter { UserStatus.isActive(it.status) }
 
     var selectedTabIndex by remember { mutableIntStateOf(0) }
-    val tabs = remember(pendingUsers.size) {
-        listOf("Kullanıcılar", "Onaylar (${pendingUsers.size})", "Bildirim Gönder", "Duyurular", "Uygulama Güncellemesi")
+    val tabs = remember {
+        listOf("Kullanıcılar", "Onaylar", "Bildirim Gönder", "Duyurular", "Uygulama Güncellemesi")
     }
 
     // Broadcast Notification State
@@ -191,7 +191,10 @@ fun AdminScreen(
                     contentPadding = PaddingValues(vertical = 16.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    items(approvedUsers) { user ->
+                    itemsIndexed(
+                        items = approvedUsers,
+                        key = { index, u -> "${u.userId.ifBlank { u.id }}_$index" }
+                    ) { _, user ->
                         Card(
                             modifier = Modifier.fillMaxWidth(),
                             shape = RoundedCornerShape(12.dp),
@@ -286,7 +289,10 @@ fun AdminScreen(
                         }
                     }
 
-                    items(pendingUsers) { user ->
+                    itemsIndexed(
+                        items = pendingUsers,
+                        key = { index, u -> "${u.userId.ifBlank { u.id }}_$index" }
+                    ) { _, user ->
                         Card(
                             modifier = Modifier.fillMaxWidth(),
                             shape = RoundedCornerShape(12.dp),
@@ -502,7 +508,10 @@ fun AdminScreen(
                         modifier = Modifier.weight(1f),
                         verticalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
-                        items(announcements) { announcement ->
+                        itemsIndexed(
+                            items = announcements,
+                            key = { index, ann -> "${ann.id.ifBlank { ann.title }}_$index" }
+                        ) { _, announcement ->
                             Card(
                                 modifier = Modifier.fillMaxWidth(),
                                 shape = RoundedCornerShape(12.dp),
@@ -913,11 +922,14 @@ fun AdminScreen(
 
     // Broadcast Update Dialog
     if (showBroadcastUpdateDialog) {
-        var vName by remember { mutableStateOf("1.0.5") }
-        var vCodeStr by remember { mutableStateOf("${updateManager?.getCurrentVersionCode()?.plus(1) ?: 6}") }
-        var vTitle by remember { mutableStateOf("Blacksea Robotics v1.0.5 Yayında") }
-        var vChangelog by remember { mutableStateOf("• GitHub Releases bağlantı kararlılığı ve 404 koruması eklendi\n• Otomatik APK güncelleme ve indirme sistemi geliştirildi\n• Bildirim ve onay başvuru sistemi güçlendirildi") }
-        var vApkUrl by remember { mutableStateOf("https://github.com/${updateManager?.githubOwner ?: "filim3290"}/${updateManager?.githubRepo ?: "blacksea-robotics"}/releases/download/v1.0.5/BlackseaRobotics-v1.0.5.apk") }
+        val mgr = updateManager ?: remember { com.example.update.AppUpdateManager(context) }
+        val currentVerName = remember { mgr.getCurrentVersionName() }
+        val nextVerCode = remember { mgr.getCurrentVersionCode() + 1 }
+        var vName by remember { mutableStateOf(currentVerName) }
+        var vCodeStr by remember { mutableStateOf(nextVerCode.toString()) }
+        var vTitle by remember { mutableStateOf("Blacksea Robotics v$currentVerName Yayında") }
+        var vChangelog by remember { mutableStateOf("• Görsel ve video önizleme sistemi eklendi\n• Otomatik APK güncelleme ve indirme sistemi geliştirildi\n• Hata düzeltmeleri ve kararlılık iyileştirmeleri") }
+        var vApkUrl by remember { mutableStateOf("https://github.com/${mgr.githubOwner}/${mgr.githubRepo}/releases/download/v$currentVerName/BlackseaRobotics-v$currentVerName.apk") }
         var isForce by remember { mutableStateOf(false) }
         var isBroadcasting by remember { mutableStateOf(false) }
 

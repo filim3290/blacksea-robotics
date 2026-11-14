@@ -24,7 +24,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Campaign
@@ -375,8 +375,7 @@ fun MainScreen(
                 bottomBar = {
                     NavigationBar(
                         containerColor = MaterialTheme.colorScheme.surface,
-                        tonalElevation = 8.dp,
-                        modifier = Modifier.height(64.dp)
+                        tonalElevation = 8.dp
                     ) {
                         NavigationBarItem(
                             selected = currentTab == NavItem.HOME,
@@ -469,15 +468,25 @@ fun MainScreen(
                 onDismiss = { showNotificationsDialog = false },
                 onMarkAsRead = { notifId ->
                     locallyReadIds = locallyReadIds + notifId
+                    val target = notifications.firstOrNull { it.id == notifId }
+                    val isShared = target != null && target.recipientUserId != currentUserId
                     scope.launch {
-                        repository.markNotificationAsRead(notifId, currentUserId)
+                        repository.markNotificationAsRead(notifId, currentUserId, isShared = isShared)
                     }
                 },
                 onMarkAllAsRead = {
                     val allIds = notifications.map { it.id }.filter { it.isNotBlank() }.toSet()
+                    val personalIds = notifications
+                        .filter { it.recipientUserId == currentUserId && it.id.isNotBlank() }
+                        .map { it.id }
+                        .toSet()
                     locallyReadIds = locallyReadIds + allIds
                     scope.launch {
-                        repository.markAllNotificationsAsRead(currentUserId, allIds.toList())
+                        repository.markAllNotificationsAsRead(
+                            userId = currentUserId,
+                            notificationIds = allIds.toList(),
+                            personalNotificationIds = personalIds
+                        )
                     }
                 }
             )
@@ -732,10 +741,10 @@ fun TeamNotificationsDialog(
                             modifier = Modifier.fillMaxSize(),
                             verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            items(
+                            itemsIndexed(
                                 items = notifications,
-                                key = { it.id.ifBlank { it.hashCode().toString() } }
-                            ) { notif ->
+                                key = { index, notif -> "${notif.id.ifBlank { "notif" }}_$index" }
+                            ) { _, notif ->
                                 val isRead = notif.isReadBy(currentUserId) || locallyReadIds.contains(notif.id)
                                 Card(
                                     modifier = Modifier

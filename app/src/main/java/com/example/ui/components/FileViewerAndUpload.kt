@@ -24,7 +24,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -37,9 +37,11 @@ import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.PictureAsPdf
 import androidx.compose.material.icons.filled.UploadFile
+import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material.icons.filled.ViewInAr
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -56,12 +58,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -77,24 +74,15 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
-import coil.compose.AsyncImage
-import com.example.data.BlackseaRepository
-import com.example.data.FileUploadResult
+import coil.compose.SubcomposeAsyncImage
 import com.example.model.SharedProjectFile
 import com.example.model.TeamNotification
 import com.example.ui.theme.ElectricBlue
 import com.example.ui.theme.PhoenixAmber
-import kotlinx.coroutines.launch
-import java.text.SimpleDateFormat
-import java.util.Locale
-
-import android.widget.MediaController
-import android.widget.VideoView
-import androidx.compose.material.icons.filled.Mic
-import androidx.compose.material.icons.filled.Videocam
-import androidx.compose.ui.viewinterop.AndroidView
 import com.example.util.VoiceNotePlayer
 import com.example.util.downloadFileToDevice
+import java.text.SimpleDateFormat
+import java.util.Locale
 
 fun getFileIcon(fileType: String): ImageVector {
     return when (fileType.lowercase()) {
@@ -204,7 +192,7 @@ fun SharedFileCard(
                 if (canDelete) {
                     IconButton(
                         onClick = onDelete,
-                        modifier = Modifier.size(32.dp)
+                        modifier = Modifier.size(48.dp)
                     ) {
                         Icon(
                             imageVector = Icons.Default.Close,
@@ -214,6 +202,22 @@ fun SharedFileCard(
                         )
                     }
                 }
+            }
+
+            // Inline Image / Video Thumbnail Preview
+            val isMediaPreview = file.fileType.equals("image", true) || file.fileType.equals("video", true)
+            if (isMediaPreview && (file.downloadUrl.isNotBlank() || file.thumbnailUrl.isNotBlank() || file.storagePath.isNotBlank())) {
+                Spacer(modifier = Modifier.height(10.dp))
+                MediaThumbnailPreview(
+                    mediaType = file.fileType,
+                    mediaUrl = file.downloadUrl,
+                    thumbnailUrl = file.thumbnailUrl,
+                    storagePath = file.storagePath,
+                    durationMs = file.mediaDurationMs,
+                    height = 170.dp,
+                    onClick = { onOpenFile(file) },
+                    testTag = "file_card_media_preview_${file.id}"
+                )
             }
 
             if (file.description.isNotBlank()) {
@@ -346,19 +350,24 @@ fun FileUploadProgressDialog(
                     }
                 }
 
-                // Image preview if image
-                if (fileType == "image" && previewUri != null) {
-                    Surface(
-                        shape = RoundedCornerShape(10.dp),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(140.dp)
-                    ) {
-                        AsyncImage(
-                            model = previewUri,
-                            contentDescription = "Önizleme",
-                            contentScale = ContentScale.Crop,
-                            modifier = Modifier.fillMaxSize()
+                // Inline preview for BOTH images and videos before upload
+                if (previewUri != null && (fileType == "image" || fileType == "video")) {
+                    if (fileType == "image") {
+                        MediaThumbnailPreview(
+                            mediaType = "image",
+                            mediaUrl = previewUri.toString(),
+                            localPreviewUri = previewUri,
+                            height = 170.dp,
+                            testTag = "upload_image_preview"
+                        )
+                    } else {
+                        ExoVideoPlayerView(
+                            videoUri = previewUri,
+                            autoPlay = false,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(200.dp)
+                                .testTag("upload_video_preview")
                         )
                     }
                 }
@@ -432,10 +441,21 @@ fun InAppFileViewerDialog(
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
-    val isImage = file.fileType == "image" || file.downloadUrl.contains("jpg|png|webp|jpeg|gif".toRegex(RegexOption.IGNORE_CASE))
-    val isVideo = file.fileType == "video" || file.downloadUrl.contains("mp4|mkv|webm|mov|3gp".toRegex(RegexOption.IGNORE_CASE))
-    val isAudio = file.fileType == "audio" || file.downloadUrl.contains("m4a|mp3|wav|aac|ogg".toRegex(RegexOption.IGNORE_CASE))
-    val isCodeOrText = file.fileType == "code" || file.fileType == "text" || file.content.isNotBlank()
+    val isVideo = file.fileType.equals("video", true) ||
+        file.fileName.contains("\\.(mp4|mkv|webm|mov|avi|3gp|m4v)$".toRegex(RegexOption.IGNORE_CASE)) ||
+        file.downloadUrl.contains("\\.(mp4|mkv|webm|mov|avi|3gp|m4v)(\\?|$)".toRegex(RegexOption.IGNORE_CASE))
+    val isImage = !isVideo && (
+        file.fileType.equals("image", true) ||
+        file.fileName.contains("\\.(jpg|jpeg|png|webp|gif|bmp|heic|heif)$".toRegex(RegexOption.IGNORE_CASE)) ||
+        file.downloadUrl.startsWith("data:image/", ignoreCase = true) ||
+        file.downloadUrl.contains("\\.(jpg|jpeg|png|webp|gif)(\\?|$)".toRegex(RegexOption.IGNORE_CASE))
+    )
+    val isAudio = !isVideo && !isImage && (
+        file.fileType.equals("audio", true) ||
+        file.downloadUrl.startsWith("data:audio/", ignoreCase = true) ||
+        file.downloadUrl.contains("\\.(m4a|mp3|wav|aac|ogg|opus)(\\?|$)".toRegex(RegexOption.IGNORE_CASE))
+    )
+    val isCodeOrText = file.fileType == "code" || file.fileType == "text" || (!isVideo && !isImage && !isAudio && file.content.isNotBlank())
 
     Dialog(
         onDismissRequest = onDismiss,
@@ -501,86 +521,93 @@ fun InAppFileViewerDialog(
                         .padding(14.dp),
                     contentAlignment = Alignment.Center
                 ) {
-                    if (isImage && file.downloadUrl.isNotBlank()) {
-                        // Image Viewer
-                        AsyncImage(
-                            model = file.downloadUrl,
+                    if (isImage) {
+                        val imageModel = remember(file.downloadUrl, file.thumbnailUrl, file.storagePath) {
+                            resolveMediaImageModel(file.downloadUrl.ifBlank { file.thumbnailUrl.ifBlank { file.storagePath } })
+                        }
+                        ZoomableImageViewer(
+                            model = imageModel,
                             contentDescription = file.fileName,
-                            contentScale = ContentScale.Fit,
                             modifier = Modifier.fillMaxSize()
                         )
                     } else if (isVideo) {
-                        // Video Player or Poster Preview
+                        val playableUri = remember(file.downloadUrl, file.storagePath) {
+                            resolvePlayableVideoUri(file.downloadUrl, file.storagePath)
+                        }
+                        val posterModel = remember(file.thumbnailUrl, file.downloadUrl) {
+                            resolveMediaImageModel(
+                                file.thumbnailUrl.ifBlank {
+                                    if (file.downloadUrl.startsWith("data:image/", ignoreCase = true)) file.downloadUrl else ""
+                                }
+                            )
+                        }
                         Column(
                             modifier = Modifier.fillMaxSize(),
                             verticalArrangement = Arrangement.Center,
                             horizontalAlignment = Alignment.CenterHorizontally
                         ) {
-                            val localPath = if (file.storagePath.startsWith("local:")) file.storagePath.removePrefix("local:") else ""
-                            val localFile = if (localPath.isNotBlank()) java.io.File(localPath) else null
-
-                            if (file.downloadUrl.startsWith("http")) {
-                                AndroidView(
-                                    factory = { ctx ->
-                                        VideoView(ctx).apply {
-                                            val mediaController = MediaController(ctx)
-                                            mediaController.setAnchorView(this)
-                                            setMediaController(mediaController)
-                                            setVideoURI(Uri.parse(file.downloadUrl))
-                                            start()
-                                        }
-                                    },
+                            if (playableUri != null) {
+                                ExoVideoPlayerView(
+                                    videoUri = playableUri,
+                                    autoPlay = true,
+                                    onOpenExternally = { openFileExternally(context, playableUri.toString()) },
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .height(280.dp)
-                                        .clip(RoundedCornerShape(12.dp))
+                                        .weight(1f)
                                 )
-                            } else if (localFile != null && localFile.exists()) {
-                                AndroidView(
-                                    factory = { ctx ->
-                                        VideoView(ctx).apply {
-                                            val mediaController = MediaController(ctx)
-                                            mediaController.setAnchorView(this)
-                                            setMediaController(mediaController)
-                                            setVideoPath(localFile.absolutePath)
-                                            start()
-                                        }
-                                    },
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .height(280.dp)
-                                        .clip(RoundedCornerShape(12.dp))
-                                )
-                            } else if (file.downloadUrl.startsWith("data:image/")) {
+                            } else if (posterModel != null) {
                                 Box(
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .height(260.dp)
-                                        .clip(RoundedCornerShape(12.dp)),
+                                        .weight(1f)
+                                        .clip(RoundedCornerShape(12.dp))
+                                        .background(Color(0xFF0F172A)),
                                     contentAlignment = Alignment.Center
                                 ) {
-                                    AsyncImage(
-                                        model = file.downloadUrl,
+                                    SubcomposeAsyncImage(
+                                        model = posterModel,
                                         contentDescription = file.fileName,
-                                        contentScale = ContentScale.Crop,
+                                        contentScale = ContentScale.Fit,
                                         modifier = Modifier.fillMaxSize()
                                     )
                                     Surface(
-                                        shape = CircleShape,
-                                        color = Color.Black.copy(alpha = 0.6f),
-                                        modifier = Modifier.size(54.dp)
+                                        shape = RoundedCornerShape(10.dp),
+                                        color = Color.Black.copy(alpha = 0.72f),
+                                        modifier = Modifier
+                                            .align(Alignment.BottomCenter)
+                                            .padding(12.dp)
                                     ) {
-                                        Box(contentAlignment = Alignment.Center) {
-                                            Icon(imageVector = Icons.Default.Videocam, contentDescription = null, tint = Color.White, modifier = Modifier.size(32.dp))
-                                        }
+                                        Text(
+                                            text = "Video bulut depolamaya yüklenemediği için başka cihazda yalnızca kapak karesi gösterilir.",
+                                            color = Color.White,
+                                            fontSize = 11.sp,
+                                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                                        )
                                     }
                                 }
                             } else {
-                                Icon(imageVector = Icons.Default.Videocam, contentDescription = null, tint = getFileIconColor("video"), modifier = Modifier.size(64.dp))
+                                Icon(
+                                    imageVector = Icons.Default.Videocam,
+                                    contentDescription = null,
+                                    tint = getFileIconColor("video"),
+                                    modifier = Modifier.size(64.dp)
+                                )
                             }
                             Spacer(modifier = Modifier.height(10.dp))
-                            Text(text = "Video: ${file.fileName}", fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                            Text(text = file.description.ifBlank { "Önizleme hazır" }, fontSize = 11.sp, color = Color(0xFF94A3B8))
+                            Text(
+                                text = "Video: ${file.fileName}",
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            val durationText = formatMediaDuration(file.mediaDurationMs)
+                            val metaText = listOfNotNull(
+                                file.getFormattedSize().takeIf { it.isNotBlank() },
+                                durationText.takeIf { it.isNotBlank() },
+                                file.description.takeIf { it.isNotBlank() }
+                            ).joinToString(" · ").ifBlank { "Oynatmaya hazır" }
+                            Text(text = metaText, fontSize = 11.sp, color = Color(0xFF94A3B8))
                         }
                     } else if (isAudio && file.downloadUrl.isNotBlank()) {
                         // Audio / Voice Note Player
@@ -826,7 +853,10 @@ fun NotificationCenterDialog(
                         contentPadding = androidx.compose.foundation.layout.PaddingValues(12.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        items(notifications) { notif ->
+                        itemsIndexed(
+                            items = notifications,
+                            key = { index, notif -> "${notif.id.ifBlank { "notif" }}_$index" }
+                        ) { _, notif ->
                             val icon = when (notif.type) {
                                 "member_pending", "member_approved" -> Icons.Default.Article
                                 "message" -> Icons.Default.Description

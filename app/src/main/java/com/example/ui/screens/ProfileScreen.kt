@@ -746,18 +746,12 @@ fun ProfileScreen(
                         if (trimmedFirst.isNotBlank() && trimmedLast.isNotBlank()) {
                             scope.launch {
                                 try {
-                                    val currentRoles = currentUserProfile.roles.ifEmpty {
-                                        listOf(PredefinedRoles.getDefaultTeamRole(editTeam))
-                                    }
-                                    repository.createOrUpdateUserProfile(
+                                    repository.updateOwnProfile(
                                         userId = currentUserProfile.userId.ifBlank { currentUserProfile.id },
                                         firstName = trimmedFirst,
                                         lastName = trimmedLast,
                                         username = editUsername.trim(),
-                                        email = currentUserProfile.email,
-                                        team = editTeam,
-                                        roles = currentRoles,
-                                        photoUrl = currentUserProfile.photoUrl
+                                        team = editTeam
                                     )
                                     showEditDialog = false
                                     Toast.makeText(context, "Profil güncellendi!", Toast.LENGTH_SHORT).show()

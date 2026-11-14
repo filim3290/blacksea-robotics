@@ -153,6 +153,9 @@ data class ChatMessage(
     val fileName: String = "",
     val fileType: String = "",
     val fileSize: Long = 0L,
+    val thumbnailUrl: String = "",
+    val storagePath: String = "",
+    val mediaDurationMs: Long = 0L,
     val isPinned: Boolean = false,
     val replyToId: String = "",
     val replyToSender: String = "",
@@ -176,7 +179,11 @@ data class IdeaItem(
     val likeCount: Long = 0L,
     val fileUrl: String = "",
     val fileName: String = "",
+    val fileType: String = "",
     val fileSize: Long = 0L,
+    val thumbnailUrl: String = "",
+    val storagePath: String = "",
+    val mediaDurationMs: Long = 0L,
     @ServerTimestamp val createdAt: Timestamp? = null,
     @ServerTimestamp val updatedAt: Timestamp? = null
 )
@@ -207,6 +214,8 @@ data class SharedProjectFile(
     val content: String = "", // snippet code, text content, or link
     val downloadUrl: String = "",
     val storagePath: String = "",
+    val thumbnailUrl: String = "",
+    val mediaDurationMs: Long = 0L,
     @ServerTimestamp val createdAt: Timestamp? = null
 ) {
     fun getFormattedSize(): String {

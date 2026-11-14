@@ -3,7 +3,9 @@ package com.example.ui.screens
 import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -19,11 +21,14 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.UploadFile
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -34,6 +39,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -56,10 +62,10 @@ import com.example.model.UserProfile
 import com.example.ui.components.FileUploadProgressDialog
 import com.example.ui.components.InAppFileViewerDialog
 import com.example.ui.components.SharedFileCard
-import com.example.ui.components.openFileExternally
-import com.example.util.downloadFileToDevice
 import com.example.ui.theme.ElectricBlue
+import com.example.util.downloadFileToDevice
 import kotlinx.coroutines.launch
+import java.util.Locale
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -86,33 +92,48 @@ fun FilesScreen(
     var uploadProgress by remember { mutableIntStateOf(0) }
     var uploadErrorMessage by remember { mutableStateOf<String?>(null) }
     var showUploadModal by remember { mutableStateOf(false) }
+    var showPickerOptions by remember { mutableStateOf(false) }
+
+    fun handlePickedUri(uri: Uri) {
+        pickedFileUri = uri
+        val (name, size) = repository.queryFileMetadata(context, uri)
+        val mimeType = try { context.contentResolver.getType(uri) } catch (_: Exception) { null }
+        val type = repository.detectFileType(name, mimeType)
+        pickedFileName = name
+        pickedFileType = type
+
+        val kb = size / 1024.0
+        val mb = kb / 1024.0
+        pickedFileSizeFormatted = if (mb >= 1.0) {
+            String.format(Locale.US, "%.1f MB", mb)
+        } else if (kb >= 1.0) {
+            String.format(Locale.US, "%.0f KB", kb)
+        } else {
+            "$size B"
+        }
+
+        uploadErrorMessage = if (size > 100L * 1024L * 1024L) {
+            "Dosya boyutu 100 MB sınırını aşıyor."
+        } else {
+            null
+        }
+        uploadProgress = 0
+        isUploading = false
+        showUploadModal = true
+    }
+
+    // Zero-permission Photo & Video Picker Launcher
+    val visualMediaLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia()
+    ) { uri: Uri? ->
+        if (uri != null) handlePickedUri(uri)
+    }
 
     // Real Device File Picker Launcher
     val filePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
     ) { uri: Uri? ->
-        if (uri != null) {
-            pickedFileUri = uri
-            val (name, size) = repository.queryFileMetadata(context, uri)
-            val type = repository.detectFileType(name)
-            pickedFileName = name
-            pickedFileType = type
-
-            val kb = size / 1024.0
-            val mb = kb / 1024.0
-            pickedFileSizeFormatted = if (mb >= 1.0) {
-                String.format(java.util.Locale.US, "%.1f MB", mb)
-            } else if (kb >= 1.0) {
-                String.format(java.util.Locale.US, "%.0f KB", kb)
-            } else {
-                "$size B"
-            }
-
-            uploadErrorMessage = null
-            uploadProgress = 0
-            isUploading = false
-            showUploadModal = true
-        }
+        if (uri != null) handlePickedUri(uri)
     }
 
     val fileTypes = listOf("Hepsi", "Kod", "Görsel", "Video", "Ses", "PDF", "CAD", "ZIP", "Belge")
@@ -204,7 +225,10 @@ fun FilesScreen(
                     contentPadding = PaddingValues(16.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    items(filteredFiles) { file ->
+                    itemsIndexed(
+                        items = filteredFiles,
+                        key = { index, file -> "${file.id.ifBlank { file.fileName }}_$index" }
+                    ) { _, file ->
                         val canDelete = isManager || file.uploadedById == currentUserProfile?.userId || file.uploadedById == currentUserProfile?.id
                         SharedFileCard(
                             file = file,
@@ -225,10 +249,10 @@ fun FilesScreen(
             }
         }
 
-        // Floating Action Button to pick & upload real device file
+        // Floating Action Button to pick & upload photo/video or general file
         FloatingActionButton(
             onClick = {
-                filePickerLauncher.launch("*/*")
+                showPickerOptions = true
             },
             containerColor = ElectricBlue,
             contentColor = Color.White,
@@ -245,6 +269,88 @@ fun FilesScreen(
                 Icon(imageVector = Icons.Default.UploadFile, contentDescription = "Dosya Yükle")
                 Text("Dosya Ekle", fontWeight = FontWeight.Bold, fontSize = 13.sp)
             }
+        }
+
+        if (showPickerOptions) {
+            AlertDialog(
+                onDismissRequest = { showPickerOptions = false },
+                title = { Text("Dosya veya Medya Yükle", fontWeight = FontWeight.Bold, fontSize = 17.sp) },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Card(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    showPickerOptions = false
+                                    visualMediaLauncher.launch(
+                                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)
+                                    )
+                                }
+                                .testTag("files_pick_media_option"),
+                            shape = RoundedCornerShape(12.dp),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(14.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
+                                Surface(
+                                    shape = CircleShape,
+                                    color = Color(0xFF10B981).copy(alpha = 0.15f),
+                                    modifier = Modifier.size(40.dp)
+                                ) {
+                                    Box(contentAlignment = Alignment.Center) {
+                                        Icon(Icons.Default.PhotoLibrary, contentDescription = null, tint = Color(0xFF10B981), modifier = Modifier.size(22.dp))
+                                    }
+                                }
+                                Column {
+                                    Text("Görsel / Video Seç", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                                    Text("Önizlemeli fotoğraf veya video yükleyin", fontSize = 11.sp, color = Color(0xFF94A3B8))
+                                }
+                            }
+                        }
+
+                        Card(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    showPickerOptions = false
+                                    filePickerLauncher.launch("*/*")
+                                }
+                                .testTag("files_pick_any_option"),
+                            shape = RoundedCornerShape(12.dp),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(14.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
+                                Surface(
+                                    shape = CircleShape,
+                                    color = ElectricBlue.copy(alpha = 0.15f),
+                                    modifier = Modifier.size(40.dp)
+                                ) {
+                                    Box(contentAlignment = Alignment.Center) {
+                                        Icon(Icons.Default.UploadFile, contentDescription = null, tint = ElectricBlue, modifier = Modifier.size(22.dp))
+                                    }
+                                }
+                                Column {
+                                    Text("Tüm Cihaz Dosyaları", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                                    Text("PDF, Kod, CAD, ZIP, Belge (Maks 100 MB)", fontSize = 11.sp, color = Color(0xFF94A3B8))
+                                }
+                            }
+                        }
+                    }
+                },
+                confirmButton = {},
+                dismissButton = {
+                    TextButton(onClick = { showPickerOptions = false }) {
+                        Text("İptal")
+                    }
+                }
+            )
         }
 
         // In-App File Viewer Dialog
@@ -290,7 +396,9 @@ fun FilesScreen(
                                 description = "Çalışma dosyası",
                                 content = uploadResult.textContent,
                                 downloadUrl = uploadResult.downloadUrl,
-                                storagePath = "",
+                                storagePath = uploadResult.storagePath,
+                                thumbnailUrl = uploadResult.thumbnailUrl,
+                                mediaDurationMs = uploadResult.mediaDurationMs,
                                 uploadedByName = currentUserProfile?.getFullName() ?: "Takım Üyesi",
                                 uploadedByTeam = currentUserProfile?.team ?: "",
                                 uploadedByRoles = currentUserProfile?.roles ?: emptyList()

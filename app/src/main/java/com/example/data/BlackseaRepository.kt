@@ -3,6 +3,8 @@ package com.example.data
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Matrix
+import android.media.ExifInterface
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.util.Base64
@@ -49,7 +51,10 @@ data class FileUploadResult(
     val fileType: String,
     val fileSize: Long,
     val downloadUrl: String,
-    val textContent: String = ""
+    val textContent: String = "",
+    val storagePath: String = "",
+    val thumbnailUrl: String = "",
+    val mediaDurationMs: Long = 0L
 )
 
 class BlackseaRepository(val db: FirebaseFirestore) {
@@ -113,9 +118,20 @@ class BlackseaRepository(val db: FirebaseFirestore) {
 
     fun compressImage(context: Context, uri: Uri, maxDimension: Int = 1280, quality: Int = 80): ByteArray? {
         return try {
-            val inputStream = context.contentResolver.openInputStream(uri) ?: return null
-            val bitmap = BitmapFactory.decodeStream(inputStream) ?: return null
-            inputStream.close()
+            val orientation = try {
+                context.contentResolver.openInputStream(uri)?.use { exifStream ->
+                    ExifInterface(exifStream).getAttributeInt(
+                        ExifInterface.TAG_ORIENTATION,
+                        ExifInterface.ORIENTATION_NORMAL
+                    )
+                } ?: ExifInterface.ORIENTATION_NORMAL
+            } catch (_: Exception) {
+                ExifInterface.ORIENTATION_NORMAL
+            }
+
+            val bitmap = context.contentResolver.openInputStream(uri)?.use { inputStream ->
+                BitmapFactory.decodeStream(inputStream)
+            } ?: return null
 
             val w = bitmap.width
             val h = bitmap.height
@@ -124,17 +140,25 @@ class BlackseaRepository(val db: FirebaseFirestore) {
                 maxDimension.toFloat() / maxSide
             } else 1.0f
 
-            val scaledBitmap = if (scale < 1.0f) {
-                Bitmap.createScaledBitmap(
-                    bitmap,
-                    (w * scale).toInt().coerceAtLeast(1),
-                    (h * scale).toInt().coerceAtLeast(1),
-                    true
-                )
-            } else bitmap
+            val matrix = Matrix().apply {
+                if (scale < 1.0f) postScale(scale, scale)
+                when (orientation) {
+                    ExifInterface.ORIENTATION_ROTATE_90 -> postRotate(90f)
+                    ExifInterface.ORIENTATION_ROTATE_180 -> postRotate(180f)
+                    ExifInterface.ORIENTATION_ROTATE_270 -> postRotate(270f)
+                    ExifInterface.ORIENTATION_FLIP_HORIZONTAL -> postScale(-1f, 1f)
+                    ExifInterface.ORIENTATION_FLIP_VERTICAL -> postScale(1f, -1f)
+                }
+            }
+
+            val finalBitmap = Bitmap.createBitmap(bitmap, 0, 0, w, h, matrix, true)
+            if (finalBitmap !== bitmap) {
+                bitmap.recycle()
+            }
 
             val out = ByteArrayOutputStream()
-            scaledBitmap.compress(Bitmap.CompressFormat.JPEG, quality, out)
+            finalBitmap.compress(Bitmap.CompressFormat.JPEG, quality, out)
+            finalBitmap.recycle()
             out.toByteArray()
         } catch (e: Exception) {
             Log.w("Repository", "Image compression failed: ${e.message}")
@@ -142,23 +166,41 @@ class BlackseaRepository(val db: FirebaseFirestore) {
         }
     }
 
-    fun extractVideoThumbnail(context: Context, uri: Uri): String {
+    fun extractVideoMetadata(context: Context, uri: Uri): Pair<String, Long> {
+        val retriever = MediaMetadataRetriever()
         return try {
-            val retriever = MediaMetadataRetriever()
             retriever.setDataSource(context, uri)
-            val frame = retriever.getFrameAtTime(1_000_000) ?: retriever.frameAtTime
-            retriever.release()
-            if (frame != null) {
-                val scaled = Bitmap.createScaledBitmap(frame, 320, (320f * frame.height / frame.width).toInt().coerceAtLeast(1), true)
+            val durationMs = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
+                ?.toLongOrNull() ?: 0L
+            val frame = retriever.getFrameAtTime(500_000L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                ?: retriever.frameAtTime
+            val thumbDataUri = if (frame != null && frame.width > 0 && frame.height > 0) {
+                val targetWidth = minOf(480, frame.width)
+                val targetHeight = (targetWidth.toFloat() * frame.height / frame.width).toInt().coerceAtLeast(1)
+                val scaled = Bitmap.createScaledBitmap(frame, targetWidth, targetHeight, true)
                 val stream = ByteArrayOutputStream()
-                scaled.compress(Bitmap.CompressFormat.JPEG, 70, stream)
+                scaled.compress(Bitmap.CompressFormat.JPEG, 75, stream)
+                if (scaled !== frame) scaled.recycle()
+                frame.recycle()
                 val base64 = Base64.encodeToString(stream.toByteArray(), Base64.NO_WRAP)
                 "data:image/jpeg;base64,$base64"
-            } else ""
+            } else {
+                ""
+            }
+            Pair(thumbDataUri, durationMs)
         } catch (e: Exception) {
-            Log.w("Repository", "Video thumbnail extraction failed: ${e.message}")
-            ""
+            Log.w("Repository", "Video metadata extraction failed: ${e.message}")
+            Pair("", 0L)
+        } finally {
+            try {
+                retriever.release()
+            } catch (_: Exception) {
+            }
         }
+    }
+
+    fun extractVideoThumbnail(context: Context, uri: Uri): String {
+        return extractVideoMetadata(context, uri).first
     }
 
     fun saveFileLocally(context: Context, uri: Uri, fileName: String): File? {
@@ -177,10 +219,10 @@ class BlackseaRepository(val db: FirebaseFirestore) {
         }
     }
 
-    fun detectFileType(fileName: String): String {
+    fun detectFileType(fileName: String, mimeType: String? = null): String {
         val ext = fileName.substringAfterLast(".", "").lowercase()
-        return when (ext) {
-            "png", "jpg", "jpeg", "webp", "gif", "bmp", "svg" -> "image"
+        val byExt = when (ext) {
+            "png", "jpg", "jpeg", "webp", "gif", "bmp", "svg", "heic", "heif" -> "image"
             "mp4", "mkv", "webm", "mov", "avi", "3gp", "m4v" -> "video"
             "mp3", "wav", "m4a", "aac", "ogg", "flac", "opus", "amr" -> "audio"
             "pdf" -> "pdf"
@@ -191,6 +233,16 @@ class BlackseaRepository(val db: FirebaseFirestore) {
             "doc", "docx", "xls", "xlsx", "ppt", "pptx" -> "doc"
             else -> "other"
         }
+        if (byExt != "other" || mimeType.isNullOrBlank()) return byExt
+        val lowerMime = mimeType.lowercase()
+        return when {
+            lowerMime.startsWith("image/") -> "image"
+            lowerMime.startsWith("video/") -> "video"
+            lowerMime.startsWith("audio/") -> "audio"
+            lowerMime == "application/pdf" -> "pdf"
+            lowerMime.startsWith("text/") -> "text"
+            else -> "other"
+        }
     }
 
     suspend fun uploadFile(
@@ -199,15 +251,36 @@ class BlackseaRepository(val db: FirebaseFirestore) {
         folder: String = "uploads",
         onProgress: (Int) -> Unit = {}
     ): FileUploadResult = withContext(Dispatchers.IO) {
-        val (name, size) = queryFileMetadata(context, uri)
-        val fileType = detectFileType(name)
+        val (rawName, size) = queryFileMetadata(context, uri)
+        val mimeType = try { context.contentResolver.getType(uri) } catch (_: Exception) { null }
+        val fileType = detectFileType(rawName, mimeType)
+
+        if (size > 100L * 1024L * 1024L) {
+            throw IllegalArgumentException("Dosya boyutu 100 MB sınırını aşıyor.")
+        }
+
+        // Ensure extension is preserved when Android Photo Picker returns a numeric display name
+        val name = if (!rawName.contains(".") && !mimeType.isNullOrBlank()) {
+            val inferredExt = when {
+                mimeType.contains("jpeg") || mimeType.contains("jpg") -> "jpg"
+                mimeType.contains("png") -> "png"
+                mimeType.contains("webp") -> "webp"
+                mimeType.contains("mp4") -> "mp4"
+                mimeType.contains("quicktime") -> "mov"
+                mimeType.contains("webm") -> "webm"
+                mimeType.contains("pdf") -> "pdf"
+                else -> ""
+            }
+            if (inferredExt.isNotBlank()) "$rawName.$inferredExt" else rawName
+        } else rawName
+
         val safeName = name.replace("[^a-zA-Z0-9._-]".toRegex(), "_")
         var downloadUrl = ""
         var textContent = ""
         var storagePath = ""
 
         // 1. Text & Code files: read text directly for in-app viewing
-        if (fileType == "code" || fileType == "text" || name.endsWith(".json")) {
+        if (fileType == "code" || fileType == "text" || name.endsWith(".json", ignoreCase = true)) {
             try {
                 context.contentResolver.openInputStream(uri)?.use { stream ->
                     textContent = stream.bufferedReader().readText().take(150_000)
@@ -223,13 +296,16 @@ class BlackseaRepository(val db: FirebaseFirestore) {
             compressedImageBytes = compressImage(context, uri)
         }
 
-        // 3. Videos: extract thumbnail poster
+        // 3. Videos: extract thumbnail poster & duration
         var videoThumbnailDataUri = ""
+        var mediaDurationMs = 0L
         if (fileType == "video") {
-            videoThumbnailDataUri = extractVideoThumbnail(context, uri)
+            val (thumb, duration) = extractVideoMetadata(context, uri)
+            videoThumbnailDataUri = thumb
+            mediaDurationMs = duration
         }
 
-        // 4. Cache file locally so it can always be opened / previewed on device
+        // 4. Cache file locally so it can always be opened / previewed on uploader device
         val localSavedFile = saveFileLocally(context, uri, safeName)
         if (localSavedFile != null) {
             storagePath = "local:${localSavedFile.absolutePath}"
@@ -273,22 +349,19 @@ class BlackseaRepository(val db: FirebaseFirestore) {
         // 6. Resilient Fallbacks if Cloud Storage is unavailable or unprovisioned:
         if (downloadUrl.isBlank()) {
             if (compressedImageBytes != null && compressedImageBytes.isNotEmpty()) {
-                // Images: Use compressed JPEG Base64 (~80-160KB, crystal clear & fits safely in Firestore)
                 val base64Str = Base64.encodeToString(compressedImageBytes, Base64.NO_WRAP)
                 downloadUrl = "data:image/jpeg;base64,$base64Str"
             } else if (fileType == "video") {
-                // Videos: Use extracted thumbnail data URI for instant video preview card
                 downloadUrl = videoThumbnailDataUri
                 if (textContent.isBlank()) {
                     val mb = if (size > 0) "${size / (1024 * 1024)} MB" else "Video"
                     textContent = "Video: $name ($mb)"
                 }
             } else if (fileType == "audio" || size in 1..(350 * 1024L)) {
-                // Audio & small files under 350KB: Safe Base64
                 try {
                     val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
                     if (bytes != null && bytes.size <= 350 * 1024) {
-                        val mime = context.contentResolver.getType(uri) ?: when (fileType) {
+                        val mime = mimeType ?: when (fileType) {
                             "audio" -> "audio/m4a"
                             "pdf" -> "application/pdf"
                             else -> "application/octet-stream"
@@ -310,7 +383,10 @@ class BlackseaRepository(val db: FirebaseFirestore) {
             fileType = fileType,
             fileSize = effectiveSize,
             downloadUrl = downloadUrl,
-            textContent = textContent
+            textContent = textContent,
+            storagePath = storagePath,
+            thumbnailUrl = videoThumbnailDataUri,
+            mediaDurationMs = mediaDurationMs
         )
     }
 
@@ -508,6 +584,35 @@ class BlackseaRepository(val db: FirebaseFirestore) {
         }
     }
 
+    suspend fun updateOwnProfile(
+        userId: String,
+        firstName: String,
+        lastName: String,
+        username: String,
+        team: String
+    ) {
+        val cleanId = userId.trim()
+        if (cleanId.isBlank()) return
+        val path = "users/$cleanId"
+        val formattedDisplayName = "$firstName $lastName".trim().ifBlank { username.trim() }
+        val payload = mapOf(
+            "firstName" to firstName.trim(),
+            "lastName" to lastName.trim(),
+            "username" to username.trim(),
+            "displayName" to formattedDisplayName,
+            "team" to team,
+            "updatedAt" to FieldValue.serverTimestamp()
+        )
+        try {
+            db.collection("users").document(cleanId).update(payload).await()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.UPDATE, path)
+            throw e
+        }
+    }
+
     fun observeAllUsers(): Flow<List<UserProfile>> = db.collection("users")
         .snapshots()
         .map { snapshot -> snapshot.toObjects(UserProfile::class.java) }
@@ -652,35 +757,41 @@ class BlackseaRepository(val db: FirebaseFirestore) {
         }
     }
 
-    suspend fun markNotificationAsRead(notificationId: String, userId: String = "") {
+    suspend fun markNotificationAsRead(notificationId: String, userId: String = "", isShared: Boolean = false) {
         if (notificationId.isBlank()) return
         try {
-            val updates = mutableMapOf<String, Any>("isRead" to true)
+            val updates = mutableMapOf<String, Any>()
+            if (!isShared || userId.isBlank()) {
+                updates["isRead"] = true
+            }
             if (userId.isNotBlank()) {
                 updates["readBy"] = FieldValue.arrayUnion(userId)
             }
-            db.collection("notifications").document(notificationId).update(updates).await()
+            if (updates.isNotEmpty()) {
+                db.collection("notifications").document(notificationId).update(updates).await()
+            }
         } catch (e: Exception) {
             Log.w("Repository", "Failed to mark notification as read: ${e.message}")
         }
     }
 
-    suspend fun markAllNotificationsAsRead(userId: String, notificationIds: List<String>) {
+    suspend fun markAllNotificationsAsRead(userId: String, notificationIds: List<String>, personalNotificationIds: Set<String> = emptySet()) {
         if (notificationIds.isEmpty()) return
         try {
             val batch = db.batch()
             for (id in notificationIds) {
                 if (id.isNotBlank()) {
                     val ref = db.collection("notifications").document(id)
-                    val updates = if (userId.isNotBlank()) {
-                        mapOf(
-                            "isRead" to true,
-                            "readBy" to FieldValue.arrayUnion(userId)
-                        )
-                    } else {
-                        mapOf("isRead" to true)
+                    val updates = mutableMapOf<String, Any>()
+                    if (userId.isNotBlank()) {
+                        updates["readBy"] = FieldValue.arrayUnion(userId)
                     }
-                    batch.update(ref, updates)
+                    if (personalNotificationIds.contains(id) || userId.isBlank()) {
+                        updates["isRead"] = true
+                    }
+                    if (updates.isNotEmpty()) {
+                        batch.update(ref, updates)
+                    }
                 }
             }
             batch.commit().await()
@@ -801,6 +912,9 @@ class BlackseaRepository(val db: FirebaseFirestore) {
         fileUrl: String = "",
         fileType: String = "",
         fileSize: Long = 0L,
+        thumbnailUrl: String = "",
+        storagePath: String = "",
+        mediaDurationMs: Long = 0L,
         replyToId: String = "",
         replyToSender: String = "",
         replyToText: String = ""
@@ -809,6 +923,7 @@ class BlackseaRepository(val db: FirebaseFirestore) {
         val path = "rooms/$roomId/messages"
         val docRef = db.collection("rooms").document(roomId).collection("messages").document()
         val safeFileUrl = if (fileUrl.startsWith("data:") && fileUrl.length > 500_000) "" else fileUrl
+        val safeThumbUrl = if (thumbnailUrl.startsWith("data:") && thumbnailUrl.length > 350_000) "" else thumbnailUrl
         val payload = mapOf(
             "roomId" to roomId,
             "senderId" to uid,
@@ -821,6 +936,9 @@ class BlackseaRepository(val db: FirebaseFirestore) {
             "fileUrl" to safeFileUrl,
             "fileType" to fileType,
             "fileSize" to fileSize,
+            "thumbnailUrl" to safeThumbUrl,
+            "storagePath" to storagePath,
+            "mediaDurationMs" to mediaDurationMs,
             "isPinned" to false,
             "replyToId" to replyToId,
             "replyToSender" to replyToSender,
@@ -918,11 +1036,17 @@ class BlackseaRepository(val db: FirebaseFirestore) {
         authorTeam: String,
         authorRoles: List<String> = emptyList(),
         fileName: String = "",
+        fileType: String = "",
         fileUrl: String = "",
-        fileSize: Long = 0L
+        fileSize: Long = 0L,
+        thumbnailUrl: String = "",
+        storagePath: String = "",
+        mediaDurationMs: Long = 0L
     ) {
         val uid = requireUserId()
         val docRef = db.collection("ideas").document()
+        val safeFileUrl = if (fileUrl.startsWith("data:") && fileUrl.length > 500_000) "" else fileUrl
+        val safeThumbUrl = if (thumbnailUrl.startsWith("data:") && thumbnailUrl.length > 350_000) "" else thumbnailUrl
         val payload = mapOf(
             "roomId" to roomId,
             "authorId" to uid,
@@ -935,8 +1059,12 @@ class BlackseaRepository(val db: FirebaseFirestore) {
             "likes" to emptyList<String>(),
             "likeCount" to 0L,
             "fileName" to fileName,
-            "fileUrl" to fileUrl,
+            "fileType" to fileType,
+            "fileUrl" to safeFileUrl,
             "fileSize" to fileSize,
+            "thumbnailUrl" to safeThumbUrl,
+            "storagePath" to storagePath,
+            "mediaDurationMs" to mediaDurationMs,
             "createdAt" to FieldValue.serverTimestamp(),
             "updatedAt" to FieldValue.serverTimestamp()
         )
@@ -1130,6 +1258,8 @@ class BlackseaRepository(val db: FirebaseFirestore) {
         content: String,
         downloadUrl: String = "",
         storagePath: String = "",
+        thumbnailUrl: String = "",
+        mediaDurationMs: Long = 0L,
         uploadedByName: String,
         uploadedByTeam: String = "",
         uploadedByRoles: List<String> = emptyList()
@@ -1138,6 +1268,7 @@ class BlackseaRepository(val db: FirebaseFirestore) {
         val docRef = db.collection("files").document()
         val safeContent = content.take(200_000)
         val safeDownloadUrl = if (downloadUrl.startsWith("data:") && downloadUrl.length > 500_000) "" else downloadUrl
+        val safeThumbUrl = if (thumbnailUrl.startsWith("data:") && thumbnailUrl.length > 350_000) "" else thumbnailUrl
         val payload = mapOf(
             "roomId" to roomId,
             "uploadedById" to uid,
@@ -1151,6 +1282,8 @@ class BlackseaRepository(val db: FirebaseFirestore) {
             "content" to safeContent,
             "downloadUrl" to safeDownloadUrl,
             "storagePath" to storagePath,
+            "thumbnailUrl" to safeThumbUrl,
+            "mediaDurationMs" to mediaDurationMs,
             "createdAt" to FieldValue.serverTimestamp()
         )
         try {

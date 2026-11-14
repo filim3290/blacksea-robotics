@@ -125,6 +125,33 @@ fun downloadFileToDevice(
                 MediaScannerConnection.scanFile(context, arrayOf(targetFile.absolutePath), null) { _, _ -> }
                 Toast.makeText(context, "$safeName İndirilenler klasörüne kaydedildi!", Toast.LENGTH_LONG).show()
             }
+        } else if (url.startsWith("local:") || url.startsWith("file://") || url.startsWith("content://")) {
+            val bytes = when {
+                url.startsWith("local:") -> File(url.removePrefix("local:")).takeIf { it.exists() }?.readBytes()
+                url.startsWith("file://") -> Uri.parse(url).path?.let { File(it) }?.takeIf { it.exists() }?.readBytes()
+                else -> context.contentResolver.openInputStream(Uri.parse(url))?.use { it.readBytes() }
+            } ?: throw Exception("Yerel dosya okunamadı")
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                val values = ContentValues().apply {
+                    put(MediaStore.MediaColumns.DISPLAY_NAME, safeName)
+                    put(MediaStore.MediaColumns.MIME_TYPE, "application/octet-stream")
+                    put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+                }
+                val targetUri = context.contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                    ?: throw Exception("MediaStore indirme kaydı oluşturulamadı")
+                context.contentResolver.openOutputStream(targetUri)?.use { out ->
+                    out.write(bytes)
+                    out.flush()
+                }
+            } else {
+                val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+                if (!downloadsDir.exists()) downloadsDir.mkdirs()
+                val targetFile = File(downloadsDir, safeName)
+                targetFile.writeBytes(bytes)
+                MediaScannerConnection.scanFile(context, arrayOf(targetFile.absolutePath), null) { _, _ -> }
+            }
+            Toast.makeText(context, "$safeName İndirilenler klasörüne kaydedildi!", Toast.LENGTH_LONG).show()
         } else {
             Toast.makeText(context, "İndirme adresi veya içerik bulunamadı", Toast.LENGTH_SHORT).show()
         }
@@ -218,10 +245,14 @@ fun VoiceNotePlayer(
     var totalDurationSeconds by remember { mutableIntStateOf(0) }
     var mediaPlayer by remember { mutableStateOf<MediaPlayer?>(null) }
 
+    var cachedTempAudioFile by remember { mutableStateOf<File?>(null) }
+
     DisposableEffect(audioUrl) {
         onDispose {
             mediaPlayer?.release()
             mediaPlayer = null
+            cachedTempAudioFile?.delete()
+            cachedTempAudioFile = null
         }
     }
 
@@ -263,6 +294,16 @@ fun VoiceNotePlayer(
                         if (mediaPlayer == null) {
                             isLoading = true
                             try {
+                                val resolvedAudioUri = if (audioUrl.startsWith("data:") && audioUrl.contains(";base64,")) {
+                                    val base64Data = audioUrl.substringAfter(";base64,")
+                                    val bytes = Base64.decode(base64Data, Base64.DEFAULT)
+                                    val tmp = File(context.cacheDir, "voice_play_${audioUrl.hashCode()}.m4a")
+                                    tmp.writeBytes(bytes)
+                                    cachedTempAudioFile = tmp
+                                    Uri.fromFile(tmp)
+                                } else {
+                                    Uri.parse(audioUrl)
+                                }
                                 val player = MediaPlayer().apply {
                                     setAudioAttributes(
                                         AudioAttributes.Builder()
@@ -270,7 +311,7 @@ fun VoiceNotePlayer(
                                             .setUsage(AudioAttributes.USAGE_MEDIA)
                                             .build()
                                     )
-                                    setDataSource(context, Uri.parse(audioUrl))
+                                    setDataSource(context, resolvedAudioUri)
                                     prepareAsync()
                                     setOnPreparedListener { mp ->
                                         isLoading = false
