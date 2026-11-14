@@ -138,9 +138,9 @@ fun AppContent(repository: BlackseaRepository) {
     val scope = rememberCoroutineScope()
 
     suspend fun performUpdateCheckAndNotify() {
-        val updateResult = updateManager.checkLatestRelease(forceRefresh = false)
-        val update = updateResult.getOrNull()
-        if (update != null && update.versionCode > updateManager.getCurrentVersionCode() && !updateManager.hasInstalledVersion(update.versionCode)) {
+        val result = updateManager.checkLatestReleaseDetailed(forceRefresh = false)
+        if (result is com.example.update.UpdateCheckResult.UpdateAvailable) {
+            val update = result.release
             availableUpdate = update
 
             // Dispatch a local system notification ONCE for this new version
@@ -195,22 +195,25 @@ fun AppContent(repository: BlackseaRepository) {
                 .collect { doc ->
                     if (doc.exists()) {
                         val vCode = doc.getLong("versionCode")?.toInt() ?: 0
-                        if (vCode > updateManager.getCurrentVersionCode() && !updateManager.hasInstalledVersion(vCode)) {
+                        if (vCode > updateManager.getCurrentVersionCode()) {
                             val vName = doc.getString("versionName") ?: "1.0.5"
-                            val release = com.example.update.AppReleaseInfo(
-                                tagName = doc.getString("tagName") ?: "v$vName",
-                                versionName = vName,
-                                versionCode = vCode,
-                                title = doc.getString("title") ?: "Yeni Güncelleme Mevcut",
-                                changelog = doc.getString("changelog") ?: "• Yeni dosya paylaşım sistemi (Resim, Video, Ses, CAD)\n• Otomatik APK güncelleme sistemi\n• Hata düzeltmeleri",
-                                publishedAt = doc.getString("publishedAt") ?: "Bugün",
-                                apkDownloadUrl = updateManager.normalizeDownloadUrl(doc.getString("apkDownloadUrl"), vName),
-                                apkFileName = doc.getString("apkFileName") ?: "BlackseaRobotics-v$vName.apk",
-                                apkSize = doc.getLong("apkSize") ?: (29 * 1024 * 1024L),
-                                expectedSha256 = doc.getString("expectedSha256") ?: "",
-                                isForceUpdate = doc.getBoolean("isForceUpdate") ?: false
-                            )
-                            availableUpdate = release
+                            val resolvedUrl = updateManager.normalizeDownloadUrl(doc.getString("apkDownloadUrl"), vName)
+                            if (resolvedUrl.startsWith("https://") && resolvedUrl.endsWith(".apk", ignoreCase = true)) {
+                                val release = com.example.update.AppReleaseInfo(
+                                    tagName = doc.getString("tagName") ?: "v$vName",
+                                    versionName = vName,
+                                    versionCode = vCode,
+                                    title = doc.getString("title") ?: "Yeni Güncelleme Mevcut",
+                                    changelog = doc.getString("changelog") ?: "• Yeni dosya paylaşım sistemi (Resim, Video, Ses, CAD)\n• Otomatik APK güncelleme sistemi\n• Hata düzeltmeleri",
+                                    publishedAt = doc.getString("publishedAt") ?: "Bugün",
+                                    apkDownloadUrl = resolvedUrl,
+                                    apkFileName = doc.getString("apkFileName") ?: "BlackseaRobotics-v$vName.apk",
+                                    apkSize = doc.getLong("apkSize") ?: (29 * 1024 * 1024L),
+                                    expectedSha256 = doc.getString("expectedSha256") ?: "",
+                                    isForceUpdate = doc.getBoolean("isForceUpdate") ?: false
+                                )
+                                availableUpdate = release
+                            }
                         }
                     }
                 }

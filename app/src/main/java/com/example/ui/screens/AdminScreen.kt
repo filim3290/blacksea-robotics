@@ -544,17 +544,30 @@ fun AdminScreen(
 
                 LaunchedEffect(Unit) {
                     isChecking = true
-                    val res = mgr.checkLatestRelease(forceRefresh = false)
+                    val res = mgr.checkLatestReleaseDetailed(forceRefresh = false)
                     isChecking = false
-                    res.fold(
-                        onSuccess = { rel ->
-                            latestRelease = rel
-                            checkStatusMessage = if (rel != null) "Yeni bir sürüm bulundu!" else "Uygulama güncel (v${mgr.getCurrentVersionName()})"
-                        },
-                        onFailure = { err ->
-                            checkStatusMessage = "Kontrol başarısız: ${err.message}"
+                    when (res) {
+                        is com.example.update.UpdateCheckResult.UpdateAvailable -> {
+                            latestRelease = res.release
+                            checkStatusMessage = "Yeni sürüm bulundu: v${res.release.versionName} (Kod: ${res.release.versionCode})"
                         }
-                    )
+                        is com.example.update.UpdateCheckResult.UpToDate -> {
+                            latestRelease = res.latestRemote
+                            checkStatusMessage = "Uygulama güncel (v${res.currentVersionName} • Kod: ${res.currentVersionCode})"
+                        }
+                        is com.example.update.UpdateCheckResult.NoReleaseFound -> {
+                            checkStatusMessage = "GitHub'da yayınlanmış sürüm bulunamadı."
+                        }
+                        is com.example.update.UpdateCheckResult.ApkAssetMissing -> {
+                            checkStatusMessage = "APK dosyası bulunamadı (${res.tagName})."
+                        }
+                        is com.example.update.UpdateCheckResult.NetworkError -> {
+                            checkStatusMessage = "İnternet bağlantısı hatası: ${res.detail}"
+                        }
+                        is com.example.update.UpdateCheckResult.ApiError -> {
+                            checkStatusMessage = "GitHub API hatası (${res.httpCode}): ${res.detail}"
+                        }
+                    }
                 }
 
                 LazyColumn(
@@ -698,24 +711,36 @@ fun AdminScreen(
                                         isChecking = true
                                         checkStatusMessage = "Kontrol ediliyor..."
                                         scope.launch {
-                                            val res = mgr.checkLatestRelease(forceRefresh = true)
+                                            val res = mgr.checkLatestReleaseDetailed(forceRefresh = true)
                                             isChecking = false
-                                            res.fold(
-                                                onSuccess = { rel ->
-                                                    latestRelease = rel
-                                                    if (rel != null) {
-                                                        checkStatusMessage = "Yeni sürüm: v${rel.versionName}"
-                                                        onShowUpdateDialog(rel)
-                                                    } else {
-                                                        checkStatusMessage = "Uygulama güncel!"
-                                                        Toast.makeText(context, "Harika! Zaten en son sürümü kullanıyorsunuz.", Toast.LENGTH_SHORT).show()
-                                                    }
-                                                },
-                                                onFailure = { err ->
-                                                    checkStatusMessage = "Hata: ${err.message}"
-                                                    Toast.makeText(context, "GitHub bağlantısı kurulamadı.", Toast.LENGTH_SHORT).show()
+                                            when (res) {
+                                                is com.example.update.UpdateCheckResult.UpdateAvailable -> {
+                                                    latestRelease = res.release
+                                                    checkStatusMessage = "Yeni sürüm: v${res.release.versionName} (Kod: ${res.release.versionCode})"
+                                                    onShowUpdateDialog(res.release)
                                                 }
-                                            )
+                                                is com.example.update.UpdateCheckResult.UpToDate -> {
+                                                    latestRelease = res.latestRemote
+                                                    checkStatusMessage = "Uygulama güncel (v${res.currentVersionName} • Kod: ${res.currentVersionCode})"
+                                                    Toast.makeText(context, "Uygulamanız güncel! (v${res.currentVersionName})", Toast.LENGTH_SHORT).show()
+                                                }
+                                                is com.example.update.UpdateCheckResult.NoReleaseFound -> {
+                                                    checkStatusMessage = "Yeni sürüm bulunamadı."
+                                                    Toast.makeText(context, "GitHub'da yayınlanmış sürüm bulunamadı.", Toast.LENGTH_LONG).show()
+                                                }
+                                                is com.example.update.UpdateCheckResult.ApkAssetMissing -> {
+                                                    checkStatusMessage = "APK bulunamadı (${res.tagName})."
+                                                    Toast.makeText(context, "Sürüm (${res.tagName}) bulundu ancak APK dosyası eklenmemiş.", Toast.LENGTH_LONG).show()
+                                                }
+                                                is com.example.update.UpdateCheckResult.NetworkError -> {
+                                                    checkStatusMessage = "İnternet bağlantısı hatası."
+                                                    Toast.makeText(context, res.detail, Toast.LENGTH_LONG).show()
+                                                }
+                                                is com.example.update.UpdateCheckResult.ApiError -> {
+                                                    checkStatusMessage = "GitHub API hatası (${res.httpCode})."
+                                                    Toast.makeText(context, res.detail, Toast.LENGTH_LONG).show()
+                                                }
+                                            }
                                         }
                                     },
                                     enabled = !isChecking,

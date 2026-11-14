@@ -191,7 +191,7 @@ jobs:
                           if tag:
                               existing_tags.add(tag)
                           body = str(rel.get("body", ""))
-                          for match in re.findall(r'versionCode(?:\s*\)\s*\*+)?\s*[:=]\s*(\d+)', body, re.IGNORECASE):
+                          for match in re.findall(r'versionCode[\s)*`]*[:=][\s*`]*(\d+)', body, re.IGNORECASE):
                               max_released_code = max(max_released_code, int(match))
               except Exception as e:
                   print(f"Önceki release sorgulaması atlandı ({e})")

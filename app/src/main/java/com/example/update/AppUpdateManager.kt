@@ -49,6 +49,20 @@ sealed class UpdateDownloadState {
     data class Error(val message: String) : UpdateDownloadState()
 }
 
+sealed class UpdateCheckResult {
+    data class UpdateAvailable(val release: AppReleaseInfo) : UpdateCheckResult()
+    data class UpToDate(
+        val currentVersionName: String,
+        val currentVersionCode: Int,
+        val latestRemote: AppReleaseInfo? = null,
+        val isRemoteOlder: Boolean = false
+    ) : UpdateCheckResult()
+    object NoReleaseFound : UpdateCheckResult()
+    data class ApkAssetMissing(val tagName: String) : UpdateCheckResult()
+    data class NetworkError(val detail: String) : UpdateCheckResult()
+    data class ApiError(val httpCode: Int, val detail: String) : UpdateCheckResult()
+}
+
 class AppUpdateManager(private val context: Context) {
 
     private val prefs = context.getSharedPreferences("bsr_update_prefs", Context.MODE_PRIVATE)
@@ -78,6 +92,12 @@ class AppUpdateManager(private val context: Context) {
                 .remove("cached_release_json")
                 .remove("last_check_timestamp")
                 .apply()
+        }
+
+        // Never trust a stale "last_installed_version" higher than the actual running BuildConfig.VERSION_CODE
+        val savedInstalled = prefs.getInt("last_installed_version", 0)
+        if (savedInstalled > BuildConfig.VERSION_CODE) {
+            prefs.edit().remove("last_installed_version").apply()
         }
     }
 
@@ -296,72 +316,48 @@ class AppUpdateManager(private val context: Context) {
     }
 
     private fun isReleaseNewerThanCurrent(release: AppReleaseInfo): Boolean {
-        val currentCode = getCurrentVersionCode()
-        if (release.versionCode > currentCode && !hasInstalledVersion(release.versionCode)) {
-            return true
-        }
-        return false
+        return evaluateReleaseComparison(release) is UpdateCheckResult.UpdateAvailable
     }
 
     /**
-     * Checks both Firestore and GitHub Releases for the latest version.
+     * Evaluates a parsed GitHub release strictly by numeric versionCode (falling back to numeric
+     * semver segments ONLY if versionCode was not provided in release metadata).
      */
-    suspend fun checkLatestRelease(forceRefresh: Boolean = false): Result<AppReleaseInfo?> = withContext(Dispatchers.IO) {
-        val currentCode = getCurrentVersionCode()
-
-        // 1. Check Firestore app_config/latest_update first
-        try {
-            val firestore = FirebaseFirestore.getInstance(
-                context.getString(com.example.R.string.firestore_database_id)
-            )
-            val doc = firestore.collection("app_config").document("latest_update").get().await()
-            if (doc.exists()) {
-                val vCode = doc.getLong("versionCode")?.toInt() ?: 0
-                if (vCode > currentCode && !hasInstalledVersion(vCode)) {
-                    val vName = doc.getString("versionName") ?: getCurrentVersionName()
-                    val url = normalizeDownloadUrl(doc.getString("apkDownloadUrl"), vName)
-                    if (url.endsWith(".apk", ignoreCase = true)) {
-                        val firestoreRelease = AppReleaseInfo(
-                            tagName = doc.getString("tagName") ?: "v$vName",
-                            versionName = vName,
-                            versionCode = vCode,
-                            title = doc.getString("title") ?: "Blacksea Robotics v$vName Yayında",
-                            changelog = doc.getString("changelog") ?: "• Performans iyileştirmeleri ve hata düzeltmeleri",
-                            publishedAt = doc.getString("publishedAt") ?: "Bugün",
-                            apkDownloadUrl = url,
-                            apkFileName = doc.getString("apkFileName") ?: "BlackseaRobotics-v$vName.apk",
-                            apkSize = doc.getLong("apkSize") ?: (20 * 1024 * 1024L),
-                            expectedSha256 = doc.getString("expectedSha256") ?: "",
-                            isForceUpdate = doc.getBoolean("isForceUpdate") ?: false
-                        )
-                        return@withContext Result.success(firestoreRelease)
-                    }
-                }
-            } else {
-                try {
-                    val payload = mapOf(
-                        "versionName" to getCurrentVersionName(),
-                        "versionCode" to currentCode,
-                        "tagName" to "v${getCurrentVersionName()}",
-                        "title" to "Blacksea Robotics v${getCurrentVersionName()}",
-                        "changelog" to "Güncel kararlı sürüm.",
-                        "apkDownloadUrl" to "https://github.com/$githubOwner/$githubRepo/releases",
-                        "apkFileName" to "BlackseaRobotics-v${getCurrentVersionName()}.apk",
-                        "apkSize" to (20 * 1024 * 1024L),
-                        "isForceUpdate" to false,
-                        "publishedAt" to "Bugün",
-                        "updatedAt" to FieldValue.serverTimestamp()
-                    )
-                    firestore.collection("app_config").document("latest_update").set(payload).await()
-                } catch (e: Exception) {
-                    Log.w(TAG, "Writing current version to Firestore: ${e.message}")
-                }
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "Firestore update check: ${e.message}")
+    internal fun evaluateReleaseComparison(
+        release: AppReleaseInfo,
+        currentCode: Int = getCurrentVersionCode(),
+        currentName: String = getCurrentVersionName()
+    ): UpdateCheckResult {
+        if (release.apkDownloadUrl.isBlank()) {
+            return UpdateCheckResult.ApkAssetMissing(release.tagName.ifBlank { release.versionName })
         }
 
-        // 2. Check GitHub Releases API
+        return if (release.versionCode > 0) {
+            when {
+                release.versionCode > currentCode -> UpdateCheckResult.UpdateAvailable(release)
+                release.versionCode == currentCode -> UpdateCheckResult.UpToDate(currentName, currentCode, release, isRemoteOlder = false)
+                else -> UpdateCheckResult.UpToDate(currentName, currentCode, release, isRemoteOlder = true)
+            }
+        } else {
+            val semverCmp = compareSemver(release.versionName, currentName)
+            when {
+                semverCmp > 0 -> UpdateCheckResult.UpdateAvailable(release.copy(versionCode = currentCode + 1))
+                semverCmp == 0 -> UpdateCheckResult.UpToDate(currentName, currentCode, release, isRemoteOlder = false)
+                else -> UpdateCheckResult.UpToDate(currentName, currentCode, release, isRemoteOlder = true)
+            }
+        }
+    }
+
+    internal fun parseReleaseJson(json: JSONObject): AppReleaseInfo? = parseRelease(json)
+
+    /**
+     * Checks GitHub Releases API (and Firestore config fallback) with rich, explicit status reporting.
+     */
+    suspend fun checkLatestReleaseDetailed(forceRefresh: Boolean = false): UpdateCheckResult = withContext(Dispatchers.IO) {
+        val currentCode = getCurrentVersionCode()
+        val currentName = getCurrentVersionName()
+
+        // 1. Check 15-minute cache if not forcing a fresh check
         val now = System.currentTimeMillis()
         val lastCheckTime = prefs.getLong("last_check_timestamp", 0L)
         val cachedReleaseJson = prefs.getString("cached_release_json", null)
@@ -369,51 +365,136 @@ class AppUpdateManager(private val context: Context) {
         if (!forceRefresh && cachedReleaseJson != null && (now - lastCheckTime) < TimeUnit.MINUTES.toMillis(15)) {
             try {
                 val parsed = parseRelease(JSONObject(cachedReleaseJson))
-                if (parsed != null && isReleaseNewerThanCurrent(parsed) && parsed.apkDownloadUrl.isNotBlank()) {
-                    return@withContext Result.success(parsed)
+                if (parsed != null) {
+                    val eval = evaluateReleaseComparison(parsed, currentCode, currentName)
+                    if (eval is UpdateCheckResult.UpdateAvailable) {
+                        return@withContext eval
+                    }
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "Failed to parse cached release: ${e.message}")
             }
         }
 
-        val url = "https://api.github.com/repos/$githubOwner/$githubRepo/releases/latest"
+        // 2. Query GitHub Releases API (/releases/latest)
+        val latestUrl = "https://api.github.com/repos/$githubOwner/$githubRepo/releases/latest"
         try {
             val reqBuilder = Request.Builder()
-                .url(url)
+                .url(latestUrl)
                 .header("Accept", "application/vnd.github.v3+json")
-                .header("User-Agent", "BlackseaRobotics-AndroidApp/${BuildConfig.VERSION_NAME}")
+                .header("User-Agent", "BlackseaRobotics-AndroidApp/$currentName")
 
             if (githubToken.isNotBlank()) {
                 reqBuilder.header("Authorization", "Bearer $githubToken")
             }
 
             httpClient.newCall(reqBuilder.build()).execute().use { response ->
-                if (!response.isSuccessful) {
-                    if (response.code == 404) {
-                        return@withContext Result.success(null)
+                if (response.isSuccessful) {
+                    val bodyString = response.body?.string().orEmpty()
+                    if (bodyString.isBlank()) {
+                        return@withContext UpdateCheckResult.ApiError(response.code, "GitHub API boş yanıt döndürdü.")
                     }
-                    return@withContext Result.failure(Exception("GitHub API yanıtı: ${response.code}"))
+                    val jsonObject = JSONObject(bodyString)
+                    val isDraft = jsonObject.optBoolean("draft", false)
+                    val isPrerelease = jsonObject.optBoolean("prerelease", false)
+                    if (!isDraft && !isPrerelease) {
+                        prefs.edit()
+                            .putLong("last_check_timestamp", now)
+                            .putString("cached_release_json", bodyString)
+                            .apply()
+
+                        val parsed = parseRelease(jsonObject)
+                            ?: return@withContext UpdateCheckResult.NoReleaseFound
+                        return@withContext evaluateReleaseComparison(parsed, currentCode, currentName)
+                    }
+                } else if (response.code != 404) {
+                    val msg = when (response.code) {
+                        403, 429 -> "GitHub API hız sınırına (rate limit) ulaşıldı veya erişim reddedildi."
+                        401 -> "GitHub yetkilendirme hatası (HTTP 401)."
+                        else -> "GitHub sunucu hatası (HTTP ${response.code})."
+                    }
+                    Log.e(TAG, "GitHub /releases/latest error: HTTP ${response.code}")
+                    return@withContext UpdateCheckResult.ApiError(response.code, msg)
+                }
+            }
+
+            // 3. If /releases/latest returned 404 (no 'latest' release or only prereleases/repo missing), query /releases list
+            val listUrl = "https://api.github.com/repos/$githubOwner/$githubRepo/releases?per_page=10"
+            val listReq = Request.Builder()
+                .url(listUrl)
+                .header("Accept", "application/vnd.github.v3+json")
+                .header("User-Agent", "BlackseaRobotics-AndroidApp/$currentName")
+                .apply {
+                    if (githubToken.isNotBlank()) header("Authorization", "Bearer $githubToken")
+                }
+                .build()
+
+            httpClient.newCall(listReq).execute().use { listResponse ->
+                if (!listResponse.isSuccessful) {
+                    if (listResponse.code == 404) {
+                        return@withContext UpdateCheckResult.ApiError(
+                            404,
+                            "GitHub deposu bulunamadı veya gizli ($githubOwner/$githubRepo)."
+                        )
+                    }
+                    return@withContext UpdateCheckResult.ApiError(
+                        listResponse.code,
+                        "GitHub Releases listesi alınamadı (HTTP ${listResponse.code})."
+                    )
                 }
 
-                val bodyString = response.body?.string() ?: return@withContext Result.failure(Exception("Boş yanıt alındı"))
-                val jsonObject = JSONObject(bodyString)
+                val listBody = listResponse.body?.string().orEmpty()
+                val arr = JSONArray(listBody)
+                var bestPublished: JSONObject? = null
+                var bestParsed: AppReleaseInfo? = null
+
+                for (i in 0 until arr.length()) {
+                    val obj = arr.optJSONObject(i) ?: continue
+                    if (obj.optBoolean("draft", false) || obj.optBoolean("prerelease", false)) continue
+                    val rel = parseRelease(obj) ?: continue
+                    if (bestParsed == null || rel.versionCode > bestParsed.versionCode) {
+                        bestPublished = obj
+                        bestParsed = rel
+                    }
+                }
+
+                if (bestPublished == null || bestParsed == null) {
+                    return@withContext UpdateCheckResult.NoReleaseFound
+                }
 
                 prefs.edit()
                     .putLong("last_check_timestamp", now)
-                    .putString("cached_release_json", bodyString)
+                    .putString("cached_release_json", bestPublished.toString())
                     .apply()
 
-                val parsed = parseRelease(jsonObject)
-                if (parsed != null && isReleaseNewerThanCurrent(parsed) && parsed.apkDownloadUrl.isNotBlank()) {
-                    Result.success(parsed)
-                } else {
-                    Result.success(null)
-                }
+                return@withContext evaluateReleaseComparison(bestParsed, currentCode, currentName)
             }
+        } catch (e: java.net.UnknownHostException) {
+            Log.e(TAG, "Network error (UnknownHost): ${e.message}")
+            UpdateCheckResult.NetworkError("İnternet bağlantısı yok veya GitHub sunucusuna ulaşılamıyor.")
+        } catch (e: java.net.SocketTimeoutException) {
+            Log.e(TAG, "Network timeout: ${e.message}")
+            UpdateCheckResult.NetworkError("Bağlantı zaman aşımına uğradı. İnternet bağlantınızı kontrol edin.")
+        } catch (e: java.io.IOException) {
+            Log.e(TAG, "IO error during update check: ${e.message}", e)
+            UpdateCheckResult.NetworkError("Ağ bağlantı hatası: ${e.localizedMessage ?: "Bağlantı kurulamadı"}")
         } catch (e: Exception) {
-            Log.e(TAG, "Check release error: ${e.message}", e)
-            Result.failure(e)
+            Log.e(TAG, "Unexpected update check error: ${e.message}", e)
+            UpdateCheckResult.ApiError(-1, e.localizedMessage ?: "Bilinmeyen güncelleme kontrolü hatası.")
+        }
+    }
+
+    /**
+     * Legacy Result wrapper preserved for callers that only need an optional AppReleaseInfo.
+     */
+    suspend fun checkLatestRelease(forceRefresh: Boolean = false): Result<AppReleaseInfo?> {
+        return when (val detailed = checkLatestReleaseDetailed(forceRefresh)) {
+            is UpdateCheckResult.UpdateAvailable -> Result.success(detailed.release)
+            is UpdateCheckResult.UpToDate -> Result.success(null)
+            is UpdateCheckResult.NoReleaseFound -> Result.failure(Exception("GitHub üzerinde yayınlanmış sürüm bulunamadı."))
+            is UpdateCheckResult.ApkAssetMissing -> Result.failure(Exception("Sürüm (${detailed.tagName}) bulundu ancak .apk dosyası eklenmemiş."))
+            is UpdateCheckResult.NetworkError -> Result.failure(Exception(detailed.detail))
+            is UpdateCheckResult.ApiError -> Result.failure(Exception(detailed.detail))
         }
     }
 
@@ -522,6 +603,8 @@ class AppUpdateManager(private val context: Context) {
     }
 
     private fun parseRelease(json: JSONObject): AppReleaseInfo? {
+        if (json.optBoolean("draft", false)) return null
+
         val tagName = json.optString("tag_name", "").trim()
         val name = json.optString("name", tagName)
         val body = json.optString("body", "")
@@ -534,33 +617,30 @@ class AppUpdateManager(private val context: Context) {
 
         for (i in 0 until assets.length()) {
             val asset = assets.getJSONObject(i)
-            val assetName = asset.optString("name", "")
-            if (assetName.endsWith(".apk", ignoreCase = true)) {
-                apkUrl = asset.optString("browser_download_url", "")
+            val assetName = asset.optString("name", "").trim()
+            val downloadUrl = asset.optString("browser_download_url", "").trim()
+            val assetState = asset.optString("state", "uploaded")
+            val isApkFile = assetName.endsWith(".apk", ignoreCase = true)
+            val isUploaded = assetState.equals("uploaded", ignoreCase = true) || assetState.isBlank()
+            val isUnsigned = assetName.contains("unsigned", ignoreCase = true)
+
+            if (isApkFile && isUploaded && !isUnsigned && downloadUrl.startsWith("https://")) {
+                apkUrl = downloadUrl
                 apkFileName = assetName
                 apkSize = asset.optLong("size", 0L)
                 break
             }
         }
 
-        // Parse versionCode from release notes (supports "versionCode: 6" AND legacy "**Sürüm Kodu (versionCode):** 5")
+        // Parse explicit integer versionCode from release body (supports "versionCode: 6" AND legacy "**Sürüm Kodu (versionCode):** 5")
         var versionCode = 0
-        val vcRegex = Regex("""(?i)versionCode(?:\s*\)\s*\*+)?\s*[:=]\s*(\d+)""")
+        val vcRegex = Regex("""(?i)versionCode[\s)*`]*[:=][\s*`]*(\d+)""")
         val vcMatch = vcRegex.find(body)
         if (vcMatch != null) {
             versionCode = vcMatch.groupValues[1].toIntOrNull() ?: 0
         }
 
         val cleanTag = tagName.removePrefix("v").removePrefix("V")
-        if (versionCode == 0) {
-            // Do NOT inflate identical versionName to a pseudo-versionCode > currentCode!
-            val semverCmp = compareSemver(cleanTag, getCurrentVersionName())
-            versionCode = if (semverCmp > 0) {
-                getCurrentVersionCode() + 1
-            } else {
-                getCurrentVersionCode()
-            }
-        }
 
         val isForce = body.contains("forceUpdate: true", ignoreCase = true) ||
             body.contains("force_update: true", ignoreCase = true) ||

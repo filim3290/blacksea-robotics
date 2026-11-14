@@ -352,24 +352,49 @@ fun ProfileScreen(
                         onClick = {
                             isCheckingUpdate = true
                             scope.launch {
-                                val result = mgr.checkLatestRelease(forceRefresh = true)
+                                val result = mgr.checkLatestReleaseDetailed(forceRefresh = true)
                                 isCheckingUpdate = false
-                                result.fold(
-                                    onSuccess = { release ->
-                                        if (release != null) {
-                                            onShowUpdateDialog(release)
-                                        } else {
-                                            Toast.makeText(
-                                                context,
-                                                "Uygulamanız güncel! (v${mgr.getCurrentVersionName()})",
-                                                Toast.LENGTH_SHORT
-                                            ).show()
-                                        }
-                                    },
-                                    onFailure = { err ->
-                                        Toast.makeText(context, "Güncelleme kontrol edilemedi. İnternet bağlantınızı kontrol edin.", Toast.LENGTH_SHORT).show()
+                                when (result) {
+                                    is com.example.update.UpdateCheckResult.UpdateAvailable -> {
+                                        onShowUpdateDialog(result.release)
                                     }
-                                )
+                                    is com.example.update.UpdateCheckResult.UpToDate -> {
+                                        val msg = if (result.isRemoteOlder && result.latestRemote != null) {
+                                            "Daha yeni sürüm kullanıyorsunuz: v${result.currentVersionName} (${result.currentVersionCode})"
+                                        } else {
+                                            "Uygulamanız güncel! (v${result.currentVersionName} • Kod: ${result.currentVersionCode})"
+                                        }
+                                        Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                                    }
+                                    is com.example.update.UpdateCheckResult.NoReleaseFound -> {
+                                        Toast.makeText(
+                                            context,
+                                            "Yeni sürüm bulunamadı: GitHub deposunda yayınlanmış sürüm yok.",
+                                            Toast.LENGTH_LONG
+                                        ).show()
+                                    }
+                                    is com.example.update.UpdateCheckResult.ApkAssetMissing -> {
+                                        Toast.makeText(
+                                            context,
+                                            "Sürüm (${result.tagName}) bulundu ancak APK dosyası eklenmemiş.",
+                                            Toast.LENGTH_LONG
+                                        ).show()
+                                    }
+                                    is com.example.update.UpdateCheckResult.NetworkError -> {
+                                        Toast.makeText(
+                                            context,
+                                            "İnternet bağlantısı hatası: ${result.detail}",
+                                            Toast.LENGTH_LONG
+                                        ).show()
+                                    }
+                                    is com.example.update.UpdateCheckResult.ApiError -> {
+                                        Toast.makeText(
+                                            context,
+                                            "GitHub API hatası (${result.httpCode}): ${result.detail}",
+                                            Toast.LENGTH_LONG
+                                        ).show()
+                                    }
+                                }
                             }
                         },
                         enabled = !isCheckingUpdate,
