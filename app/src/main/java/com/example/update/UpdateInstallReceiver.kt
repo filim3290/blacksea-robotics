@@ -5,7 +5,9 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageInstaller
 import android.os.Build
-import android.util.Log
+import com.example.util.AppMessages
+import com.example.util.logDebug
+import com.example.util.logDebugError
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -54,36 +56,16 @@ class UpdateInstallReceiver : BroadcastReceiver() {
             else -> "STATUS_UNKNOWN($status)"
         }
 
-        fun buildUserFriendlyMessage(status: Int, rawMessage: String): String {
-            val lower = rawMessage.lowercase()
+        fun buildUserFriendlyMessage(status: Int, @Suppress("UNUSED_PARAMETER") rawMessage: String): String {
             return when (status) {
-                PackageInstaller.STATUS_FAILURE_CONFLICT -> {
-                    when {
-                        lower.contains("signatures") || lower.contains("update_incompatible") || lower.contains("inconsistent certificates") ->
-                            "APK imza sertifikası telefondaki kurulu uygulamayla eşleşmiyor (INSTALL_FAILED_UPDATE_INCOMPATIBLE). Yeni APK mutlaka aynı kalıcı keystore ile imzalanmalıdır."
-                        lower.contains("downgrade") || lower.contains("version_downgrade") ->
-                            "Sürüm düşürme engellendi (INSTALL_FAILED_VERSION_DOWNGRADE). İndirilen APK'nın versionCode değeri telefondaki kurulu sürümden büyük olmalıdır."
-                        else ->
-                            "Mevcut uygulamayla paket/imza çakışması oluştu (STATUS_FAILURE_CONFLICT). Kurulu uygulama ile yeni APK'nın imza anahtarı veya paket yapılandırması uyuşmuyor."
-                    }
-                }
-                PackageInstaller.STATUS_FAILURE_INVALID ->
-                    "İndirilen APK dosyası bozuk veya geçersiz paket yapısına sahip (STATUS_FAILURE_INVALID)."
-                PackageInstaller.STATUS_FAILURE_INCOMPATIBLE -> {
-                    if (lower.contains("downgrade") || lower.contains("version")) {
-                        "Yeni APK'nın sürüm kodu (versionCode) kurulu sürümden düşük veya uyumsuz (STATUS_FAILURE_INCOMPATIBLE)."
-                    } else {
-                        "APK cihazınız veya Android sürümünüzle uyumlu değil (STATUS_FAILURE_INCOMPATIBLE)."
-                    }
-                }
                 PackageInstaller.STATUS_FAILURE_BLOCKED ->
-                    "Kurulum cihaz politikası veya güvenlik ayarları tarafından engellendi (STATUS_FAILURE_BLOCKED). 'Bilinmeyen uygulamaları yükle' iznini kontrol edin."
+                    "Kurulum cihaz güvenlik ayarları tarafından engellendi. Yükleme iznini kontrol edip tekrar deneyin."
                 PackageInstaller.STATUS_FAILURE_STORAGE ->
-                    "Kurulum için cihazda yeterli depolama alanı yok (STATUS_FAILURE_STORAGE)."
+                    "Kurulum için cihazda yeterli depolama alanı yok. Yer açıp tekrar deneyin."
                 PackageInstaller.STATUS_FAILURE_ABORTED ->
-                    "Kurulum kullanıcı veya sistem tarafından iptal edildi (STATUS_FAILURE_ABORTED)."
+                    "Güncelleme kurulumu iptal edildi."
                 else ->
-                    "Kurulum başarısız oldu (${statusNameFor(status)}).${if (rawMessage.isNotBlank()) " Detay: $rawMessage" else ""}"
+                    AppMessages.UPDATE_INSTALL_ERROR
             }
         }
     }
@@ -94,7 +76,7 @@ class UpdateInstallReceiver : BroadcastReceiver() {
         val pkgName = intent.getStringExtra(PackageInstaller.EXTRA_PACKAGE_NAME).orEmpty()
         val statusName = statusNameFor(status)
 
-        Log.i(TAG, "PackageInstaller callback -> status=$statusName ($status), package=$pkgName, message=$rawMessage")
+        logDebug(TAG, "PackageInstaller callback -> status=$statusName ($status), package=$pkgName, message=$rawMessage")
 
         when (status) {
             PackageInstaller.STATUS_PENDING_USER_ACTION -> {
@@ -111,42 +93,42 @@ class UpdateInstallReceiver : BroadcastReceiver() {
                         UpdateInstallResultBus.update(InstallResultState.PendingUserAction)
                         context.startActivity(confirmIntent)
                     } catch (e: Exception) {
-                        Log.e(TAG, "Failed to launch system install confirmation: ${e.message}", e)
+                        logDebugError(TAG, "Failed to launch system install confirmation", e)
                         UpdateInstallResultBus.update(
                             InstallResultState.Error(
                                 statusCode = PackageInstaller.STATUS_FAILURE,
                                 statusName = "CONFIRM_INTENT_ERROR",
-                                rawMessage = e.message.orEmpty(),
-                                userMessage = "Android kurulum onay penceresi açılamadı: ${e.message}"
+                                rawMessage = "",
+                                userMessage = AppMessages.UPDATE_INSTALL_ERROR
                             )
                         )
                     }
                 } else {
-                    Log.e(TAG, "STATUS_PENDING_USER_ACTION received without EXTRA_INTENT")
+                    logDebugError(TAG, "STATUS_PENDING_USER_ACTION received without EXTRA_INTENT")
                     UpdateInstallResultBus.update(
                         InstallResultState.Error(
                             statusCode = status,
                             statusName = statusName,
-                            rawMessage = "EXTRA_INTENT missing",
-                            userMessage = "Sistem kurulum onay ekranı bulunamadı."
+                            rawMessage = "",
+                            userMessage = AppMessages.UPDATE_INSTALL_ERROR
                         )
                     )
                 }
             }
 
             PackageInstaller.STATUS_SUCCESS -> {
-                Log.i(TAG, "APK installation succeeded for $pkgName")
+                logDebug(TAG, "APK installation succeeded for $pkgName")
                 UpdateInstallResultBus.update(InstallResultState.Success)
             }
 
             else -> {
-                Log.e(TAG, "APK installation failed: status=$statusName ($status), message=$rawMessage")
+                logDebugError(TAG, "APK installation failed: status=$statusName ($status), message=$rawMessage")
                 val userMessage = buildUserFriendlyMessage(status, rawMessage)
                 UpdateInstallResultBus.update(
                     InstallResultState.Error(
                         statusCode = status,
                         statusName = statusName,
-                        rawMessage = rawMessage,
+                        rawMessage = "",
                         userMessage = userMessage
                     )
                 )

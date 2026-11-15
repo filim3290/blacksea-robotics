@@ -6,6 +6,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
@@ -27,6 +28,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.Campaign
 import androidx.compose.material.icons.filled.ChatBubble
 import androidx.compose.material.icons.filled.DoneAll
@@ -74,10 +76,12 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.rememberCoroutineScope
 import kotlinx.coroutines.launch
 import com.example.model.TeamNotification
+import com.example.notifications.TeamNotificationDispatcher
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -94,7 +98,6 @@ import androidx.compose.ui.unit.sp
 import com.example.R
 import com.example.data.BlackseaRepository
 import com.example.model.UserProfile
-import com.example.model.UserRole
 import com.example.ui.components.BlackseaLogo
 import com.example.ui.screens.AdminScreen
 import com.example.ui.screens.FilesScreen
@@ -102,7 +105,7 @@ import com.example.ui.screens.HomeScreen
 import com.example.ui.screens.IdeasScreen
 import com.example.ui.screens.ProfileScreen
 import com.example.ui.screens.RoomsScreen
-import com.example.ui.theme.ElectricBlue
+import com.example.ui.theme.blackseaColors
 
 enum class NavItem(val route: String, val title: String) {
     HOME("home", "Ana Sayfa"),
@@ -124,17 +127,15 @@ fun MainScreen(
     onShowUpdateDialog: (com.example.update.AppReleaseInfo) -> Unit = {},
     onSignOut: () -> Unit
 ) {
+    val context = LocalContext.current
+    val ext = MaterialTheme.blackseaColors
     val currentUserProfile by repository.observeUserProfile(currentUserId).collectAsState(initial = null)
     var currentTab by remember { mutableStateOf(NavItem.HOME) }
     var selectedRoomIdForNavigation by remember { mutableStateOf("general") }
+    var adminInitialTab by remember { mutableIntStateOf(0) }
     val scope = rememberCoroutineScope()
 
-    val isAdmin = currentUserProfile?.isSuperAdmin == true ||
-            currentUserProfile?.role == UserRole.ADMIN.displayName ||
-            currentUserProfile?.roles?.contains("Yönetici") == true ||
-            currentUserProfile?.roles?.contains("Takım Kaptanı") == true ||
-            currentUserProfile?.roles?.contains("Yetkili Öğretmen") == true ||
-            currentUserProfile?.email.equals("filim3290@gmail.com", ignoreCase = true)
+    val isAdmin = currentUserProfile?.isManagerAccount() == true
 
     fun navigateForNotification(type: String, roomId: String) {
         when (type.lowercase()) {
@@ -144,7 +145,14 @@ fun MainScreen(
             }
             "file" -> currentTab = NavItem.FILES
             "idea", "comment" -> currentTab = NavItem.IDEAS
-            "member_pending" -> currentTab = if (isAdmin) NavItem.ADMIN else NavItem.HOME
+            "member_pending" -> {
+                if (isAdmin) {
+                    adminInitialTab = 1
+                    currentTab = NavItem.ADMIN
+                } else {
+                    currentTab = NavItem.HOME
+                }
+            }
             else -> currentTab = NavItem.HOME
         }
     }
@@ -159,19 +167,35 @@ fun MainScreen(
     }
 
     // Team-targeted notifications (General + User's Team + Broadcasts + Ideas + New Members + Updates)
-    // Wait until profile is loaded so team & manager role filtering is accurate on first subscription
-    val notifications by remember(currentUserId, isAdmin, currentUserProfile?.team, currentUserProfile != null) {
+    // Filter out historical shared notifications created before this member joined
+    val effectiveJoinMs = remember(currentUserId, currentUserProfile?.createdAt) {
+        val profileTs = currentUserProfile?.createdAt?.toDate()?.time ?: 0L
+        if (profileTs > 0L) {
+            TeamNotificationDispatcher.recordUserJoinTimestampIfMissing(context, currentUserId, profileTs)
+            profileTs
+        } else {
+            TeamNotificationDispatcher.getUserJoinTimestampMs(context, currentUserId)
+        }
+    }
+    val notifications by remember(
+        currentUserId,
+        isAdmin,
+        currentUserProfile?.team,
+        effectiveJoinMs,
+        currentUserProfile != null
+    ) {
         if (currentUserProfile == null) {
             flowOf(emptyList())
         } else {
             repository.observeNotifications(
                 userId = currentUserId,
                 isManager = isAdmin,
-                userTeam = currentUserProfile?.team ?: ""
+                userTeam = currentUserProfile?.team ?: "",
+                userCreatedAtMs = effectiveJoinMs
             )
         }
     }.collectAsState(initial = emptyList())
-    var locallyReadIds by remember { mutableStateOf(setOf<String>()) }
+    var locallyReadIds by remember(currentUserId) { mutableStateOf(setOf<String>()) }
     val unreadNotificationsCount = remember(notifications, locallyReadIds) {
         notifications.count { notif ->
             !notif.isReadBy(currentUserId) && !locallyReadIds.contains(notif.id)
@@ -201,7 +225,7 @@ fun MainScreen(
                             Spacer(modifier = Modifier.height(4.dp))
                             Text(
                                 text = "BSR",
-                                color = ElectricBlue,
+                                color = ext.accentBlue,
                                 fontSize = 12.sp,
                                 fontWeight = FontWeight.Black
                             )
@@ -209,15 +233,20 @@ fun MainScreen(
                     },
                     modifier = Modifier.fillMaxHeight().testTag("adaptive_navigation_rail")
                 ) {
+                    val railColors = NavigationRailItemDefaults.colors(
+                        selectedIconColor = ext.accentBlue,
+                        selectedTextColor = ext.accentBlue,
+                        unselectedIconColor = ext.textMuted,
+                        unselectedTextColor = ext.textMuted,
+                        indicatorColor = ext.accentBlueContainer
+                    )
+
                     NavigationRailItem(
                         selected = currentTab == NavItem.HOME,
                         onClick = { currentTab = NavItem.HOME },
                         icon = { Icon(Icons.Default.Home, contentDescription = "Ana Sayfa") },
                         label = { Text("Ana Sayfa", fontSize = 11.sp) },
-                        colors = NavigationRailItemDefaults.colors(
-                            selectedIconColor = ElectricBlue,
-                            indicatorColor = ElectricBlue.copy(alpha = 0.15f)
-                        ),
+                        colors = railColors,
                         modifier = Modifier.testTag("nav_rail_home")
                     )
 
@@ -226,10 +255,7 @@ fun MainScreen(
                         onClick = { currentTab = NavItem.ROOMS },
                         icon = { Icon(Icons.Default.ChatBubble, contentDescription = "Odalar") },
                         label = { Text("Odalar", fontSize = 11.sp) },
-                        colors = NavigationRailItemDefaults.colors(
-                            selectedIconColor = ElectricBlue,
-                            indicatorColor = ElectricBlue.copy(alpha = 0.15f)
-                        ),
+                        colors = railColors,
                         modifier = Modifier.testTag("nav_rail_rooms")
                     )
 
@@ -238,10 +264,7 @@ fun MainScreen(
                         onClick = { currentTab = NavItem.IDEAS },
                         icon = { Icon(Icons.Default.Lightbulb, contentDescription = "Fikirler") },
                         label = { Text("Fikirler", fontSize = 11.sp) },
-                        colors = NavigationRailItemDefaults.colors(
-                            selectedIconColor = ElectricBlue,
-                            indicatorColor = ElectricBlue.copy(alpha = 0.15f)
-                        ),
+                        colors = railColors,
                         modifier = Modifier.testTag("nav_rail_ideas")
                     )
 
@@ -250,22 +273,25 @@ fun MainScreen(
                         onClick = { currentTab = NavItem.FILES },
                         icon = { Icon(Icons.Default.Folder, contentDescription = "Dosyalar") },
                         label = { Text("Dosyalar", fontSize = 11.sp) },
-                        colors = NavigationRailItemDefaults.colors(
-                            selectedIconColor = ElectricBlue,
-                            indicatorColor = ElectricBlue.copy(alpha = 0.15f)
-                        ),
+                        colors = railColors,
                         modifier = Modifier.testTag("nav_rail_files")
                     )
 
                     if (isAdmin) {
                         NavigationRailItem(
                             selected = currentTab == NavItem.ADMIN,
-                            onClick = { currentTab = NavItem.ADMIN },
+                            onClick = {
+                                adminInitialTab = 0
+                                currentTab = NavItem.ADMIN
+                            },
                             icon = { Icon(Icons.Default.Security, contentDescription = "Yönetici") },
                             label = { Text("Yönetici", fontSize = 11.sp) },
                             colors = NavigationRailItemDefaults.colors(
-                                selectedIconColor = Color(0xFFE11D48),
-                                indicatorColor = Color(0xFFE11D48).copy(alpha = 0.15f)
+                                selectedIconColor = ext.adminRedText,
+                                selectedTextColor = ext.adminRedText,
+                                unselectedIconColor = ext.textMuted,
+                                unselectedTextColor = ext.textMuted,
+                                indicatorColor = ext.adminRedSolid.copy(alpha = 0.14f)
                             ),
                             modifier = Modifier.testTag("nav_rail_admin")
                         )
@@ -278,10 +304,7 @@ fun MainScreen(
                         onClick = { currentTab = NavItem.PROFILE },
                         icon = { Icon(Icons.Default.Person, contentDescription = "Profil") },
                         label = { Text("Profil", fontSize = 11.sp) },
-                        colors = NavigationRailItemDefaults.colors(
-                            selectedIconColor = ElectricBlue,
-                            indicatorColor = ElectricBlue.copy(alpha = 0.15f)
-                        ),
+                        colors = railColors,
                         modifier = Modifier.testTag("nav_rail_profile")
                     )
                 }
@@ -292,6 +315,7 @@ fun MainScreen(
                         repository = repository,
                         currentUserProfile = currentUserProfile,
                         updateManager = updateManager,
+                        adminInitialTab = adminInitialTab,
                         onShowUpdateDialog = onShowUpdateDialog,
                         selectedRoomIdForNavigation = selectedRoomIdForNavigation,
                         onNavigateToRoom = { roomId ->
@@ -300,7 +324,10 @@ fun MainScreen(
                         },
                         onNavigateToIdeas = { currentTab = NavItem.IDEAS },
                         onNavigateToFiles = { currentTab = NavItem.FILES },
-                        onNavigateToAdmin = { currentTab = NavItem.ADMIN },
+                        onNavigateToAdmin = {
+                            adminInitialTab = 0
+                            currentTab = NavItem.ADMIN
+                        },
                         onSignOut = onSignOut
                     )
                 }
@@ -327,11 +354,11 @@ fun MainScreen(
                                 Spacer(modifier = Modifier.width(4.dp))
                                 Surface(
                                     shape = RoundedCornerShape(4.dp),
-                                    color = ElectricBlue.copy(alpha = 0.2f)
+                                    color = ext.accentBlueContainer
                                 ) {
                                     Text(
                                         text = "BSR",
-                                        color = ElectricBlue,
+                                        color = ext.accentBlue,
                                         fontSize = 9.sp,
                                         fontWeight = FontWeight.Bold,
                                         modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
@@ -353,7 +380,7 @@ fun MainScreen(
                                         badge = {
                                             if (unreadNotificationsCount > 0) {
                                                 Badge(
-                                                    containerColor = Color(0xFFEF4444),
+                                                    containerColor = ext.dangerSolid,
                                                     contentColor = Color.White
                                                 ) {
                                                     Text(
@@ -367,7 +394,7 @@ fun MainScreen(
                                         Icon(
                                             imageVector = Icons.Default.Notifications,
                                             contentDescription = "Takım Bildirimleri",
-                                            tint = if (unreadNotificationsCount > 0) ElectricBlue else MaterialTheme.colorScheme.onSurfaceVariant
+                                            tint = if (unreadNotificationsCount > 0) ext.accentBlue else ext.textMuted
                                         )
                                     }
                                 }
@@ -375,9 +402,15 @@ fun MainScreen(
                                 if (isAdmin) {
                                     Surface(
                                         shape = RoundedCornerShape(20.dp),
-                                        color = if (currentTab == NavItem.ADMIN) Color(0xFFE11D48) else Color(0xFFE11D48).copy(alpha = 0.15f),
+                                        color = if (currentTab == NavItem.ADMIN) ext.adminRedSolid else ext.adminRedSolid.copy(alpha = 0.14f),
+                                        border = if (!ext.isDark && currentTab != NavItem.ADMIN) {
+                                            BorderStroke(1.dp, ext.adminRedSolid.copy(alpha = 0.25f))
+                                        } else null,
                                         modifier = Modifier
-                                            .clickable { currentTab = if (currentTab == NavItem.ADMIN) NavItem.HOME else NavItem.ADMIN }
+                                            .clickable {
+                                                adminInitialTab = 0
+                                                currentTab = if (currentTab == NavItem.ADMIN) NavItem.HOME else NavItem.ADMIN
+                                            }
                                             .testTag("top_bar_admin_button")
                                     ) {
                                         Row(
@@ -388,12 +421,12 @@ fun MainScreen(
                                             Icon(
                                                 imageVector = Icons.Default.Security,
                                                 contentDescription = "Yönetici Paneli",
-                                                tint = if (currentTab == NavItem.ADMIN) Color.White else Color(0xFFE11D48),
+                                                tint = if (currentTab == NavItem.ADMIN) Color.White else ext.adminRedText,
                                                 modifier = Modifier.size(15.dp)
                                             )
                                             Text(
                                                 text = "Yönetici",
-                                                color = if (currentTab == NavItem.ADMIN) Color.White else Color(0xFFE11D48),
+                                                color = if (currentTab == NavItem.ADMIN) Color.White else ext.adminRedText,
                                                 fontSize = 11.sp,
                                                 fontWeight = FontWeight.Bold
                                             )
@@ -408,19 +441,23 @@ fun MainScreen(
                     )
                 },
                 bottomBar = {
+                    val navBarColors = NavigationBarItemDefaults.colors(
+                        selectedIconColor = ext.accentBlue,
+                        selectedTextColor = ext.accentBlue,
+                        unselectedIconColor = ext.textMuted,
+                        unselectedTextColor = ext.textMuted,
+                        indicatorColor = ext.accentBlueContainer
+                    )
                     NavigationBar(
                         containerColor = MaterialTheme.colorScheme.surface,
-                        tonalElevation = 8.dp
+                        tonalElevation = if (ext.isDark) 8.dp else 2.dp
                     ) {
                         NavigationBarItem(
                             selected = currentTab == NavItem.HOME,
                             onClick = { currentTab = NavItem.HOME },
                             icon = { Icon(Icons.Default.Home, contentDescription = "Ana Sayfa") },
                             label = { Text("Ana Sayfa", fontSize = 11.sp) },
-                            colors = NavigationBarItemDefaults.colors(
-                                selectedIconColor = ElectricBlue,
-                                indicatorColor = ElectricBlue.copy(alpha = 0.15f)
-                            ),
+                            colors = navBarColors,
                             modifier = Modifier.testTag("nav_home")
                         )
 
@@ -429,10 +466,7 @@ fun MainScreen(
                             onClick = { currentTab = NavItem.ROOMS },
                             icon = { Icon(Icons.Default.ChatBubble, contentDescription = "Odalar") },
                             label = { Text("Odalar", fontSize = 11.sp) },
-                            colors = NavigationBarItemDefaults.colors(
-                                selectedIconColor = ElectricBlue,
-                                indicatorColor = ElectricBlue.copy(alpha = 0.15f)
-                            ),
+                            colors = navBarColors,
                             modifier = Modifier.testTag("nav_rooms")
                         )
 
@@ -441,10 +475,7 @@ fun MainScreen(
                             onClick = { currentTab = NavItem.IDEAS },
                             icon = { Icon(Icons.Default.Lightbulb, contentDescription = "Fikirler") },
                             label = { Text("Fikirler", fontSize = 11.sp) },
-                            colors = NavigationBarItemDefaults.colors(
-                                selectedIconColor = ElectricBlue,
-                                indicatorColor = ElectricBlue.copy(alpha = 0.15f)
-                            ),
+                            colors = navBarColors,
                             modifier = Modifier.testTag("nav_ideas")
                         )
 
@@ -453,10 +484,7 @@ fun MainScreen(
                             onClick = { currentTab = NavItem.FILES },
                             icon = { Icon(Icons.Default.Folder, contentDescription = "Dosyalar") },
                             label = { Text("Dosyalar", fontSize = 11.sp) },
-                            colors = NavigationBarItemDefaults.colors(
-                                selectedIconColor = ElectricBlue,
-                                indicatorColor = ElectricBlue.copy(alpha = 0.15f)
-                            ),
+                            colors = navBarColors,
                             modifier = Modifier.testTag("nav_files")
                         )
 
@@ -465,10 +493,7 @@ fun MainScreen(
                             onClick = { currentTab = NavItem.PROFILE },
                             icon = { Icon(Icons.Default.Person, contentDescription = "Profil") },
                             label = { Text("Profil", fontSize = 11.sp) },
-                            colors = NavigationBarItemDefaults.colors(
-                                selectedIconColor = ElectricBlue,
-                                indicatorColor = ElectricBlue.copy(alpha = 0.15f)
-                            ),
+                            colors = navBarColors,
                             modifier = Modifier.testTag("nav_profile")
                         )
                     }
@@ -480,6 +505,7 @@ fun MainScreen(
                         repository = repository,
                         currentUserProfile = currentUserProfile,
                         updateManager = updateManager,
+                        adminInitialTab = adminInitialTab,
                         onShowUpdateDialog = onShowUpdateDialog,
                         selectedRoomIdForNavigation = selectedRoomIdForNavigation,
                         onNavigateToRoom = { roomId ->
@@ -488,7 +514,10 @@ fun MainScreen(
                         },
                         onNavigateToIdeas = { currentTab = NavItem.IDEAS },
                         onNavigateToFiles = { currentTab = NavItem.FILES },
-                        onNavigateToAdmin = { currentTab = NavItem.ADMIN },
+                        onNavigateToAdmin = {
+                            adminInitialTab = 0
+                            currentTab = NavItem.ADMIN
+                        },
                         onSignOut = onSignOut
                     )
                 }
@@ -539,6 +568,7 @@ private fun ScreenContent(
     repository: BlackseaRepository,
     currentUserProfile: UserProfile?,
     updateManager: com.example.update.AppUpdateManager? = null,
+    adminInitialTab: Int = 0,
     onShowUpdateDialog: (com.example.update.AppReleaseInfo) -> Unit = {},
     selectedRoomIdForNavigation: String,
     onNavigateToRoom: (String) -> Unit,
@@ -580,6 +610,7 @@ private fun ScreenContent(
                 repository = repository,
                 currentUserProfile = currentUserProfile,
                 updateManager = updateManager,
+                initialTabIndex = adminInitialTab,
                 onShowUpdateDialog = onShowUpdateDialog
             )
             NavItem.PROFILE -> ProfileScreen(
@@ -605,6 +636,7 @@ fun TeamNotificationsDialog(
     onMarkAllAsRead: () -> Unit
 ) {
     val context = LocalContext.current
+    val ext = MaterialTheme.blackseaColors
     val areSystemNotificationsEnabled = remember {
         NotificationManagerCompat.from(context).areNotificationsEnabled()
     }
@@ -626,7 +658,8 @@ fun TeamNotificationsDialog(
                 .height(540.dp),
             shape = RoundedCornerShape(20.dp),
             color = MaterialTheme.colorScheme.surface,
-            tonalElevation = 6.dp,
+            border = BorderStroke(1.dp, ext.cardBorder),
+            tonalElevation = 4.dp,
             shadowElevation = 8.dp
         ) {
             Column(
@@ -646,14 +679,14 @@ fun TeamNotificationsDialog(
                     ) {
                         Surface(
                             shape = CircleShape,
-                            color = ElectricBlue.copy(alpha = 0.15f),
+                            color = ext.accentBlueContainer,
                             modifier = Modifier.size(36.dp)
                         ) {
                             Box(contentAlignment = Alignment.Center) {
                                 Icon(
                                     imageVector = Icons.Default.Notifications,
                                     contentDescription = null,
-                                    tint = ElectricBlue,
+                                    tint = ext.accentBlue,
                                     modifier = Modifier.size(20.dp)
                                 )
                             }
@@ -668,7 +701,7 @@ fun TeamNotificationsDialog(
                             Text(
                                 text = if (unreadCount > 0) "$unreadCount okunmamış" else "Hepsi okundu",
                                 fontSize = 11.sp,
-                                color = if (unreadCount > 0) ElectricBlue else Color(0xFF94A3B8),
+                                color = if (unreadCount > 0) ext.accentBlue else ext.textMuted,
                                 fontWeight = FontWeight.Medium
                             )
                         }
@@ -678,8 +711,8 @@ fun TeamNotificationsDialog(
                         Button(
                             onClick = onMarkAllAsRead,
                             colors = ButtonDefaults.buttonColors(
-                                containerColor = ElectricBlue.copy(alpha = 0.15f),
-                                contentColor = ElectricBlue
+                                containerColor = ext.accentBlueContainer,
+                                contentColor = ext.accentBlue
                             ),
                             shape = RoundedCornerShape(8.dp),
                             contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
@@ -698,7 +731,8 @@ fun TeamNotificationsDialog(
                     Surface(
                         modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(12.dp),
-                        color = Color(0xFFEF4444).copy(alpha = 0.12f)
+                        color = ext.dangerContainer,
+                        border = BorderStroke(1.dp, ext.dangerText.copy(alpha = 0.25f))
                     ) {
                         Row(
                             modifier = Modifier.padding(10.dp),
@@ -708,7 +742,7 @@ fun TeamNotificationsDialog(
                             Icon(
                                 imageVector = Icons.Default.Warning,
                                 contentDescription = null,
-                                tint = Color(0xFFEF4444),
+                                tint = ext.dangerText,
                                 modifier = Modifier.size(20.dp)
                             )
                             Column(modifier = Modifier.weight(1f)) {
@@ -716,12 +750,12 @@ fun TeamNotificationsDialog(
                                     text = "Sistem Bildirimleri Kapalı",
                                     fontSize = 12.sp,
                                     fontWeight = FontWeight.Bold,
-                                    color = Color(0xFFEF4444)
+                                    color = ext.dangerText
                                 )
                                 Text(
                                     text = "Cihaz ayarlarından bildirimlere izin verin.",
                                     fontSize = 10.sp,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    color = ext.textSecondary
                                 )
                             }
                             TextButton(
@@ -742,7 +776,7 @@ fun TeamNotificationsDialog(
                                 },
                                 contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
                             ) {
-                                Text("Ayarlarda Aç", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = ElectricBlue)
+                                Text("Ayarlarda Aç", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = ext.accentBlue)
                             }
                         }
                     }
@@ -765,14 +799,14 @@ fun TeamNotificationsDialog(
                                 Icon(
                                     imageVector = Icons.Default.DoneAll,
                                     contentDescription = null,
-                                    tint = Color(0xFF94A3B8),
+                                    tint = ext.textMuted,
                                     modifier = Modifier.size(40.dp)
                                 )
                                 Spacer(modifier = Modifier.height(8.dp))
                                 Text(
                                     text = "Henüz yeni bir bildirim yok.",
                                     fontSize = 13.sp,
-                                    color = Color(0xFF94A3B8)
+                                    color = ext.textSecondary
                                 )
                             }
                         }
@@ -787,12 +821,13 @@ fun TeamNotificationsDialog(
                             ) { _, notif ->
                                 val isRead = notif.isReadBy(currentUserId) || locallyReadIds.contains(notif.id)
                                 val (notifIcon, notifTint) = when (notif.type.lowercase()) {
-                                    "broadcast", "announcement" -> Pair(Icons.Default.Campaign, Color(0xFFF59E0B))
-                                    "update" -> Pair(Icons.Default.SystemUpdate, Color(0xFF10B981))
-                                    "idea", "comment" -> Pair(Icons.Default.Lightbulb, Color(0xFFF59E0B))
-                                    "file" -> Pair(Icons.Default.Folder, Color(0xFF8B5CF6))
-                                    "new_member", "member_pending", "member_approved" -> Pair(Icons.Default.GroupAdd, Color(0xFF10B981))
-                                    else -> Pair(Icons.Default.ChatBubble, ElectricBlue)
+                                    "broadcast", "announcement" -> Pair(Icons.Default.Campaign, ext.amberText)
+                                    "update" -> Pair(Icons.Default.SystemUpdate, ext.emeraldText)
+                                    "idea", "comment" -> Pair(Icons.Default.Lightbulb, ext.amberText)
+                                    "file" -> Pair(Icons.Default.Folder, if (ext.isDark) Color(0xFFA78BFA) else Color(0xFF6D28D9))
+                                    "new_member", "member_pending", "member_approved" -> Pair(Icons.Default.GroupAdd, ext.emeraldText)
+                                    "access_revoked" -> Pair(Icons.Default.Block, ext.dangerText)
+                                    else -> Pair(Icons.Default.ChatBubble, ext.accentBlue)
                                 }
                                 Card(
                                     modifier = Modifier
@@ -804,11 +839,12 @@ fun TeamNotificationsDialog(
                                             onNotificationClick(notif)
                                         },
                                     shape = RoundedCornerShape(12.dp),
+                                    border = BorderStroke(1.dp, if (isRead) ext.cardBorder else ext.accentBlue.copy(alpha = 0.35f)),
                                     colors = CardDefaults.cardColors(
                                         containerColor = if (isRead) {
-                                            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                                            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = if (ext.isDark) 0.5f else 0.65f)
                                         } else {
-                                            ElectricBlue.copy(alpha = 0.12f)
+                                            ext.accentBlueContainer.copy(alpha = if (ext.isDark) 0.45f else 0.7f)
                                         }
                                     )
                                 ) {
@@ -819,7 +855,7 @@ fun TeamNotificationsDialog(
                                     ) {
                                         Surface(
                                             shape = CircleShape,
-                                            color = notifTint.copy(alpha = 0.2f),
+                                            color = notifTint.copy(alpha = 0.16f),
                                             modifier = Modifier.size(34.dp)
                                         ) {
                                             Box(contentAlignment = Alignment.Center) {
@@ -846,7 +882,7 @@ fun TeamNotificationsDialog(
                                                 if (!isRead) {
                                                     Surface(
                                                         shape = CircleShape,
-                                                        color = ElectricBlue,
+                                                        color = ext.accentBlue,
                                                         modifier = Modifier.size(8.dp)
                                                     ) {}
                                                 }
@@ -855,14 +891,14 @@ fun TeamNotificationsDialog(
                                             Text(
                                                 text = notif.message,
                                                 fontSize = 12.sp,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                color = ext.textSecondary
                                             )
                                             if (notif.senderName.isNotBlank()) {
                                                 Spacer(modifier = Modifier.height(4.dp))
                                                 Text(
                                                     text = "Gönderen: ${notif.senderName}",
                                                     fontSize = 10.sp,
-                                                    color = Color(0xFF94A3B8)
+                                                    color = ext.textMuted
                                                 )
                                             }
                                         }
@@ -883,7 +919,10 @@ fun TeamNotificationsDialog(
                     Button(
                         onClick = onDismiss,
                         shape = RoundedCornerShape(10.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = ElectricBlue)
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = ext.accentBlueSolid,
+                            contentColor = Color.White
+                        )
                     ) {
                         Text("Kapat", fontWeight = FontWeight.Bold, fontSize = 13.sp)
                     }

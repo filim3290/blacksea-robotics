@@ -91,6 +91,8 @@ import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import coil.compose.SubcomposeAsyncImage
 import com.example.ui.theme.ElectricBlue
+import com.example.ui.theme.blackseaColors
+import com.example.util.logDebugError
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -243,9 +245,10 @@ fun MediaThumbnailPreview(
     val resolvedDurationMs = if (durationMs > 0L) durationMs else localVideoMeta.durationMs
     val durationLabel = remember(resolvedDurationMs) { formatMediaDuration(resolvedDurationMs) }
 
+    val ext = MaterialTheme.blackseaColors
     Surface(
         shape = RoundedCornerShape(12.dp),
-        color = Color(0xFF0F172A),
+        color = if (ext.isDark) Color(0xFF0F172A) else Color(0xFFE2E8F0),
         modifier = modifier
             .fillMaxWidth()
             .height(height)
@@ -409,12 +412,17 @@ fun MediaThumbnailPreview(
 
 @Composable
 private fun MediaFallbackSurface(isVideo: Boolean) {
+    val ext = MaterialTheme.blackseaColors
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(
                 Brush.linearGradient(
-                    colors = listOf(Color(0xFF0F172A), Color(0xFF1E293B))
+                    colors = if (ext.isDark) {
+                        listOf(Color(0xFF0F172A), Color(0xFF1E293B))
+                    } else {
+                        listOf(Color(0xFFE2E8F0), Color(0xFFCBD5E1))
+                    }
                 )
             ),
         contentAlignment = Alignment.Center
@@ -422,7 +430,7 @@ private fun MediaFallbackSurface(isVideo: Boolean) {
         Icon(
             imageVector = if (isVideo) Icons.Default.Videocam else Icons.Default.BrokenImage,
             contentDescription = if (isVideo) "Video" else "Görsel yüklenemedi",
-            tint = Color(0xFF64748B),
+            tint = ext.textSecondary,
             modifier = Modifier.size(40.dp)
         )
     }
@@ -597,9 +605,10 @@ fun ExoVideoPlayerView(
             }
 
             override fun onPlayerError(error: PlaybackException) {
+                logDebugError("MediaPreview", "ExoPlayer playback error: ${error.errorCodeName}", error)
                 isBuffering = false
                 isPlaying = false
-                errorMessage = error.localizedMessage ?: "Video oynatılamadı (${error.errorCodeName})"
+                errorMessage = "Video şu anda oynatılamıyor. Lütfen tekrar deneyin."
             }
         }
         exoPlayer.addListener(listener)
@@ -707,7 +716,7 @@ fun ExoVideoPlayerView(
                             exoPlayer.prepare()
                             exoPlayer.play()
                         },
-                        colors = ButtonDefaults.buttonColors(containerColor = ElectricBlue)
+                        colors = ButtonDefaults.buttonColors(containerColor = ElectricBlue, contentColor = Color.White)
                     ) {
                         Icon(imageVector = Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(4.dp))

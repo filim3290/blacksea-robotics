@@ -8,7 +8,6 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
-import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
@@ -17,6 +16,7 @@ import com.example.R
 import com.example.model.TeamNotification
 import com.example.update.AppReleaseInfo
 import com.example.update.AppUpdateManager
+import com.example.util.logDebugWarn
 import org.json.JSONArray
 
 data class DispatchSelection(
@@ -36,6 +36,9 @@ object TeamNotificationDispatcher {
     const val CHANNEL_TEAM = "bsr_team_notifications"
     const val CHANNEL_ANNOUNCEMENTS = "bsr_announcements"
     const val CHANNEL_UPDATES = "bsr_updates"
+    const val CHANNEL_REALTIME_SYNC = "bsr_realtime_sync"
+
+    private const val PREF_REALTIME_SYNC_ENABLED = "realtime_sync_enabled"
 
     const val EXTRA_NOTIF_ID = "notif_id"
     const val EXTRA_NOTIF_TYPE = "notif_type"
@@ -43,6 +46,43 @@ object TeamNotificationDispatcher {
     const val EXTRA_OPEN_UPDATE_DIALOG = "open_update_dialog"
 
     private val dispatchLock = Any()
+
+    fun isRealtimeSyncEnabled(context: Context): Boolean {
+        val prefs = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        return prefs.getBoolean(PREF_REALTIME_SYNC_ENABLED, true)
+    }
+
+    fun setRealtimeSyncEnabled(context: Context, enabled: Boolean) {
+        context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean(PREF_REALTIME_SYNC_ENABLED, enabled)
+            .apply()
+    }
+
+    fun recordUserJoinTimestampIfMissing(
+        context: Context,
+        userId: String,
+        timestampMs: Long = System.currentTimeMillis()
+    ) {
+        if (userId.isBlank() || timestampMs <= 0L) return
+        val prefs = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val key = "join_ts_$userId"
+        if (!prefs.contains(key)) {
+            prefs.edit().putLong(key, timestampMs).apply()
+        }
+    }
+
+    fun getUserJoinTimestampMs(context: Context, userId: String): Long {
+        if (userId.isBlank()) return 0L
+        val prefs = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        return prefs.getLong("join_ts_$userId", 0L)
+    }
+
+    fun hasSeededBaseline(context: Context, userId: String): Boolean {
+        if (userId.isBlank()) return false
+        val prefs = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        return prefs.getBoolean("seeded_$userId", false)
+    }
 
     fun ensureNotificationChannels(context: Context) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -53,7 +93,7 @@ object TeamNotificationDispatcher {
                 "BLACKSEA ROBOTICS Bildirimleri",
                 NotificationManager.IMPORTANCE_HIGH
             ).apply {
-                description = "Takım mesajları, fikirler, dosyalar ve yeni üye bildirimleri"
+                description = "Takım mesajları, fikirler, dosyalar, yeni üyeler ve başvurular"
                 enableLights(true)
                 enableVibration(true)
             }
@@ -73,14 +113,26 @@ object TeamNotificationDispatcher {
                 "Uygulama Güncellemeleri",
                 NotificationManager.IMPORTANCE_HIGH
             ).apply {
-                description = "Yeni sürüm ve APK güncelleme bildirimleri"
+                description = "Yeni sürüm ve uygulama güncelleme bildirimleri"
                 enableLights(true)
                 enableVibration(true)
+            }
+
+            val realtimeSyncChannel = NotificationChannel(
+                CHANNEL_REALTIME_SYNC,
+                "Anlık Bildirim Bağlantısı",
+                NotificationManager.IMPORTANCE_MIN
+            ).apply {
+                description = "Uygulama kapalıyken anlık ekip bildirimlerini almak için sessiz bağlantı durumu"
+                setShowBadge(false)
+                enableLights(false)
+                enableVibration(false)
             }
 
             notificationManager.createNotificationChannel(generalChannel)
             notificationManager.createNotificationChannel(announcementsChannel)
             notificationManager.createNotificationChannel(updatesChannel)
+            notificationManager.createNotificationChannel(realtimeSyncChannel)
         }
     }
 
@@ -117,7 +169,8 @@ object TeamNotificationDispatcher {
         hasSeededBaseline: Boolean,
         baselineTimestampMs: Long,
         dispatchedIds: Set<String>,
-        nowMs: Long = System.currentTimeMillis()
+        nowMs: Long = System.currentTimeMillis(),
+        userCreatedAtMs: Long = 0L
     ): DispatchSelection {
         val validItems = notifications.filter { it.id.isNotBlank() }
 
@@ -132,6 +185,7 @@ object TeamNotificationDispatcher {
         }
 
         val minAllowedTimestampMs = (baselineTimestampMs - CLOCK_SKEW_TOLERANCE_MS).coerceAtLeast(0L)
+        val effectiveJoinFloorMs = if (userCreatedAtMs > 0L) (userCreatedAtMs - 5_000L).coerceAtLeast(0L) else 0L
         val candidates = validItems.filter { notif ->
             val alreadyDispatched = dispatchedIds.contains(notif.id)
             val alreadyRead = notif.isReadBy(userId)
@@ -140,8 +194,12 @@ object TeamNotificationDispatcher {
                     (notif.type.equals("new_member", ignoreCase = true) && notif.targetId == userId))
             val createdMs = notif.createdAt?.toDate()?.time
             val withinTimeWindow = createdMs == null || createdMs >= minAllowedTimestampMs
+            val afterUserJoined = notif.recipientUserId == userId ||
+                effectiveJoinFloorMs == 0L ||
+                createdMs == null ||
+                createdMs >= effectiveJoinFloorMs
 
-            !alreadyDispatched && !alreadyRead && !isOwnAction && withinTimeWindow
+            !alreadyDispatched && !alreadyRead && !isOwnAction && withinTimeWindow && afterUserJoined
         }.sortedBy { it.createdAt?.toDate()?.time ?: nowMs }
 
         return DispatchSelection(
@@ -153,6 +211,41 @@ object TeamNotificationDispatcher {
     }
 
     /**
+     * Silently syncs baseline timestamp and known IDs for [userId] (for instance on foreground app
+     * open) so missed/backlog notifications already in Firestore do NOT fire when opening the app.
+     */
+    fun syncBaselineSilently(
+        context: Context,
+        userId: String,
+        notifications: List<TeamNotification>,
+        nowMs: Long = System.currentTimeMillis()
+    ) {
+        if (userId.isBlank()) return
+        val appCtx = context.applicationContext
+        val prefs = appCtx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val seededKey = "seeded_$userId"
+        val baselineTsKey = "baseline_ts_$userId"
+        val idsKey = "dispatched_list_$userId"
+
+        synchronized(dispatchLock) {
+            val validItems = notifications.filter { it.id.isNotBlank() }
+            val existingBaseline = prefs.getLong(baselineTsKey, 0L)
+            val storedList = readStoredIdList(prefs.getString(idsKey, null))
+            val maxCreatedMs = validItems.mapNotNull { it.createdAt?.toDate()?.time }.maxOrNull() ?: 0L
+            val newBaseline = maxOf(existingBaseline, nowMs, maxCreatedMs)
+            val mergedIds = (storedList + validItems.map { it.id })
+                .distinct()
+                .takeLast(MAX_STORED_IDS)
+
+            prefs.edit()
+                .putBoolean(seededKey, true)
+                .putLong(baselineTsKey, newBaseline)
+                .putString(idsKey, writeStoredIdList(mergedIds))
+                .apply()
+        }
+    }
+
+    /**
      * Processes a filtered list of notifications for [userId].
      * On first run for this [userId], seeds the baseline silently so historical notifications are
      * NOT re-fired on app startup. Any genuine new notification arriving afterwards fires immediately
@@ -161,7 +254,8 @@ object TeamNotificationDispatcher {
     fun processNotifications(
         context: Context,
         userId: String,
-        notifications: List<TeamNotification>
+        notifications: List<TeamNotification>,
+        userCreatedAtMs: Long = 0L
     ): Int {
         if (userId.isBlank()) return 0
 
@@ -174,6 +268,10 @@ object TeamNotificationDispatcher {
         val toDispatch: List<TeamNotification>
         synchronized(dispatchLock) {
             val hasSeeded = prefs.getBoolean(seededKey, false)
+            if (!hasSeeded && notifications.isEmpty()) {
+                return 0
+            }
+
             val baselineTs = prefs.getLong(baselineTsKey, 0L)
             val storedList = readStoredIdList(prefs.getString(idsKey, null))
 
@@ -182,7 +280,8 @@ object TeamNotificationDispatcher {
                 userId = userId,
                 hasSeededBaseline = hasSeeded,
                 baselineTimestampMs = baselineTs,
-                dispatchedIds = storedList.toSet()
+                dispatchedIds = storedList.toSet(),
+                userCreatedAtMs = userCreatedAtMs
             )
 
             if (selection.shouldSeedBaseline) {
@@ -249,9 +348,9 @@ object TeamNotificationDispatcher {
                 notifManager.notify(stableId, builder.build())
                 postedCount++
             } catch (sec: SecurityException) {
-                Log.w(TAG, "Missing notification permission: ${sec.message}")
+                logDebugWarn(TAG, "Missing notification permission", sec)
             } catch (e: Exception) {
-                Log.w(TAG, "Failed to post system notification for ${notif.id}: ${e.message}")
+                logDebugWarn(TAG, "Failed to post system notification for ${notif.id}", e)
             }
         }
         return postedCount
@@ -300,10 +399,10 @@ object TeamNotificationDispatcher {
             updateManager.markVersionNotified(release.versionCode)
             true
         } catch (sec: SecurityException) {
-            Log.w(TAG, "Missing notification permission for update: ${sec.message}")
+            logDebugWarn(TAG, "Missing notification permission for update", sec)
             false
         } catch (e: Exception) {
-            Log.w(TAG, "Failed to post update notification: ${e.message}")
+            logDebugWarn(TAG, "Failed to post update notification", e)
             false
         }
     }

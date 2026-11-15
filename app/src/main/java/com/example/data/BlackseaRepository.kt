@@ -8,7 +8,8 @@ import android.media.ExifInterface
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.util.Base64
-import android.util.Log
+import com.example.util.logDebugError
+import com.example.util.logDebugWarn
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
@@ -57,20 +58,28 @@ data class FileUploadResult(
     val mediaDurationMs: Long = 0L
 )
 
+sealed interface UserProfileLoadState {
+    data object Loading : UserProfileLoadState
+    data class Found(val profile: UserProfile) : UserProfileLoadState
+    data object Missing : UserProfileLoadState
+}
+
 /**
  * Determines whether [userId] should see and be notified about [notif].
  * Rules:
  * 1. Never notify a user for actions/messages/files/ideas/broadcasts they initiated themselves.
- * 2. Direct personal notifications & manager-only notifications follow recipientUserId.
- * 3. Broadcast/announcement, update, idea, and new_member notifications are delivered team-wide.
- * 4. Message and file notifications are filtered strictly by general room or user's own team
+ * 2. Historical team/room notifications created before [userCreatedAtMs] are hidden from new members.
+ * 3. Direct personal notifications & manager-only notifications follow recipientUserId.
+ * 4. Broadcast/announcement, update, idea, and new_member notifications are delivered team-wide.
+ * 5. Message and file notifications are filtered strictly by general room or user's own team
  *    (managers see all rooms except their own sent content).
  */
 fun shouldUserReceiveNotification(
     notif: TeamNotification,
     userId: String,
     isManager: Boolean,
-    userTeam: String = ""
+    userTeam: String = "",
+    userCreatedAtMs: Long = 0L
 ): Boolean {
     // 1. Exclude sender from receiving notifications for their own content/actions
     if (userId.isNotBlank() && notif.senderId.isNotBlank() && notif.senderId == userId) {
@@ -82,7 +91,15 @@ fun shouldUserReceiveNotification(
         return true
     }
 
-    // 3. Manager-only notifications (e.g. member_pending)
+    // 3. New users should not see historical shared notifications created before they joined
+    if (userCreatedAtMs > 0L) {
+        val notifTimeMs = notif.createdAt?.toDate()?.time
+        if (notifTimeMs != null && notifTimeMs < (userCreatedAtMs - 5_000L)) {
+            return false
+        }
+    }
+
+    // 4. Manager-only notifications (e.g. member_pending)
     if (notif.recipientUserId == "managers") {
         return isManager
     }
@@ -145,7 +162,7 @@ class BlackseaRepository(val db: FirebaseFirestore) {
 
     fun requireUserId(): String {
         return auth.currentUser?.uid
-            ?: throw IllegalStateException("User must be signed in with Google to access Firestore.")
+            ?: throw IllegalStateException("Devam etmek için oturum açmanız gerekiyor.")
     }
 
     // ==========================================
@@ -166,7 +183,7 @@ class BlackseaRepository(val db: FirebaseFirestore) {
                 }
             }
         } catch (e: Exception) {
-            Log.w("Repository", "Could not query file metadata: ${e.message}")
+            logDebugWarn("Repository", "Could not query file metadata", e)
         }
         if (size <= 0L) {
             try {
@@ -225,7 +242,7 @@ class BlackseaRepository(val db: FirebaseFirestore) {
             finalBitmap.recycle()
             out.toByteArray()
         } catch (e: Exception) {
-            Log.w("Repository", "Image compression failed: ${e.message}")
+            logDebugWarn("Repository", "Image compression failed", e)
             null
         }
     }
@@ -253,7 +270,7 @@ class BlackseaRepository(val db: FirebaseFirestore) {
             }
             Pair(thumbDataUri, durationMs)
         } catch (e: Exception) {
-            Log.w("Repository", "Video metadata extraction failed: ${e.message}")
+            logDebugWarn("Repository", "Video metadata extraction failed", e)
             Pair("", 0L)
         } finally {
             try {
@@ -278,7 +295,7 @@ class BlackseaRepository(val db: FirebaseFirestore) {
             }
             destFile
         } catch (e: Exception) {
-            Log.w("Repository", "Could not cache file locally: ${e.message}")
+            logDebugWarn("Repository", "Could not cache file locally", e)
             null
         }
     }
@@ -350,7 +367,7 @@ class BlackseaRepository(val db: FirebaseFirestore) {
                     textContent = stream.bufferedReader().readText().take(150_000)
                 }
             } catch (e: Exception) {
-                Log.w("Repository", "Could not read text content: ${e.message}")
+                logDebugWarn("Repository", "Could not read text content", e)
             }
         }
 
@@ -406,7 +423,7 @@ class BlackseaRepository(val db: FirebaseFirestore) {
                     break
                 }
             } catch (e: Exception) {
-                Log.w("Repository", "Storage bucket upload skipped: ${e.message}")
+                logDebugWarn("Repository", "Storage bucket upload skipped", e)
             }
         }
 
@@ -434,7 +451,7 @@ class BlackseaRepository(val db: FirebaseFirestore) {
                         downloadUrl = "data:$mime;base64,$base64Str"
                     }
                 } catch (readEx: Exception) {
-                    Log.w("Repository", "Base64 encoding fallback: ${readEx.message}")
+                    logDebugWarn("Repository", "Base64 encoding fallback failed", readEx)
                 }
             }
             onProgress(100)
@@ -492,7 +509,7 @@ class BlackseaRepository(val db: FirebaseFirestore) {
                     break
                 }
             } catch (e: Exception) {
-                Log.w("Repository", "uploadLocalFile Storage bucket attempt: ${e.message}")
+                logDebugWarn("Repository", "uploadLocalFile Storage bucket attempt failed", e)
             }
         }
 
@@ -506,7 +523,7 @@ class BlackseaRepository(val db: FirebaseFirestore) {
                 }
                 onProgress(100)
             } catch (readEx: Exception) {
-                Log.e("Repository", "uploadLocalFile Base64 fallback failed: ${readEx.message}")
+                logDebugError("Repository", "uploadLocalFile Base64 fallback failed", readEx)
             }
         }
 
@@ -547,6 +564,32 @@ class BlackseaRepository(val db: FirebaseFirestore) {
         }
     }
 
+    fun observeUserProfileState(userId: String): Flow<UserProfileLoadState> {
+        if (userId.isBlank()) return flowOf(UserProfileLoadState.Missing)
+        return callbackFlow {
+            trySend(UserProfileLoadState.Loading)
+            val path = "users/$userId"
+            val registration = db.collection("users").document(userId)
+                .addSnapshotListener { snapshot, error ->
+                    if (error != null) {
+                        handleFirestoreError(error, OperationType.GET, path)
+                        return@addSnapshotListener
+                    }
+                    if (snapshot != null && snapshot.exists()) {
+                        val profile = snapshot.toObject(UserProfile::class.java)
+                        if (profile != null) {
+                            trySend(UserProfileLoadState.Found(profile))
+                        } else {
+                            trySend(UserProfileLoadState.Missing)
+                        }
+                    } else {
+                        trySend(UserProfileLoadState.Missing)
+                    }
+                }
+            awaitClose { registration.remove() }
+        }
+    }
+
     suspend fun getUserProfile(userId: String): UserProfile? {
         if (userId.isBlank()) return null
         return try {
@@ -557,7 +600,7 @@ class BlackseaRepository(val db: FirebaseFirestore) {
                 null
             }
         } catch (e: Exception) {
-            Log.w("Repository", "Failed to get user profile: ${e.message}")
+            logDebugWarn("Repository", "Failed to get user profile", e)
             null
         }
     }
@@ -593,35 +636,46 @@ class BlackseaRepository(val db: FirebaseFirestore) {
         val finalStatus = if (isFirstOrConfiguredAdmin) UserStatus.ACTIVE.value else UserStatus.PENDING.value
         val formattedDisplayName = "$firstName $lastName".trim().ifBlank { username.ifBlank { email.substringBefore("@") } }
 
-        val payload = mapOf(
-            "userId" to userId,
-            "firstName" to firstName.trim(),
-            "lastName" to lastName.trim(),
-            "username" to username.trim(),
-            "displayName" to formattedDisplayName,
-            "email" to email,
-            "team" to team,
-            "role" to (finalRoles.firstOrNull() ?: "Takım Üyesi"),
-            "roles" to finalRoles,
-            "status" to finalStatus,
-            "photoUrl" to photoUrl,
-            "isSuperAdmin" to isFirstOrConfiguredAdmin,
-            "createdAt" to FieldValue.serverTimestamp(),
-            "updatedAt" to FieldValue.serverTimestamp()
-        )
+        val existingSnap = try {
+            docRef.get().await()
+        } catch (_: Exception) {
+            null
+        }
+        val shouldSetCreatedAt = existingSnap == null || !existingSnap.exists() || existingSnap.get("createdAt") == null
+
+        val payload = buildMap<String, Any> {
+            put("userId", userId)
+            put("firstName", firstName.trim())
+            put("lastName", lastName.trim())
+            put("username", username.trim())
+            put("displayName", formattedDisplayName)
+            put("email", email)
+            put("team", team)
+            put("role", finalRoles.firstOrNull() ?: "Takım Üyesi")
+            put("roles", finalRoles)
+            put("status", finalStatus)
+            put("photoUrl", photoUrl)
+            put("isSuperAdmin", isFirstOrConfiguredAdmin)
+            if (shouldSetCreatedAt) {
+                put("createdAt", FieldValue.serverTimestamp())
+            }
+            put("updatedAt", FieldValue.serverTimestamp())
+        }
 
         try {
             docRef.set(payload, SetOptions.merge()).await()
 
-            // If new user is pending, send notification to managers
+            // If new user is pending, send real-time notification to managers
             if (finalStatus == UserStatus.PENDING.value) {
                 createNotification(
                     recipientUserId = "managers",
-                    title = "Yeni üye onayı",
-                    message = "$formattedDisplayName Blacksea Robotics'e katılmak için kayıt oldu.",
+                    title = "Yeni Üye Başvurusu",
+                    message = "$formattedDisplayName ($team) ekibe katılmak için onay bekliyor.",
                     type = "member_pending",
                     targetId = userId,
-                    senderName = formattedDisplayName
+                    targetRoomId = team,
+                    senderName = formattedDisplayName,
+                    senderId = userId
                 )
             }
 
@@ -745,6 +799,82 @@ class BlackseaRepository(val db: FirebaseFirestore) {
         }
     }
 
+    suspend fun revokeUserAccess(targetUserId: String) {
+        val cleanId = targetUserId.trim()
+        if (cleanId.isBlank()) return
+        val currentUid = auth.currentUser?.uid
+        if (cleanId == currentUid) {
+            throw IllegalArgumentException("Kendi erişiminizi kaldıramazsınız.")
+        }
+        val path = "users/$cleanId"
+        val docRef = db.collection("users").document(cleanId)
+        try {
+            val existingSnap = try { docRef.get().await() } catch (_: Exception) { null }
+            val targetEmail = existingSnap?.getString("email").orEmpty()
+            if (targetEmail.equals("filim3290@gmail.com", ignoreCase = true)) {
+                throw IllegalArgumentException("Kurucu yönetici hesabı korunmaktadır.")
+            }
+            docRef.update(
+                mapOf(
+                    "status" to UserStatus.REVOKED.value,
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+            ).await()
+            createNotification(
+                recipientUserId = cleanId,
+                title = "Erişiminiz Kaldırıldı",
+                message = "Blacksea Robotics uygulama erişiminiz yönetici tarafından kaldırıldı.",
+                type = "access_revoked",
+                targetId = cleanId,
+                senderId = currentUid ?: ""
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.UPDATE, path)
+            throw e
+        }
+    }
+
+    suspend fun deleteUserAccount(targetUserId: String) {
+        val cleanId = targetUserId.trim()
+        if (cleanId.isBlank()) return
+        val currentUid = auth.currentUser?.uid
+        if (cleanId == currentUid) {
+            throw IllegalArgumentException("Kendi hesabınızı silemezsiniz.")
+        }
+        val path = "users/$cleanId"
+        val docRef = db.collection("users").document(cleanId)
+        try {
+            val existingSnap = try { docRef.get().await() } catch (_: Exception) { null }
+            val targetEmail = existingSnap?.getString("email").orEmpty()
+            if (targetEmail.equals("filim3290@gmail.com", ignoreCase = true)) {
+                throw IllegalArgumentException("Kurucu yönetici hesabı silinemez.")
+            }
+            docRef.delete().await()
+
+            // Best-effort cleanup of personal notifications addressed directly to deleted user
+            try {
+                val personalNotifs = db.collection("notifications")
+                    .whereEqualTo("recipientUserId", cleanId)
+                    .get()
+                    .await()
+                if (!personalNotifs.isEmpty) {
+                    val batch = db.batch()
+                    personalNotifs.documents.forEach { batch.delete(it.reference) }
+                    batch.commit().await()
+                }
+            } catch (cleanupEx: Exception) {
+                logDebugWarn("Repository", "Personal notification cleanup skipped", cleanupEx)
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.DELETE, path)
+            throw e
+        }
+    }
+
     // ==========================================
     // NOTIFICATIONS
     // ==========================================
@@ -752,7 +882,8 @@ class BlackseaRepository(val db: FirebaseFirestore) {
     fun observeNotifications(
         userId: String,
         isManager: Boolean,
-        userTeam: String = ""
+        userTeam: String = "",
+        userCreatedAtMs: Long = 0L
     ): Flow<List<TeamNotification>> {
         return db.collection("notifications")
             .snapshots()
@@ -763,7 +894,8 @@ class BlackseaRepository(val db: FirebaseFirestore) {
                         notif = notif,
                         userId = userId,
                         isManager = isManager,
-                        userTeam = userTeam
+                        userTeam = userTeam,
+                        userCreatedAtMs = userCreatedAtMs
                     )
                 }
                 filtered.sortedByDescending { it.createdAt?.toDate()?.time ?: 0L }
@@ -801,7 +933,7 @@ class BlackseaRepository(val db: FirebaseFirestore) {
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            Log.w("Repository", "Could not create team announcement: ${e.message}")
+            logDebugWarn("Repository", "Could not create team announcement", e)
         }
     }
 
@@ -833,7 +965,7 @@ class BlackseaRepository(val db: FirebaseFirestore) {
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            Log.w("Repository", "Notification creation failed: ${e.message}")
+            logDebugWarn("Repository", "Notification creation failed", e)
         }
     }
 
@@ -851,7 +983,7 @@ class BlackseaRepository(val db: FirebaseFirestore) {
                 db.collection("notifications").document(notificationId).update(updates).await()
             }
         } catch (e: Exception) {
-            Log.w("Repository", "Failed to mark notification as read: ${e.message}")
+            logDebugWarn("Repository", "Failed to mark notification as read", e)
         }
     }
 
@@ -876,7 +1008,7 @@ class BlackseaRepository(val db: FirebaseFirestore) {
             }
             batch.commit().await()
         } catch (e: Exception) {
-            Log.w("Repository", "Failed to mark all as read: ${e.message}")
+            logDebugWarn("Repository", "Failed to mark all as read", e)
         }
     }
 
@@ -891,13 +1023,17 @@ class BlackseaRepository(val db: FirebaseFirestore) {
         db.collection("users").document(userId).update(updates).await()
 
         val profile = getUserProfile(userId)
+        val applicantTeam = selectedTeam.ifBlank { profile?.team ?: "Genel Ekip" }
+        val applicantName = profile?.getFullName()?.ifBlank { "Üye" } ?: "Üye"
         createNotification(
             recipientUserId = "managers",
-            title = "Yeniden Üyelik Başvurusu",
-            message = "${profile?.getFullName() ?: "Bir üye"} (${selectedTeam.ifBlank { profile?.team ?: "Genel Ekip" }}) yeniden onay başvurusunda bulundu.",
+            title = "Yeni Üye Başvurusu",
+            message = "$applicantName ($applicantTeam) yeniden onay başvurusunda bulundu.",
             type = "member_pending",
             targetId = userId,
-            senderName = profile?.getFullName() ?: "Üye"
+            targetRoomId = applicantTeam,
+            senderName = applicantName,
+            senderId = userId
         )
     }
 
@@ -1296,7 +1432,7 @@ class BlackseaRepository(val db: FirebaseFirestore) {
                     )
                 }
             } catch (e: Exception) {
-                Log.w("Repository", "Could not notify idea author: ${e.message}")
+                logDebugWarn("Repository", "Could not notify idea author", e)
             }
         } catch (e: CancellationException) {
             throw e

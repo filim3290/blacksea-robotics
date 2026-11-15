@@ -12,7 +12,6 @@ import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
 import android.util.Base64
-import android.util.Log
 import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -157,8 +156,8 @@ fun downloadFileToDevice(
             Toast.makeText(context, "İndirme adresi veya içerik bulunamadı", Toast.LENGTH_SHORT).show()
         }
     } catch (e: Exception) {
-        Log.e("AudioHelper", "Download error: ${e.message}", e)
-        Toast.makeText(context, "İndirme hatası: ${e.localizedMessage}", Toast.LENGTH_LONG).show()
+        logDebugError("AudioHelper", "Download error", e)
+        Toast.makeText(context, sanitizeUserErrorMessage(e, "Dosya indirilemedi. Lütfen tekrar deneyin."), Toast.LENGTH_LONG).show()
     }
 }
 
@@ -192,7 +191,7 @@ class AudioRecorderManager(private val context: Context) {
             }
             true
         } catch (e: Exception) {
-            Log.e("AudioRecorder", "Recording start failed: ${e.message}", e)
+            logDebugError("AudioRecorder", "Recording start failed", e)
             recorder?.release()
             recorder = null
             false
@@ -208,7 +207,7 @@ class AudioRecorderManager(private val context: Context) {
             recorder = null
             currentFile
         } catch (e: Exception) {
-            Log.e("AudioRecorder", "Recording stop failed: ${e.message}", e)
+            logDebugError("AudioRecorder", "Recording stop failed", e)
             recorder?.release()
             recorder = null
             null
@@ -326,7 +325,7 @@ fun VoiceNotePlayer(
                                             isPlaying = true
                                         } catch (e: IllegalStateException) {
                                             isPlaying = false
-                                            Log.w("VoiceNotePlayer", "MediaPlayer start failed: ${e.message}")
+                                            logDebugWarn("VoiceNotePlayer", "MediaPlayer start failed", e)
                                         }
                                     }
                                     setOnCompletionListener {
@@ -349,10 +348,11 @@ fun VoiceNotePlayer(
                                 }
                                 mediaPlayer = player
                             } catch (e: Exception) {
+                                logDebugError("VoiceNotePlayer", "MediaPlayer setup failed", e)
                                 isLoading = false
                                 mediaPlayer?.release()
                                 mediaPlayer = null
-                                Toast.makeText(context, "Hata: ${e.message}", Toast.LENGTH_SHORT).show()
+                                Toast.makeText(context, "Ses kaydı oynatılamadı.", Toast.LENGTH_SHORT).show()
                             }
                         } else {
                             try {
@@ -413,14 +413,14 @@ fun VoiceNotePlayer(
                     Text(
                         text = String.format("%02d:%02d", currentMin, currentSec),
                         fontSize = 10.sp,
-                        color = if (isMyMessage) Color.White.copy(alpha = 0.8f) else Color(0xFF64748B),
+                        color = if (isMyMessage) Color.White.copy(alpha = 0.9f) else MaterialTheme.colorScheme.onSurfaceVariant,
                         fontWeight = FontWeight.Medium
                     )
 
                     Text(
                         text = if (totalDurationSeconds > 0) String.format("%02d:%02d", totalMin, totalSec) else "Ses Notu",
                         fontSize = 10.sp,
-                        color = if (isMyMessage) Color.White.copy(alpha = 0.8f) else Color(0xFF64748B),
+                        color = if (isMyMessage) Color.White.copy(alpha = 0.9f) else MaterialTheme.colorScheme.onSurfaceVariant,
                         fontWeight = FontWeight.Medium
                     )
                 }
@@ -434,7 +434,7 @@ fun VoiceNotePlayer(
                 Icon(
                     imageVector = Icons.Default.Download,
                     contentDescription = "İndir",
-                    tint = if (isMyMessage) Color.White.copy(alpha = 0.9f) else ElectricBlue,
+                    tint = if (isMyMessage) Color.White.copy(alpha = 0.95f) else ElectricBlue,
                     modifier = Modifier.size(16.dp)
                 )
             }

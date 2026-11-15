@@ -254,6 +254,133 @@ class NotificationAndStabilityTest {
     }
 
     @Test
+    fun `shouldUserReceiveNotification hides historical shared alerts before userCreatedAtMs while keeping personal alerts`() {
+        val joinTimeMs = 1_700_000_000_000L
+        val oldMessage = TeamNotification(
+            id = "old_msg",
+            recipientUserId = "all",
+            type = "message",
+            targetRoomId = "general",
+            senderId = "other",
+            createdAt = Timestamp(Date(joinTimeMs - 120_000L))
+        )
+        val oldBroadcast = TeamNotification(
+            id = "old_bcast",
+            recipientUserId = "all",
+            type = "broadcast",
+            senderId = "mgr",
+            createdAt = Timestamp(Date(joinTimeMs - 60_000L))
+        )
+        val newIdea = TeamNotification(
+            id = "new_idea",
+            recipientUserId = "all",
+            type = "idea",
+            senderId = "other",
+            createdAt = Timestamp(Date(joinTimeMs + 10_000L))
+        )
+        val personalWelcome = TeamNotification(
+            id = "personal_welcome",
+            recipientUserId = "new_user",
+            type = "member_approved",
+            senderId = "mgr",
+            createdAt = Timestamp(Date(joinTimeMs - 60_000L))
+        )
+
+        assertFalse(
+            shouldUserReceiveNotification(
+                notif = oldMessage,
+                userId = "new_user",
+                isManager = false,
+                userTeam = "Yazılım Ekibi",
+                userCreatedAtMs = joinTimeMs
+            )
+        )
+        assertFalse(
+            shouldUserReceiveNotification(
+                notif = oldBroadcast,
+                userId = "new_user",
+                isManager = false,
+                userTeam = "Yazılım Ekibi",
+                userCreatedAtMs = joinTimeMs
+            )
+        )
+        assertTrue(
+            shouldUserReceiveNotification(
+                notif = newIdea,
+                userId = "new_user",
+                isManager = false,
+                userTeam = "Yazılım Ekibi",
+                userCreatedAtMs = joinTimeMs
+            )
+        )
+        assertTrue(
+            shouldUserReceiveNotification(
+                notif = personalWelcome,
+                userId = "new_user",
+                isManager = false,
+                userTeam = "Yazılım Ekibi",
+                userCreatedAtMs = joinTimeMs
+            )
+        )
+    }
+
+    @Test
+    fun `selectNotificationsToDispatch excludes notifications created before userCreatedAtMs`() {
+        val joinTimeMs = 1_700_000_500_000L
+        val baseline = joinTimeMs - 30_000L
+        val preJoin = TeamNotification(
+            id = "pre_join",
+            recipientUserId = "all",
+            type = "message",
+            senderId = "other",
+            createdAt = Timestamp(Date(joinTimeMs - 20_000L))
+        )
+        val postJoin = TeamNotification(
+            id = "post_join",
+            recipientUserId = "all",
+            type = "message",
+            senderId = "other",
+            createdAt = Timestamp(Date(joinTimeMs + 15_000L))
+        )
+
+        val result = TeamNotificationDispatcher.selectNotificationsToDispatch(
+            notifications = listOf(preJoin, postJoin),
+            userId = "new_user",
+            hasSeededBaseline = true,
+            baselineTimestampMs = baseline,
+            dispatchedIds = emptySet(),
+            nowMs = joinTimeMs + 20_000L,
+            userCreatedAtMs = joinTimeMs
+        )
+
+        assertEquals(listOf("post_join"), result.toDispatch.map { it.id })
+    }
+
+    @Test
+    fun `syncBaselineSilently marks backlog as seen and skips empty snapshot false seeding`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val testUid = "sync_user_${System.nanoTime()}"
+
+        // Empty snapshot on first call should not mark baseline seeded
+        assertEquals(0, TeamNotificationDispatcher.processNotifications(context, testUid, emptyList()))
+        assertFalse(TeamNotificationDispatcher.hasSeededBaseline(context, testUid))
+
+        val backlog = listOf(
+            TeamNotification(
+                id = "backlog_1",
+                type = "idea",
+                senderId = "other",
+                createdAt = Timestamp(Date(System.currentTimeMillis() - 10_000L))
+            )
+        )
+        TeamNotificationDispatcher.syncBaselineSilently(context, testUid, backlog)
+        assertTrue(TeamNotificationDispatcher.hasSeededBaseline(context, testUid))
+
+        // Calling processNotifications with same backlog must not fire notifications
+        assertEquals(0, TeamNotificationDispatcher.processNotifications(context, testUid, backlog))
+    }
+
+    @Test
     fun `findActivity safely unwraps nested ContextWrappers and returns null for Application context`() {
         val appContext = ApplicationProvider.getApplicationContext<Context>()
         assertNull(appContext.findActivity())

@@ -5,6 +5,7 @@ import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -63,7 +64,10 @@ import com.example.ui.components.FileUploadProgressDialog
 import com.example.ui.components.InAppFileViewerDialog
 import com.example.ui.components.SharedFileCard
 import com.example.ui.theme.ElectricBlue
+import com.example.ui.theme.blackseaColors
 import com.example.util.downloadFileToDevice
+import com.example.util.logDebugError
+import com.example.util.sanitizeUserErrorMessage
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import java.util.Locale
@@ -77,6 +81,7 @@ fun FilesScreen(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    val ext = MaterialTheme.blackseaColors
 
     var selectedTypeFilter by remember { mutableStateOf("Hepsi") }
     val files by repository.observeSharedFiles().collectAsState(initial = emptyList())
@@ -154,9 +159,7 @@ fun FilesScreen(
         }
     }
 
-    val isManager = currentUserProfile?.isSuperAdmin == true ||
-            currentUserProfile?.email.equals("filim3290@gmail.com", ignoreCase = true) ||
-            currentUserProfile?.roles?.any { it in listOf("Yönetici", "Takım Kaptanı", "Yetkili Öğretmen") } == true
+    val isManager = currentUserProfile?.isManagerAccount() == true
 
     Box(
         modifier = modifier
@@ -204,18 +207,18 @@ fun FilesScreen(
                         Icon(
                             imageVector = Icons.Default.Folder,
                             contentDescription = null,
-                            tint = Color(0xFF64748B),
+                            tint = ext.textMuted,
                             modifier = Modifier.size(52.dp)
                         )
                         Text(
                             text = "Henüz paylaşılan bir dosya yok",
-                            color = Color(0xFF94A3B8),
+                            color = ext.textSecondary,
                             fontSize = 15.sp,
                             fontWeight = FontWeight.Medium
                         )
                         Text(
                             text = "Aşağıdaki butona basarak cihazınızdan kod, CAD veya PDF yükleyin",
-                            color = Color(0xFF64748B),
+                            color = ext.textMuted,
                             fontSize = 12.sp
                         )
                     }
@@ -246,7 +249,8 @@ fun FilesScreen(
                                     } catch (ce: CancellationException) {
                                         throw ce
                                     } catch (e: Exception) {
-                                        Toast.makeText(context, "Dosya silinemedi: ${e.message}", Toast.LENGTH_SHORT).show()
+                                        logDebugError("FilesScreen", "Delete shared file failed", e)
+                                        Toast.makeText(context, sanitizeUserErrorMessage(e, "Dosya silinemedi."), Toast.LENGTH_SHORT).show()
                                     }
                                 }
                             }
@@ -295,7 +299,8 @@ fun FilesScreen(
                                 }
                                 .testTag("files_pick_media_option"),
                             shape = RoundedCornerShape(12.dp),
-                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                            border = BorderStroke(1.dp, ext.cardBorder)
                         ) {
                             Row(
                                 modifier = Modifier.padding(14.dp),
@@ -304,16 +309,16 @@ fun FilesScreen(
                             ) {
                                 Surface(
                                     shape = CircleShape,
-                                    color = Color(0xFF10B981).copy(alpha = 0.15f),
+                                    color = ext.emeraldSolid.copy(alpha = 0.15f),
                                     modifier = Modifier.size(40.dp)
                                 ) {
                                     Box(contentAlignment = Alignment.Center) {
-                                        Icon(Icons.Default.PhotoLibrary, contentDescription = null, tint = Color(0xFF10B981), modifier = Modifier.size(22.dp))
+                                        Icon(Icons.Default.PhotoLibrary, contentDescription = null, tint = ext.emeraldText, modifier = Modifier.size(22.dp))
                                     }
                                 }
                                 Column {
-                                    Text("Görsel / Video Seç", fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                                    Text("Önizlemeli fotoğraf veya video yükleyin", fontSize = 11.sp, color = Color(0xFF94A3B8))
+                                    Text("Görsel / Video Seç", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurface)
+                                    Text("Önizlemeli fotoğraf veya video yükleyin", fontSize = 11.sp, color = ext.textMuted)
                                 }
                             }
                         }
@@ -327,7 +332,8 @@ fun FilesScreen(
                                 }
                                 .testTag("files_pick_any_option"),
                             shape = RoundedCornerShape(12.dp),
-                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                            border = BorderStroke(1.dp, ext.cardBorder)
                         ) {
                             Row(
                                 modifier = Modifier.padding(14.dp),
@@ -336,16 +342,16 @@ fun FilesScreen(
                             ) {
                                 Surface(
                                     shape = CircleShape,
-                                    color = ElectricBlue.copy(alpha = 0.15f),
+                                    color = ext.accentBlueContainer,
                                     modifier = Modifier.size(40.dp)
                                 ) {
                                     Box(contentAlignment = Alignment.Center) {
-                                        Icon(Icons.Default.UploadFile, contentDescription = null, tint = ElectricBlue, modifier = Modifier.size(22.dp))
+                                        Icon(Icons.Default.UploadFile, contentDescription = null, tint = ext.accentBlue, modifier = Modifier.size(22.dp))
                                     }
                                 }
                                 Column {
-                                    Text("Tüm Cihaz Dosyaları", fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                                    Text("PDF, Kod, CAD, ZIP, Belge (Maks 100 MB)", fontSize = 11.sp, color = Color(0xFF94A3B8))
+                                    Text("Tüm Cihaz Dosyaları", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurface)
+                                    Text("PDF, Kod, CAD, ZIP, Belge (Maks 100 MB)", fontSize = 11.sp, color = ext.textMuted)
                                 }
                             }
                         }
@@ -416,9 +422,12 @@ fun FilesScreen(
                             showUploadModal = false
                             pickedFileUri = null
                             Toast.makeText(context, "Dosya başarıyla gönderildi!", Toast.LENGTH_SHORT).show()
+                        } catch (ce: CancellationException) {
+                            throw ce
                         } catch (e: Exception) {
+                            logDebugError("FilesScreen", "Upload shared file failed", e)
                             isUploading = false
-                            uploadErrorMessage = e.localizedMessage ?: "Dosya yüklenemedi"
+                            uploadErrorMessage = sanitizeUserErrorMessage(e, "Dosya yüklenemedi. Lütfen tekrar deneyin.")
                         }
                     }
                 },

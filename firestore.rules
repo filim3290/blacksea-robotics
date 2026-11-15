@@ -10,6 +10,14 @@ service cloud.firestore {
       return isAuthenticated() && request.auth.uid == userId;
     }
 
+    function isActiveUser() {
+      return isAuthenticated() && (
+        request.auth.token.email == "filim3290@gmail.com" ||
+        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.status in ['active', 'approved'])
+      );
+    }
+
     function isManager() {
       return isAuthenticated() && (
         request.auth.token.email == "filim3290@gmail.com" ||
@@ -30,71 +38,82 @@ service cloud.firestore {
       allow read: if isAuthenticated();
       // First user creation / onboarding
       allow create: if isOwner(userId) && request.resource.data.userId == request.auth.uid;
-      // Managers can update roles, status, team.
-      // Normal users can update their profile without changing roles or superAdmin.
-      // Users can re-apply if currently rejected or pending (can set status to 'pending')
+      // Active managers can update roles, status, team, and revoke access.
+      // Normal users can update their profile without changing roles, role, or superAdmin.
+      // Rejected, revoked, or pending users can re-apply (transitioning status to 'pending').
       allow update: if isAuthenticated() && (
-        isManager() ||
+        (isManager() && isActiveUser()) ||
         (isOwner(userId) &&
-         (!('status' in request.resource.data) || request.resource.data.status == resource.data.status || (request.resource.data.status == 'pending' && (resource.data.status == 'rejected' || resource.data.status == 'pending'))) &&
+         (!('status' in request.resource.data) ||
+          request.resource.data.status == resource.data.status ||
+          (request.resource.data.status == 'pending' && resource.data.status in ['pending', 'rejected', 'revoked'])) &&
+         (!('role' in request.resource.data) || request.resource.data.role == resource.data.role) &&
          (!('roles' in request.resource.data) || request.resource.data.roles == resource.data.roles) &&
          (!('isSuperAdmin' in request.resource.data) || request.resource.data.isSuperAdmin == resource.data.isSuperAdmin))
       );
-      allow delete: if isManager();
+      allow delete: if isManager() &&
+        isActiveUser() &&
+        userId != request.auth.uid &&
+        resource.data.email != "filim3290@gmail.com";
     }
 
-    // --- ROOMS (Open to all authenticated team members) ---
+    // --- ROOMS (Open to active team members) ---
     match /rooms/{roomId} {
-      allow read: if isAuthenticated();
-      allow create, update: if isAuthenticated();
-      allow delete: if isManager();
+      allow read: if isActiveUser();
+      allow create, update: if isActiveUser();
+      allow delete: if isManager() && isActiveUser();
 
-      // --- MESSAGES IN ROOM (Open to all members) ---
+      // --- MESSAGES IN ROOM ---
       match /messages/{messageId} {
-        allow read: if isAuthenticated();
-        allow create: if isAuthenticated() && request.resource.data.senderId == request.auth.uid;
-        allow update: if isAuthenticated() && (request.resource.data.senderId == request.auth.uid || isManager());
-        allow delete: if isAuthenticated() && (resource.data.senderId == request.auth.uid || isManager());
+        allow read: if isActiveUser();
+        allow create: if isActiveUser() && request.resource.data.senderId == request.auth.uid;
+        allow update: if isActiveUser() && (request.resource.data.senderId == request.auth.uid || isManager());
+        allow delete: if isActiveUser() && (resource.data.senderId == request.auth.uid || isManager());
       }
     }
 
     // --- IDEAS ---
     match /ideas/{ideaId} {
-      allow read: if isAuthenticated();
-      allow create: if isAuthenticated() && request.resource.data.authorId == request.auth.uid;
-      // Allow updates for likes, category/status, or author updates
-      allow update: if isAuthenticated();
-      allow delete: if isAuthenticated() && (resource.data.authorId == request.auth.uid || isManager());
+      allow read: if isActiveUser();
+      allow create: if isActiveUser() && request.resource.data.authorId == request.auth.uid;
+      allow update: if isActiveUser();
+      allow delete: if isActiveUser() && (resource.data.authorId == request.auth.uid || isManager());
 
       // --- COMMENTS ON IDEAS ---
       match /comments/{commentId} {
-        allow read: if isAuthenticated();
-        allow create: if isAuthenticated() && request.resource.data.authorId == request.auth.uid;
-        allow delete: if isAuthenticated() && (resource.data.authorId == request.auth.uid || isManager());
+        allow read: if isActiveUser();
+        allow create: if isActiveUser() && request.resource.data.authorId == request.auth.uid;
+        allow delete: if isActiveUser() && (resource.data.authorId == request.auth.uid || isManager());
       }
     }
 
-    // --- SHARED FILES (Open to all members) ---
+    // --- SHARED FILES ---
     match /files/{fileId} {
-      allow read: if isAuthenticated();
-      allow create: if isAuthenticated() && request.resource.data.uploadedById == request.auth.uid;
-      allow update: if isAuthenticated() && (request.resource.data.uploadedById == request.auth.uid || isManager());
-      allow delete: if isAuthenticated() && (resource.data.uploadedById == request.auth.uid || isManager());
+      allow read: if isActiveUser();
+      allow create: if isActiveUser() && request.resource.data.uploadedById == request.auth.uid;
+      allow update: if isActiveUser() && (request.resource.data.uploadedById == request.auth.uid || isManager());
+      allow delete: if isActiveUser() && (resource.data.uploadedById == request.auth.uid || isManager());
     }
 
     // --- ANNOUNCEMENTS ---
     match /announcements/{announcementId} {
-      allow read: if isAuthenticated();
-      allow create, update: if isAuthenticated() && (isManager() || request.resource.data.authorId == request.auth.uid);
-      allow delete: if isAuthenticated() && (resource.data.authorId == request.auth.uid || isManager());
+      allow read: if isActiveUser();
+      allow create, update: if isActiveUser() && (isManager() || request.resource.data.authorId == request.auth.uid);
+      allow delete: if isActiveUser() && (resource.data.authorId == request.auth.uid || isManager());
     }
 
     // --- NOTIFICATIONS ---
     match /notifications/{notificationId} {
-      allow read: if isAuthenticated();
-      allow create: if isAuthenticated();
-      allow update: if isAuthenticated();
-      allow delete: if isAuthenticated() && (
+      allow read: if isActiveUser();
+      // Active users can create notifications; applicants can notify managers about their own pending membership
+      allow create: if isActiveUser() || (
+        isAuthenticated() &&
+        request.resource.data.type == 'member_pending' &&
+        request.resource.data.recipientUserId == 'managers' &&
+        request.resource.data.senderId == request.auth.uid
+      );
+      allow update: if isActiveUser();
+      allow delete: if isActiveUser() && (
         resource.data.recipientUserId == request.auth.uid ||
         isManager()
       );
@@ -102,8 +121,8 @@ service cloud.firestore {
 
     // --- APP CONFIG & UPDATES ---
     match /app_config/{configId} {
-      allow read: if true;
-      allow write: if isAuthenticated();
+      allow read: if isAuthenticated();
+      allow write: if isManager() && isActiveUser();
     }
   }
 }

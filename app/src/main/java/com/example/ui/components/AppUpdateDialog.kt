@@ -63,8 +63,11 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.foundation.BorderStroke
 import com.example.ui.theme.ElectricBlue
 import com.example.ui.theme.PhoenixAmber
+import com.example.ui.theme.blackseaColors
 import com.example.update.AppReleaseInfo
 import com.example.update.AppUpdateManager
 import com.example.update.InstallResultState
@@ -108,7 +111,7 @@ fun AppUpdateDialog(
                 if (res.isFailure) {
                     Toast.makeText(
                         context,
-                        "Kurulum başlatılamadı: ${res.exceptionOrNull()?.message}",
+                        com.example.util.AppMessages.UPDATE_INSTALL_ERROR,
                         Toast.LENGTH_LONG
                     ).show()
                 }
@@ -148,13 +151,15 @@ fun AppUpdateDialog(
             usePlatformDefaultWidth = false
         )
     ) {
+        val ext = MaterialTheme.blackseaColors
         Surface(
             modifier = Modifier
                 .fillMaxWidth(0.92f)
                 .widthIn(max = 520.dp)
                 .padding(vertical = 24.dp),
             shape = RoundedCornerShape(24.dp),
-            color = Color(0xFF1E293B),
+            color = MaterialTheme.colorScheme.surface,
+            border = BorderStroke(1.dp, ext.cardBorder),
             shadowElevation = 12.dp,
             tonalElevation = 6.dp
         ) {
@@ -166,14 +171,14 @@ fun AppUpdateDialog(
             ) {
                 Surface(
                     shape = CircleShape,
-                    color = ElectricBlue.copy(alpha = 0.18f),
+                    color = ElectricBlue.copy(alpha = 0.16f),
                     modifier = Modifier.size(64.dp)
                 ) {
                     Box(contentAlignment = Alignment.Center) {
                         Icon(
                             imageVector = Icons.Default.RocketLaunch,
                             contentDescription = null,
-                            tint = ElectricBlue,
+                            tint = ext.accentBlue,
                             modifier = Modifier.size(34.dp)
                         )
                     }
@@ -183,7 +188,7 @@ fun AppUpdateDialog(
 
                 Text(
                     text = "BLACKSEA ROBOTICS",
-                    color = Color.White,
+                    color = MaterialTheme.colorScheme.onSurface,
                     fontSize = 18.sp,
                     fontWeight = FontWeight.Black,
                     letterSpacing = 1.sp
@@ -194,15 +199,15 @@ fun AppUpdateDialog(
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     Text(
-                        text = "Yeni Güncelleme Mevcut",
-                        color = ElectricBlue,
+                        text = "Yeni sürüm bulundu: v${releaseInfo.versionName}",
+                        color = ext.accentBlue,
                         fontSize = 14.sp,
                         fontWeight = FontWeight.Bold
                     )
                     if (releaseInfo.isForceUpdate) {
                         Surface(
                             shape = RoundedCornerShape(6.dp),
-                            color = Color(0xFFEF4444)
+                            color = ext.dangerSolid
                         ) {
                             Text(
                                 text = "ZORUNLU",
@@ -220,7 +225,8 @@ fun AppUpdateDialog(
                 Card(
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(14.dp),
-                    colors = CardDefaults.cardColors(containerColor = Color(0xFF0F172A))
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                    border = BorderStroke(1.dp, ext.cardBorder)
                 ) {
                     Row(
                         modifier = Modifier
@@ -230,31 +236,31 @@ fun AppUpdateDialog(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Text("Mevcut Sürüm", fontSize = 11.sp, color = Color(0xFF94A3B8))
+                            Text("Mevcut Sürüm", fontSize = 11.sp, color = ext.textSecondary)
                             Spacer(modifier = Modifier.height(2.dp))
                             Text(
-                                text = "v${updateManager.getCurrentVersionName()} (${updateManager.getCurrentVersionCode()})",
+                                text = "v${updateManager.getCurrentVersionName()}",
                                 fontSize = 14.sp,
                                 fontWeight = FontWeight.Bold,
-                                color = Color(0xFFCBD5E1)
+                                color = MaterialTheme.colorScheme.onSurface
                             )
                         }
 
                         Icon(
                             imageVector = Icons.AutoMirrored.Filled.ArrowForward,
                             contentDescription = null,
-                            tint = PhoenixAmber,
+                            tint = ext.amberText,
                             modifier = Modifier.size(18.dp)
                         )
 
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Text("Yeni Sürüm", fontSize = 11.sp, color = ElectricBlue)
+                            Text("Yeni Sürüm", fontSize = 11.sp, color = ext.accentBlue)
                             Spacer(modifier = Modifier.height(2.dp))
                             Text(
-                                text = "v${releaseInfo.versionName} (${releaseInfo.versionCode})",
+                                text = "v${releaseInfo.versionName}",
                                 fontSize = 15.sp,
                                 fontWeight = FontWeight.ExtraBold,
-                                color = ElectricBlue
+                                color = ext.accentBlue
                             )
                         }
                     }
@@ -267,7 +273,8 @@ fun AppUpdateDialog(
                         .fillMaxWidth()
                         .height(110.dp),
                     shape = RoundedCornerShape(12.dp),
-                    colors = CardDefaults.cardColors(containerColor = Color(0xFF0B1120))
+                    colors = CardDefaults.cardColors(containerColor = ext.surfaceElevated),
+                    border = BorderStroke(1.dp, ext.cardBorder)
                 ) {
                     Column(
                         modifier = Modifier
@@ -279,13 +286,13 @@ fun AppUpdateDialog(
                             text = "Bu Güncellemede Yapılanlar:",
                             fontSize = 12.sp,
                             fontWeight = FontWeight.Bold,
-                            color = PhoenixAmber
+                            color = ext.amberText
                         )
                         Spacer(modifier = Modifier.height(6.dp))
                         Text(
                             text = releaseInfo.changelog,
                             fontSize = 12.sp,
-                            color = Color(0xFFE2E8F0),
+                            color = ext.textPrimary,
                             lineHeight = 17.sp
                         )
                     }
@@ -299,31 +306,24 @@ fun AppUpdateDialog(
                     Surface(
                         modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(12.dp),
-                        color = Color(0xFFEF4444).copy(alpha = 0.14f)
+                        color = ext.dangerContainer
                     ) {
                         Column(
                             modifier = Modifier.padding(12.dp),
                             verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             Text(
-                                text = "Kurulum Başarısız: ${installErr.statusName}",
+                                text = "Güncelleme Kurulamadı",
                                 fontSize = 12.sp,
                                 fontWeight = FontWeight.Bold,
-                                color = Color(0xFFFCA5A5)
+                                color = ext.dangerText
                             )
                             Text(
                                 text = installErr.userMessage,
                                 fontSize = 12.sp,
-                                color = Color(0xFFE2E8F0),
+                                color = ext.textPrimary,
                                 lineHeight = 16.sp
                             )
-                            if (installErr.rawMessage.isNotBlank()) {
-                                Text(
-                                    text = "Sistem Detayı: ${installErr.rawMessage}",
-                                    fontSize = 10.sp,
-                                    color = Color(0xFFCBD5E1)
-                                )
-                            }
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -340,7 +340,7 @@ fun AppUpdateDialog(
                                     },
                                     modifier = Modifier.weight(1f),
                                     shape = RoundedCornerShape(10.dp),
-                                    colors = ButtonDefaults.buttonColors(containerColor = ElectricBlue)
+                                    colors = ButtonDefaults.buttonColors(containerColor = ElectricBlue, contentColor = Color.White)
                                 ) {
                                     Text("Tekrar Dene", fontSize = 11.sp, fontWeight = FontWeight.Bold)
                                 }
@@ -353,7 +353,7 @@ fun AppUpdateDialog(
                                             if (fallbackRes.isFailure) {
                                                 Toast.makeText(
                                                     context,
-                                                    "Sistem yükleyicisi açılamadı: ${fallbackRes.exceptionOrNull()?.message}",
+                                                    com.example.util.AppMessages.UPDATE_INSTALL_ERROR,
                                                     Toast.LENGTH_LONG
                                                 ).show()
                                             }
@@ -361,7 +361,7 @@ fun AppUpdateDialog(
                                         modifier = Modifier.weight(1f),
                                         shape = RoundedCornerShape(10.dp)
                                     ) {
-                                        Text("Sistem Yükleyici", fontSize = 11.sp, color = Color.White)
+                                        Text("Kurulumu Aç", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurface)
                                     }
                                 }
                             }
@@ -373,28 +373,27 @@ fun AppUpdateDialog(
                             val isSignatureCompatible = remember(releaseInfo) {
                                 updateManager.isReleaseSignatureCompatible(releaseInfo)
                             }
-                            val installedCertShort = remember { updateManager.getInstalledSigningCertSha256Short() }
 
                             if (!isSignatureCompatible) {
                                 Surface(
                                     modifier = Modifier.fillMaxWidth(),
                                     shape = RoundedCornerShape(12.dp),
-                                    color = Color(0xFFEF4444).copy(alpha = 0.14f)
+                                    color = ext.dangerContainer
                                 ) {
                                     Column(
                                         modifier = Modifier.padding(12.dp),
                                         verticalArrangement = Arrangement.spacedBy(6.dp)
                                     ) {
                                         Text(
-                                            text = "Farklı İmza Sertifikası — Üzerine Güncellenemez",
+                                            text = "Doğrudan Güncelleme Yapılamıyor",
                                             fontSize = 12.sp,
                                             fontWeight = FontWeight.Bold,
-                                            color = Color(0xFFFCA5A5)
+                                            color = ext.dangerText
                                         )
                                         Text(
-                                            text = "Yeni sürüm (${releaseInfo.tagName}) telefondaki kurulu uygulamanın imzasından farklı bir sertifikayla imzalanmış.\n• Kurulu: $installedCertShort\n• Release: ${releaseInfo.expectedCertSha256.take(16).uppercase()}...\n\nAndroid kuralı gereği üzerine yazılamaz; eski uygulamayı bir kez kaldırıp yeni APK'yı tarayıcıdan kurmanız gerekir.",
+                                            text = "Bu güncelleme mevcut sürümün üzerine doğrudan yüklenemiyor. Yeni sürümü tarayıcıdan indirip yeniden kurabilirsiniz.",
                                             fontSize = 11.sp,
-                                            color = Color(0xFFE2E8F0),
+                                            color = ext.textPrimary,
                                             lineHeight = 16.sp
                                         )
                                     }
@@ -414,7 +413,7 @@ fun AppUpdateDialog(
                                     },
                                     modifier = Modifier.fillMaxWidth().height(46.dp),
                                     shape = RoundedCornerShape(12.dp),
-                                    colors = ButtonDefaults.buttonColors(containerColor = PhoenixAmber)
+                                    colors = ButtonDefaults.buttonColors(containerColor = PhoenixAmber, contentColor = Color.Black)
                                 ) {
                                     Icon(
                                         imageVector = Icons.AutoMirrored.Filled.OpenInNew,
@@ -423,7 +422,7 @@ fun AppUpdateDialog(
                                         modifier = Modifier.size(18.dp)
                                     )
                                     Spacer(modifier = Modifier.width(8.dp))
-                                    Text("Tarayıcıdan İndir (Temiz Kurulum)", color = Color.Black, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                                    Text("Tarayıcıdan İndir", color = Color.Black, fontWeight = FontWeight.Bold, fontSize = 13.sp)
                                 }
                             } else {
                                 Button(
@@ -445,7 +444,7 @@ fun AppUpdateDialog(
                                         .height(48.dp)
                                         .testTag("now_update_button"),
                                     shape = RoundedCornerShape(12.dp),
-                                    colors = ButtonDefaults.buttonColors(containerColor = ElectricBlue)
+                                    colors = ButtonDefaults.buttonColors(containerColor = ElectricBlue, contentColor = Color.White)
                                 ) {
                                     Icon(imageVector = Icons.Default.Download, contentDescription = null, modifier = Modifier.size(18.dp))
                                     Spacer(modifier = Modifier.width(8.dp))
@@ -462,7 +461,7 @@ fun AppUpdateDialog(
                                     },
                                     modifier = Modifier.fillMaxWidth()
                                 ) {
-                                    Text(if (isSignatureCompatible) "Daha Sonra" else "Kapat", color = Color(0xFF94A3B8), fontSize = 13.sp)
+                                    Text(if (isSignatureCompatible) "Daha Sonra" else "Kapat", color = ext.textSecondary, fontSize = 13.sp)
                                 }
                             }
                         }
@@ -476,8 +475,8 @@ fun AppUpdateDialog(
                                     modifier = Modifier.fillMaxWidth(),
                                     horizontalArrangement = Arrangement.SpaceBetween
                                 ) {
-                                    Text("Güncelleme indiriliyor...", fontSize = 12.sp, color = Color.White, fontWeight = FontWeight.Medium)
-                                    Text("%${state.progressPercent}", fontSize = 12.sp, color = ElectricBlue, fontWeight = FontWeight.Bold)
+                                    Text("Güncelleme indiriliyor...", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface, fontWeight = FontWeight.Medium)
+                                    Text("%${state.progressPercent}", fontSize = 12.sp, color = ext.accentBlue, fontWeight = FontWeight.Bold)
                                 }
                                 Spacer(modifier = Modifier.height(8.dp))
                                 LinearProgressIndicator(
@@ -486,13 +485,13 @@ fun AppUpdateDialog(
                                         .fillMaxWidth()
                                         .height(8.dp),
                                     color = ElectricBlue,
-                                    trackColor = Color(0xFF334155)
+                                    trackColor = ext.cardBorder
                                 )
                                 Spacer(modifier = Modifier.height(8.dp))
                                 Text(
                                     text = "Lütfen indirme tamamlanana kadar bekleyin",
                                     fontSize = 11.sp,
-                                    color = Color(0xFF94A3B8)
+                                    color = ext.textSecondary
                                 )
                             }
                         }
@@ -507,27 +506,27 @@ fun AppUpdateDialog(
                                     Spacer(modifier = Modifier.height(10.dp))
                                     Text(
                                         text = if (installState is InstallResultState.PendingUserAction) {
-                                            "Lütfen Android kurulum onayını tamamlayın..."
+                                            "Lütfen kurulum onayını tamamlayın..."
                                         } else {
-                                            "APK doğrulanıyor ve kurulum başlatılıyor..."
+                                            "Güncelleme kuruluma hazırlanıyor..."
                                         },
                                         fontSize = 13.sp,
                                         fontWeight = FontWeight.SemiBold,
-                                        color = Color.White,
+                                        color = MaterialTheme.colorScheme.onSurface,
                                         textAlign = TextAlign.Center
                                     )
                                 } else {
                                     Surface(
                                         shape = CircleShape,
-                                        color = Color(0xFF10B981).copy(alpha = 0.2f),
+                                        color = ext.emeraldSolid.copy(alpha = 0.18f),
                                         modifier = Modifier.size(40.dp)
                                     ) {
                                         Box(contentAlignment = Alignment.Center) {
-                                            Icon(imageVector = Icons.Default.CheckCircle, contentDescription = null, tint = Color(0xFF10B981))
+                                            Icon(imageVector = Icons.Default.CheckCircle, contentDescription = null, tint = ext.emeraldText)
                                         }
                                     }
                                     Spacer(modifier = Modifier.height(8.dp))
-                                    Text("APK Doğrulandı ve Hazır!", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                                    Text("Güncelleme Kuruluma Hazır!", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
                                     Spacer(modifier = Modifier.height(10.dp))
 
                                     Button(
@@ -539,11 +538,11 @@ fun AppUpdateDialog(
                                             .fillMaxWidth()
                                             .height(48.dp),
                                         shape = RoundedCornerShape(12.dp),
-                                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF10B981))
+                                        colors = ButtonDefaults.buttonColors(containerColor = ext.emeraldSolid, contentColor = Color.White)
                                     ) {
                                         Icon(imageVector = Icons.Default.InstallMobile, contentDescription = null, modifier = Modifier.size(18.dp))
                                         Spacer(modifier = Modifier.width(8.dp))
-                                        Text("YÜKLEMEYİ BAŞLAT", fontWeight = FontWeight.Bold)
+                                        Text("KURULUMU BAŞLAT", fontWeight = FontWeight.Bold)
                                     }
                                 }
                             }
@@ -556,7 +555,7 @@ fun AppUpdateDialog(
                             ) {
                                 Text(
                                     text = state.message,
-                                    color = Color(0xFFFCA5A5),
+                                    color = ext.dangerText,
                                     fontSize = 12.sp,
                                     textAlign = TextAlign.Center,
                                     lineHeight = 17.sp
@@ -578,7 +577,7 @@ fun AppUpdateDialog(
                                         },
                                         modifier = Modifier.fillMaxWidth(),
                                         shape = RoundedCornerShape(10.dp),
-                                        colors = ButtonDefaults.buttonColors(containerColor = PhoenixAmber)
+                                        colors = ButtonDefaults.buttonColors(containerColor = PhoenixAmber, contentColor = Color.Black)
                                     ) {
                                         Icon(
                                             imageVector = Icons.AutoMirrored.Filled.OpenInNew,
@@ -588,7 +587,7 @@ fun AppUpdateDialog(
                                         )
                                         Spacer(modifier = Modifier.width(6.dp))
                                         Text(
-                                            text = "Tarayıcıdan İndir (Temiz Kurulum)",
+                                            text = "Tarayıcıdan İndir",
                                             color = Color.Black,
                                             fontWeight = FontWeight.Bold,
                                             fontSize = 12.sp
@@ -602,7 +601,7 @@ fun AppUpdateDialog(
                                         downloadState = UpdateDownloadState.Idle
                                     },
                                     shape = RoundedCornerShape(10.dp),
-                                    colors = ButtonDefaults.buttonColors(containerColor = ElectricBlue)
+                                    colors = ButtonDefaults.buttonColors(containerColor = ElectricBlue, contentColor = Color.White)
                                 ) {
                                     Icon(imageVector = Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
                                     Spacer(modifier = Modifier.width(6.dp))
@@ -625,14 +624,14 @@ fun AppUpdateDialog(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
-                                Icon(imageVector = Icons.Default.Security, contentDescription = null, tint = PhoenixAmber)
-                                Text("Yükleme İzni Gerekli", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = PhoenixAmber)
+                                Icon(imageVector = Icons.Default.Security, contentDescription = null, tint = ext.amberText)
+                                Text("Yükleme İzni Gerekli", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = ext.amberText)
                             }
                             Spacer(modifier = Modifier.height(4.dp))
                             Text(
-                                text = "Android güvenlik sistemi nedeniyle uygulamanın kendi kendini güncelleyebilmesi için 'Bilinmeyen uygulamaları yükle' iznini açmanız gerekir.",
+                                text = "Güncellemeleri yükleyebilmek için cihaz ayarlarından uygulama yükleme iznini açmanız gerekir.",
                                 fontSize = 11.sp,
-                                color = Color(0xFFE2E8F0)
+                                color = ext.textPrimary
                             )
                             Spacer(modifier = Modifier.height(8.dp))
                             Row(
@@ -640,13 +639,13 @@ fun AppUpdateDialog(
                                 horizontalArrangement = Arrangement.End
                             ) {
                                 TextButton(onClick = { showPermissionAlert = false }) {
-                                    Text("Vazgeç", fontSize = 11.sp, color = Color(0xFF94A3B8))
+                                    Text("Vazgeç", fontSize = 11.sp, color = ext.textSecondary)
                                 }
                                 Button(
                                     onClick = {
                                         updateManager.openInstallPermissionSettings()
                                     },
-                                    colors = ButtonDefaults.buttonColors(containerColor = PhoenixAmber),
+                                    colors = ButtonDefaults.buttonColors(containerColor = PhoenixAmber, contentColor = Color.Black),
                                     contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
                                 ) {
                                     Text("Ayarlarda Aç", fontSize = 11.sp, color = Color.Black, fontWeight = FontWeight.Bold)

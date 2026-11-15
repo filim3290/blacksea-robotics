@@ -3,12 +3,12 @@ package com.example.ui.screens
 import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
-import android.util.Log
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -28,6 +28,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
@@ -83,10 +84,17 @@ import com.example.model.PredefinedRoles
 import com.example.model.TeamType
 import com.example.model.UserProfile
 import com.example.model.UserStatus
+import com.example.notifications.TeamNotificationDispatcher
 import com.example.ui.components.BlackseaLogo
 import com.example.ui.components.TeamBadge
 import com.example.ui.theme.ElectricBlue
 import com.example.ui.theme.PhoenixAmber
+import com.example.ui.theme.blackseaColors
+import com.example.util.AppMessages
+import com.example.util.logDebug
+import com.example.util.logDebugError
+import com.example.util.logDebugWarn
+import com.example.util.sanitizeUserErrorMessage
 import com.google.android.libraries.identity.googleid.GetGoogleIdOption
 import com.google.android.libraries.identity.googleid.GetSignInWithGoogleOption
 import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
@@ -119,13 +127,14 @@ fun onGoogleSignInClicked(
     val clientId = try {
         context.getString(R.string.default_web_client_id)
     } catch (e: Exception) {
-        onAuthError("Google Sign-In configuration missing: default_web_client_id not found")
+        logDebugError("Auth", "Google Sign-In client config missing", e)
+        onAuthError(AppMessages.GOOGLE_SIGN_IN_ERROR)
         return
     }
 
     val activity = context.findActivity()
     if (activity == null) {
-        onAuthError("Oturum açma penceresi başlatılamadı")
+        onAuthError(AppMessages.GOOGLE_SIGN_IN_ERROR)
         return
     }
 
@@ -139,20 +148,20 @@ fun onGoogleSignInClicked(
             if (credential is CustomCredential && credential.type == TYPE_GOOGLE_ID_TOKEN_CREDENTIAL) {
                 val googleIdToken = GoogleIdTokenCredential.createFrom(credential.data).idToken
                 val authCredential = GoogleAuthProvider.getCredential(googleIdToken, null)
-                val authResult = Firebase.auth.signInWithCredential(authCredential).await()
-                Log.d("Auth", "Google sign in successful for: ${authResult.user?.email}")
+                Firebase.auth.signInWithCredential(authCredential).await()
+                logDebug("Auth", "Google sign in successful")
                 onAuthSuccess()
             } else {
-                onAuthError("Beklenmeyen kimlik türü")
+                onAuthError(AppMessages.GOOGLE_SIGN_IN_ERROR)
             }
         } catch (ce: CancellationException) {
             throw ce
         } catch (e: GetCredentialCancellationException) {
-            Log.w("Auth", "Google Sign-In flow cancelled: ${e.message}")
+            logDebugWarn("Auth", "Google Sign-In flow cancelled")
             onAuthCancelled()
         } catch (e: Exception) {
-            Log.e("Auth", "Google Sign-In failed", e)
-            onAuthError(e.localizedMessage ?: "Giriş başarısız oldu")
+            logDebugError("Auth", "Google Sign-In failed", e)
+            onAuthError(sanitizeUserErrorMessage(e, AppMessages.GOOGLE_SIGN_IN_ERROR))
         }
     }
 }
@@ -211,7 +220,7 @@ fun appSignOut(
             try {
                 credentialManager.clearCredentialState(ClearCredentialStateRequest())
             } catch (e: Exception) {
-                Log.w("Auth", "Failed to clear credential state: ${e.message}")
+                logDebugWarn("Auth", "Failed to clear credential state", e)
             } finally {
                 Firebase.auth.signOut()
                 onSignOutComplete()
@@ -229,6 +238,7 @@ fun AuthScreen(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val credentialManager = remember { CredentialManager.create(context) }
+    val ext = MaterialTheme.blackseaColors
 
     var authUser by remember { mutableStateOf(Firebase.auth.currentUser) }
     var isLoading by remember { mutableStateOf(false) }
@@ -303,13 +313,7 @@ fun AuthScreen(
         modifier = Modifier
             .fillMaxSize()
             .background(
-                Brush.verticalGradient(
-                    colors = listOf(
-                        Color(0xFF0F172A),
-                        Color(0xFF1E293B),
-                        Color(0xFF0B1120)
-                    )
-                )
+                Brush.verticalGradient(colors = ext.authGradientColors)
             )
             .padding(24.dp)
             .testTag("auth_screen"),
@@ -328,7 +332,7 @@ fun AuthScreen(
 
             Text(
                 text = "BLACKSEA ROBOTICS",
-                color = Color.White,
+                color = MaterialTheme.colorScheme.onBackground,
                 fontSize = 24.sp,
                 fontWeight = FontWeight.Black,
                 letterSpacing = 1.2.sp,
@@ -337,7 +341,7 @@ fun AuthScreen(
 
             Text(
                 text = "Ünye Fen Lisesi Robotik Takımı",
-                color = Color(0xFF94A3B8),
+                color = ext.textSecondary,
                 fontSize = 14.sp,
                 fontWeight = FontWeight.Medium,
                 textAlign = TextAlign.Center
@@ -347,11 +351,12 @@ fun AuthScreen(
 
             Surface(
                 shape = RoundedCornerShape(16.dp),
-                color = PhoenixAmber.copy(alpha = 0.15f)
+                color = PhoenixAmber.copy(alpha = if (ext.isDark) 0.15f else 0.22f),
+                border = BorderStroke(1.dp, ext.amberText.copy(alpha = 0.25f))
             ) {
                 Text(
                     text = "ONE TEAM. ONE VISION. ONE ROBOT.",
-                    color = PhoenixAmber,
+                    color = ext.amberText,
                     fontSize = 12.sp,
                     fontWeight = FontWeight.ExtraBold,
                     letterSpacing = 0.8.sp,
@@ -366,24 +371,26 @@ fun AuthScreen(
                 Card(
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(20.dp),
-                    colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B))
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    border = BorderStroke(1.dp, ext.cardBorder),
+                    elevation = CardDefaults.cardElevation(defaultElevation = if (ext.isDark) 0.dp else 4.dp)
                 ) {
                     Column(
                         modifier = Modifier.padding(28.dp),
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
-                        CircularProgressIndicator(color = ElectricBlue, modifier = Modifier.size(36.dp), strokeWidth = 3.dp)
+                        CircularProgressIndicator(color = ext.accentBlue, modifier = Modifier.size(36.dp), strokeWidth = 3.dp)
                         Spacer(modifier = Modifier.height(16.dp))
                         Text(
                             text = "Ekip Üyeliği Doğrulanıyor...",
-                            color = Color.White,
+                            color = MaterialTheme.colorScheme.onSurface,
                             fontSize = 15.sp,
                             fontWeight = FontWeight.Bold
                         )
                         Spacer(modifier = Modifier.height(4.dp))
                         Text(
-                            text = "Veritabanına bağlanılıyor, lütfen bekleyin",
-                            color = Color(0xFF94A3B8),
+                            text = "Bilgileriniz kontrol ediliyor, lütfen bekleyin",
+                            color = ext.textSecondary,
                             fontSize = 12.sp
                         )
                     }
@@ -393,7 +400,9 @@ fun AuthScreen(
                 Card(
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(20.dp),
-                    colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B))
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    border = BorderStroke(1.dp, ext.cardBorder),
+                    elevation = CardDefaults.cardElevation(defaultElevation = if (ext.isDark) 0.dp else 4.dp)
                 ) {
                     Column(
                         modifier = Modifier.padding(24.dp),
@@ -401,7 +410,7 @@ fun AuthScreen(
                     ) {
                         Text(
                             text = "Ekip Platformu Girişi",
-                            color = Color.White,
+                            color = MaterialTheme.colorScheme.onSurface,
                             fontSize = 18.sp,
                             fontWeight = FontWeight.Bold
                         )
@@ -409,8 +418,8 @@ fun AuthScreen(
                         Spacer(modifier = Modifier.height(8.dp))
 
                         Text(
-                            text = "Ünye Fen Lisesi Robotik Takımı üyeleri aynı veritabanına bağlanır ve gerçek zamanlı senkronize olur.",
-                            color = Color(0xFF94A3B8),
+                            text = "Ünye Fen Lisesi Robotik Takımı üyeleriyle aynı platformda buluşun ve anlık iletişim kurun.",
+                            color = ext.textSecondary,
                             fontSize = 13.sp,
                             textAlign = TextAlign.Center
                         )
@@ -420,7 +429,7 @@ fun AuthScreen(
                         if (errorMessage != null) {
                             Text(
                                 text = errorMessage ?: "",
-                                color = MaterialTheme.colorScheme.error,
+                                color = ext.dangerText,
                                 fontSize = 13.sp,
                                 textAlign = TextAlign.Center,
                                 modifier = Modifier.padding(bottom = 12.dp)
@@ -452,7 +461,10 @@ fun AuthScreen(
                                 .height(52.dp)
                                 .testTag("google_sign_in_button"),
                             shape = RoundedCornerShape(14.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = ElectricBlue)
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = ext.accentBlueSolid,
+                                contentColor = Color.White
+                            )
                         ) {
                             if (isLoading) {
                                 CircularProgressIndicator(
@@ -477,7 +489,9 @@ fun AuthScreen(
                 Card(
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(20.dp),
-                    colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B))
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    border = BorderStroke(1.dp, ext.cardBorder),
+                    elevation = CardDefaults.cardElevation(defaultElevation = if (ext.isDark) 0.dp else 4.dp)
                 ) {
                     Column(
                         modifier = Modifier.padding(22.dp),
@@ -500,13 +514,13 @@ fun AuthScreen(
                                 Icon(
                                     imageVector = Icons.AutoMirrored.Filled.ArrowBack,
                                     contentDescription = "Geri Dön",
-                                    tint = Color(0xFF94A3B8)
+                                    tint = ext.textSecondary
                                 )
                             }
                             Spacer(modifier = Modifier.width(6.dp))
                             Text(
                                 text = "Gerçek Takım Kimliği Kaydı",
-                                color = Color.White,
+                                color = MaterialTheme.colorScheme.onSurface,
                                 fontSize = 17.sp,
                                 fontWeight = FontWeight.Bold
                             )
@@ -515,7 +529,8 @@ fun AuthScreen(
                         // Signed in email pill
                         Surface(
                             shape = RoundedCornerShape(8.dp),
-                            color = Color(0xFF334155),
+                            color = MaterialTheme.colorScheme.surfaceVariant,
+                            border = BorderStroke(1.dp, ext.cardBorder),
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .padding(vertical = 10.dp)
@@ -529,17 +544,17 @@ fun AuthScreen(
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                                 ) {
-                                    Icon(imageVector = Icons.Default.Email, contentDescription = null, tint = ElectricBlue, modifier = Modifier.size(14.dp))
+                                    Icon(imageVector = Icons.Default.Email, contentDescription = null, tint = ext.accentBlue, modifier = Modifier.size(14.dp))
                                     Text(
                                         text = authUser?.email ?: "",
-                                        color = Color.White,
+                                        color = MaterialTheme.colorScheme.onSurface,
                                         fontSize = 12.sp,
                                         fontWeight = FontWeight.Medium
                                     )
                                 }
                                 Text(
                                     text = "Değiştir",
-                                    color = ElectricBlue,
+                                    color = ext.accentBlue,
                                     fontSize = 11.sp,
                                     fontWeight = FontWeight.Bold,
                                     modifier = Modifier.clickable {
@@ -554,7 +569,7 @@ fun AuthScreen(
 
                         Text(
                             text = "Mesajlarda ve fikirlerde gerçek adınız ve soyadınız kullanılacaktır.",
-                            color = Color(0xFF94A3B8),
+                            color = ext.textSecondary,
                             fontSize = 12.sp,
                             textAlign = TextAlign.Center
                         )
@@ -678,10 +693,14 @@ fun AuthScreen(
                                             roles = listOf(defaultRole),
                                             photoUrl = photoUrl
                                         )
-                                        repository.ensureDefaultRoomsExist()
+                                        TeamNotificationDispatcher.recordUserJoinTimestampIfMissing(context, uid)
 
                                         val isSuperAdmin = email.equals("filim3290@gmail.com", ignoreCase = true)
                                         if (isSuperAdmin || UserStatus.isActive(createdProfile.status)) {
+                                            try {
+                                                repository.ensureDefaultRoomsExist()
+                                            } catch (_: Exception) {
+                                            }
                                             onAuthSuccess()
                                         } else {
                                             // Regular new user: status is "pending".
@@ -689,8 +708,11 @@ fun AuthScreen(
                                             userProfile = createdProfile
                                             Toast.makeText(context, "Kaydınız alındı! Yönetici onayı bekleniyor.", Toast.LENGTH_LONG).show()
                                         }
+                                    } catch (ce: CancellationException) {
+                                        throw ce
                                     } catch (e: Exception) {
-                                        errorMessage = e.localizedMessage ?: "Profil kaydedilemedi"
+                                        logDebugError("Auth", "Save profile failed", e)
+                                        errorMessage = sanitizeUserErrorMessage(e, "Profil kaydedilemedi. Lütfen tekrar deneyin.")
                                     } finally {
                                         isLoading = false
                                     }
@@ -702,7 +724,10 @@ fun AuthScreen(
                                 .height(50.dp)
                                 .testTag("save_profile_button"),
                             shape = RoundedCornerShape(14.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = ElectricBlue)
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = ext.accentBlueSolid,
+                                contentColor = Color.White
+                            )
                         ) {
                             if (isLoading) {
                                 CircularProgressIndicator(color = Color.White, modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
@@ -721,9 +746,9 @@ fun AuthScreen(
                                 }
                             }
                         ) {
-                            Icon(imageVector = Icons.Default.ExitToApp, contentDescription = null, tint = Color(0xFF94A3B8), modifier = Modifier.size(16.dp))
+                            Icon(imageVector = Icons.Default.ExitToApp, contentDescription = null, tint = ext.textSecondary, modifier = Modifier.size(16.dp))
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text("Farklı Bir Google Hesabı Kullan", color = Color(0xFF94A3B8), fontSize = 13.sp)
+                            Text("Farklı Bir Google Hesabı Kullan", color = ext.textSecondary, fontSize = 13.sp)
                         }
                     }
                 }
@@ -732,7 +757,9 @@ fun AuthScreen(
                 Card(
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(20.dp),
-                    colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B))
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    border = BorderStroke(1.dp, ext.cardBorder),
+                    elevation = CardDefaults.cardElevation(defaultElevation = if (ext.isDark) 0.dp else 4.dp)
                 ) {
                     Column(
                         modifier = Modifier.padding(24.dp),
@@ -747,7 +774,7 @@ fun AuthScreen(
                                 Icon(
                                     imageVector = Icons.Default.HourglassTop,
                                     contentDescription = null,
-                                    tint = PhoenixAmber,
+                                    tint = ext.amberText,
                                     modifier = Modifier.size(36.dp)
                                 )
                             }
@@ -757,7 +784,7 @@ fun AuthScreen(
 
                         Text(
                             text = "Yönetici Onayı Bekleniyor",
-                            color = Color.White,
+                            color = MaterialTheme.colorScheme.onSurface,
                             fontSize = 19.sp,
                             fontWeight = FontWeight.Bold
                         )
@@ -766,7 +793,7 @@ fun AuthScreen(
 
                         Text(
                             text = "Merhaba ${userProfile?.getFullName()}! Ekip başvurunuz başarıyla alındı. Takım yöneticisi veya danışman öğretmeniniz üyeliğinizi onayladığında tüm odalara ve çalışma alanlarına otomatik erişiminiz açılacaktır.",
-                            color = Color(0xFF94A3B8),
+                            color = ext.textSecondary,
                             fontSize = 13.sp,
                             textAlign = TextAlign.Center,
                             lineHeight = 19.sp
@@ -777,7 +804,8 @@ fun AuthScreen(
                         // Member details pill
                         Surface(
                             shape = RoundedCornerShape(12.dp),
-                            color = Color(0xFF0F172A),
+                            color = MaterialTheme.colorScheme.surfaceVariant,
+                            border = BorderStroke(1.dp, ext.cardBorder),
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -785,29 +813,29 @@ fun AuthScreen(
                                     modifier = Modifier.fillMaxWidth(),
                                     horizontalArrangement = Arrangement.SpaceBetween
                                 ) {
-                                    Text("Başvuran:", fontSize = 12.sp, color = Color(0xFF64748B))
-                                    Text(userProfile?.getFullName() ?: "", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                                    Text("Başvuran:", fontSize = 12.sp, color = ext.textMuted)
+                                    Text(userProfile?.getFullName() ?: "", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
                                 }
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
                                     horizontalArrangement = Arrangement.SpaceBetween
                                 ) {
-                                    Text("Ekip:", fontSize = 12.sp, color = Color(0xFF64748B))
-                                    Text(userProfile?.team ?: "", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = ElectricBlue)
+                                    Text("Ekip:", fontSize = 12.sp, color = ext.textMuted)
+                                    Text(userProfile?.team ?: "", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = ext.accentBlue)
                                 }
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
                                     horizontalArrangement = Arrangement.SpaceBetween
                                 ) {
-                                    Text("E-posta:", fontSize = 12.sp, color = Color(0xFF64748B))
-                                    Text(userProfile?.email ?: "", fontSize = 12.sp, color = Color(0xFF94A3B8))
+                                    Text("E-posta:", fontSize = 12.sp, color = ext.textMuted)
+                                    Text(userProfile?.email ?: "", fontSize = 12.sp, color = ext.textSecondary)
                                 }
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
                                     horizontalArrangement = Arrangement.SpaceBetween
                                 ) {
-                                    Text("Durum:", fontSize = 12.sp, color = Color(0xFF64748B))
-                                    Text("⏳ Onay Bekliyor", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = PhoenixAmber)
+                                    Text("Durum:", fontSize = 12.sp, color = ext.textMuted)
+                                    Text("⏳ Onay Bekliyor", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = ext.amberText)
                                 }
                             }
                         }
@@ -837,7 +865,10 @@ fun AuthScreen(
                                 .fillMaxWidth()
                                 .height(48.dp),
                             shape = RoundedCornerShape(12.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = ElectricBlue)
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = ext.accentBlueSolid,
+                                contentColor = Color.White
+                            )
                         ) {
                             if (isLoading) {
                                 CircularProgressIndicator(color = Color.White, modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
@@ -866,12 +897,14 @@ fun AuthScreen(
                         }
                     }
                 }
-            } else if (UserStatus.isRejected(userProfile?.status)) {
-                // Rejected Screen
+            } else if (UserStatus.isRevoked(userProfile?.status)) {
+                // Revoked Access Screen
                 Card(
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(20.dp),
-                    colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B))
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    border = BorderStroke(1.dp, ext.cardBorder),
+                    elevation = CardDefaults.cardElevation(defaultElevation = if (ext.isDark) 0.dp else 4.dp)
                 ) {
                     Column(
                         modifier = Modifier.padding(24.dp),
@@ -879,14 +912,122 @@ fun AuthScreen(
                     ) {
                         Surface(
                             shape = CircleShape,
-                            color = Color(0xFFEF4444).copy(alpha = 0.18f),
+                            color = ext.dangerContainer,
+                            modifier = Modifier.size(64.dp)
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    imageVector = Icons.Default.Block,
+                                    contentDescription = null,
+                                    tint = ext.dangerText,
+                                    modifier = Modifier.size(36.dp)
+                                )
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(14.dp))
+
+                        Text(
+                            text = "Uygulama Erişiminiz Kaldırıldı",
+                            color = MaterialTheme.colorScheme.onSurface,
+                            fontSize = 19.sp,
+                            fontWeight = FontWeight.Bold,
+                            textAlign = TextAlign.Center
+                        )
+
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        Text(
+                            text = "Sayın ${userProfile?.getFullName()}, takım yöneticisi uygulama erişiminizi kaldırdı. Tekrar erişim talebi gönderebilir veya farklı bir hesapla giriş yapabilirsiniz.",
+                            color = ext.textSecondary,
+                            fontSize = 13.sp,
+                            textAlign = TextAlign.Center,
+                            lineHeight = 19.sp
+                        )
+
+                        Spacer(modifier = Modifier.height(20.dp))
+
+                        Button(
+                            onClick = {
+                                val uid = authUser?.uid ?: return@Button
+                                scope.launch {
+                                    isLoading = true
+                                    try {
+                                        repository.reapplyForMembership(uid, userProfile?.team ?: "Genel Ekip")
+                                        val updated = repository.getUserProfile(uid)
+                                        userProfile = updated
+                                        Toast.makeText(context, "Yeniden erişim başvurunuz yöneticiye iletildi!", Toast.LENGTH_LONG).show()
+                                    } catch (ce: CancellationException) {
+                                        throw ce
+                                    } catch (e: Exception) {
+                                        logDebugError("Auth", "Reapply from revoked failed", e)
+                                        Toast.makeText(context, sanitizeUserErrorMessage(e, "Başvuru iletilemedi. Lütfen tekrar deneyin."), Toast.LENGTH_SHORT).show()
+                                    } finally {
+                                        isLoading = false
+                                    }
+                                }
+                            },
+                            enabled = !isLoading,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(48.dp)
+                                .testTag("revoked_reapply_button"),
+                            shape = RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = ext.accentBlueSolid,
+                                contentColor = Color.White
+                            )
+                        ) {
+                            if (isLoading) {
+                                CircularProgressIndicator(color = Color.White, modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                            } else {
+                                Icon(imageVector = Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Tekrar Erişim Başvurusu Yap", fontWeight = FontWeight.Bold)
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(10.dp))
+
+                        OutlinedButton(
+                            onClick = {
+                                appSignOut(credentialManager, scope) {
+                                    authUser = null
+                                    userProfile = null
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Icon(imageVector = Icons.Default.ExitToApp, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Farklı Bir Hesapla Giriş Yap")
+                        }
+                    }
+                }
+            } else if (UserStatus.isRejected(userProfile?.status)) {
+                // Rejected Screen
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(20.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    border = BorderStroke(1.dp, ext.cardBorder),
+                    elevation = CardDefaults.cardElevation(defaultElevation = if (ext.isDark) 0.dp else 4.dp)
+                ) {
+                    Column(
+                        modifier = Modifier.padding(24.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Surface(
+                            shape = CircleShape,
+                            color = ext.dangerContainer,
                             modifier = Modifier.size(64.dp)
                         ) {
                             Box(contentAlignment = Alignment.Center) {
                                 Icon(
                                     imageVector = Icons.Default.Close,
                                     contentDescription = null,
-                                    tint = Color(0xFFEF4444),
+                                    tint = ext.dangerText,
                                     modifier = Modifier.size(36.dp)
                                 )
                             }
@@ -896,7 +1037,7 @@ fun AuthScreen(
 
                         Text(
                             text = "Başvuru Onaylanmadı",
-                            color = Color.White,
+                            color = MaterialTheme.colorScheme.onSurface,
                             fontSize = 19.sp,
                             fontWeight = FontWeight.Bold
                         )
@@ -905,7 +1046,7 @@ fun AuthScreen(
 
                         Text(
                             text = "Sayın ${userProfile?.getFullName()}, ekip başvurunuz takım yönetimi tarafından onaylanmadı. Bilgilerinizi kontrol edip yeniden başvuru yapabilir veya farklı bir hesap seçebilirsiniz.",
-                            color = Color(0xFF94A3B8),
+                            color = ext.textSecondary,
                             fontSize = 13.sp,
                             textAlign = TextAlign.Center
                         )
@@ -922,8 +1063,11 @@ fun AuthScreen(
                                         val updated = repository.getUserProfile(uid)
                                         userProfile = updated
                                         Toast.makeText(context, "Yeniden başvurunuz yöneticiye iletildi!", Toast.LENGTH_LONG).show()
+                                    } catch (ce: CancellationException) {
+                                        throw ce
                                     } catch (e: Exception) {
-                                        Toast.makeText(context, "Başvuru iletilemedi: ${e.message}", Toast.LENGTH_SHORT).show()
+                                        logDebugError("Auth", "Reapply failed", e)
+                                        Toast.makeText(context, sanitizeUserErrorMessage(e, "Başvuru iletilemedi. Lütfen tekrar deneyin."), Toast.LENGTH_SHORT).show()
                                     } finally {
                                         isLoading = false
                                     }
@@ -934,7 +1078,10 @@ fun AuthScreen(
                                 .fillMaxWidth()
                                 .height(48.dp),
                             shape = RoundedCornerShape(12.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = ElectricBlue)
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = ext.accentBlueSolid,
+                                contentColor = Color.White
+                            )
                         ) {
                             if (isLoading) {
                                 CircularProgressIndicator(color = Color.White, modifier = Modifier.size(20.dp), strokeWidth = 2.dp)

@@ -1,6 +1,7 @@
 package com.example.ui.screens
 
 import android.widget.Toast
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -25,9 +26,9 @@ import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.ExitToApp
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.School
 import androidx.compose.material.icons.filled.Security
-import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -42,6 +43,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -64,11 +66,15 @@ import com.example.data.BlackseaRepository
 import com.example.model.PredefinedRoles
 import com.example.model.TeamType
 import com.example.model.UserProfile
+import com.example.notifications.RealtimeNotificationService
+import com.example.notifications.TeamNotificationDispatcher
 import com.example.ui.components.BlackseaLogo
 import com.example.ui.components.RoleBadge
 import com.example.ui.components.TeamBadge
-import com.example.ui.theme.ElectricBlue
-import com.example.ui.theme.PhoenixAmber
+import com.example.ui.theme.blackseaColors
+import com.example.util.AppMessages
+import com.example.util.sanitizeUserErrorMessage
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -83,14 +89,16 @@ fun ProfileScreen(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
+    val ext = MaterialTheme.blackseaColors
     val scope = rememberCoroutineScope()
     val credentialManager = remember { CredentialManager.create(context) }
     var showEditDialog by remember { mutableStateOf(false) }
     var showSignOutConfirmation by remember { mutableStateOf(false) }
+    var realtimeNotifsEnabled by remember {
+        mutableStateOf(TeamNotificationDispatcher.isRealtimeSyncEnabled(context))
+    }
 
-    val isAdmin = currentUserProfile?.isSuperAdmin == true ||
-            currentUserProfile?.email.equals("filim3290@gmail.com", ignoreCase = true) ||
-            currentUserProfile?.roles?.any { it in listOf("Yönetici", "Takım Kaptanı", "Yetkili Öğretmen") } == true
+    val isAdmin = currentUserProfile?.isManagerAccount() == true
 
     Column(
         modifier = modifier
@@ -105,8 +113,9 @@ fun ProfileScreen(
         Card(
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(20.dp),
+            border = BorderStroke(1.dp, ext.cardBorder),
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+            elevation = CardDefaults.cardElevation(defaultElevation = if (ext.isDark) 2.dp else 1.dp)
         ) {
             Column(
                 modifier = Modifier
@@ -116,7 +125,7 @@ fun ProfileScreen(
             ) {
                 Surface(
                     shape = CircleShape,
-                    color = ElectricBlue.copy(alpha = 0.2f),
+                    color = ext.accentBlueContainer,
                     modifier = Modifier.size(72.dp)
                 ) {
                     Box(contentAlignment = Alignment.Center) {
@@ -124,7 +133,7 @@ fun ProfileScreen(
                             text = currentUserProfile?.getFullName()?.take(1)?.uppercase() ?: "U",
                             fontSize = 28.sp,
                             fontWeight = FontWeight.Bold,
-                            color = ElectricBlue
+                            color = ext.accentBlue
                         )
                     }
                 }
@@ -143,14 +152,14 @@ fun ProfileScreen(
                         text = "@${currentUserProfile.username}",
                         fontSize = 13.sp,
                         fontWeight = FontWeight.Medium,
-                        color = ElectricBlue
+                        color = ext.accentBlue
                     )
                 }
 
                 Text(
                     text = currentUserProfile?.email ?: "",
                     fontSize = 13.sp,
-                    color = Color(0xFF94A3B8)
+                    color = ext.textSecondary
                 )
 
                 Spacer(modifier = Modifier.height(12.dp))
@@ -173,11 +182,12 @@ fun ProfileScreen(
                     OutlinedButton(
                         onClick = { showEditDialog = true },
                         modifier = Modifier.fillMaxWidth().height(42.dp),
-                        shape = RoundedCornerShape(10.dp)
+                        shape = RoundedCornerShape(10.dp),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = ext.accentBlue)
                     ) {
                         Icon(imageVector = Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(6.dp))
-                        Text("Profili ve Ekibi Düzenle", fontSize = 13.sp)
+                        Text("Profili ve Ekibi Düzenle", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                     }
                 }
 
@@ -185,7 +195,10 @@ fun ProfileScreen(
                     Spacer(modifier = Modifier.height(10.dp))
                     Button(
                         onClick = onNavigateToAdmin,
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFE11D48)),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = ext.adminRedSolid,
+                            contentColor = Color.White
+                        ),
                         modifier = Modifier.fillMaxWidth().height(42.dp),
                         shape = RoundedCornerShape(10.dp)
                     ) {
@@ -197,12 +210,77 @@ fun ProfileScreen(
             }
         }
 
+        // Notification Preferences Card
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(16.dp),
+            border = BorderStroke(1.dp, ext.cardBorder),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            elevation = CardDefaults.cardElevation(defaultElevation = if (ext.isDark) 2.dp else 1.dp)
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Surface(
+                    shape = CircleShape,
+                    color = ext.accentBlueContainer,
+                    modifier = Modifier.size(40.dp)
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            imageVector = Icons.Default.Notifications,
+                            contentDescription = null,
+                            tint = ext.accentBlue,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                }
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "Anlık Arka Plan Bildirimleri",
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Text(
+                        text = "Olay gerçekleştiği anda bildirim almak için canlı bağlantıyı açık tutar",
+                        fontSize = 11.sp,
+                        color = ext.textSecondary,
+                        lineHeight = 15.sp
+                    )
+                }
+                Switch(
+                    checked = realtimeNotifsEnabled,
+                    onCheckedChange = { enabled ->
+                        realtimeNotifsEnabled = enabled
+                        TeamNotificationDispatcher.setRealtimeSyncEnabled(context, enabled)
+                        if (enabled) {
+                            if (TeamNotificationDispatcher.hasNotificationPermission(context)) {
+                                RealtimeNotificationService.startIfEligible(context)
+                                Toast.makeText(context, "Anlık bildirim bağlantısı açıldı.", Toast.LENGTH_SHORT).show()
+                            } else {
+                                Toast.makeText(context, "Lütfen cihaz ayarlarından bildirim iznini açın.", Toast.LENGTH_LONG).show()
+                            }
+                        } else {
+                            RealtimeNotificationService.stop(context)
+                            Toast.makeText(context, "Arka plan canlı bağlantısı durduruldu.", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                )
+            }
+        }
+
         // Team & Platform Info
         Card(
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(16.dp),
+            border = BorderStroke(1.dp, ext.cardBorder),
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+            elevation = CardDefaults.cardElevation(defaultElevation = if (ext.isDark) 2.dp else 1.dp)
         ) {
             Column(
                 modifier = Modifier.padding(16.dp),
@@ -222,15 +300,16 @@ fun ProfileScreen(
                     Icon(
                         imageVector = Icons.Default.School,
                         contentDescription = null,
-                        tint = ElectricBlue,
+                        tint = ext.accentBlue,
                         modifier = Modifier.size(20.dp)
                     )
                     Column {
-                        Text(text = "Kurum / Okul", fontSize = 11.sp, color = Color(0xFF94A3B8))
+                        Text(text = "Kurum / Okul", fontSize = 11.sp, color = ext.textMuted)
                         Text(
                             text = "Ünye Fen Lisesi Robotik Takımı",
                             fontSize = 13.sp,
-                            fontWeight = FontWeight.SemiBold
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onSurface
                         )
                     }
                 }
@@ -242,15 +321,16 @@ fun ProfileScreen(
                     Icon(
                         imageVector = Icons.Default.Info,
                         contentDescription = null,
-                        tint = PhoenixAmber,
+                        tint = ext.amberText,
                         modifier = Modifier.size(20.dp)
                     )
                     Column {
-                        Text(text = "Resmi Takım Adı", fontSize = 11.sp, color = Color(0xFF94A3B8))
+                        Text(text = "Resmi Takım Adı", fontSize = 11.sp, color = ext.textMuted)
                         Text(
                             text = "BLACKSEA ROBOTICS (BSR)",
                             fontSize = 13.sp,
-                            fontWeight = FontWeight.SemiBold
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onSurface
                         )
                     }
                 }
@@ -258,11 +338,12 @@ fun ProfileScreen(
                 Surface(
                     shape = RoundedCornerShape(10.dp),
                     color = MaterialTheme.colorScheme.surfaceVariant,
+                    border = BorderStroke(1.dp, ext.cardBorder),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Text(
                         text = "\"ONE TEAM. ONE VISION. ONE ROBOT.\"",
-                        color = PhoenixAmber,
+                        color = ext.amberText,
                         fontSize = 12.sp,
                         fontWeight = FontWeight.Bold,
                         textAlign = TextAlign.Center,
@@ -278,14 +359,15 @@ fun ProfileScreen(
         var showHistoryDialog by remember { mutableStateOf(false) }
         var releaseHistory by remember { mutableStateOf<List<com.example.update.AppReleaseInfo>>(emptyList()) }
         var isLoadingHistory by remember { mutableStateOf(false) }
-
-        var isResolvingLink by remember { mutableStateOf(false) }
+        var latestAvailableRelease by remember { mutableStateOf<com.example.update.AppReleaseInfo?>(null) }
+        var updateStatusText by remember { mutableStateOf<String?>(null) }
 
         Card(
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(16.dp),
+            border = BorderStroke(1.dp, ext.cardBorder),
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+            elevation = CardDefaults.cardElevation(defaultElevation = if (ext.isDark) 2.dp else 1.dp)
         ) {
             Column(
                 modifier = Modifier.padding(16.dp),
@@ -300,7 +382,7 @@ fun ProfileScreen(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Icon(imageVector = Icons.Default.Info, contentDescription = null, tint = ElectricBlue)
+                        Icon(imageVector = Icons.Default.Info, contentDescription = null, tint = ext.accentBlue)
                         Text(
                             text = "Uygulama & Güncellemeler",
                             fontWeight = FontWeight.Bold,
@@ -311,52 +393,26 @@ fun ProfileScreen(
 
                     Surface(
                         shape = RoundedCornerShape(8.dp),
-                        color = ElectricBlue.copy(alpha = 0.15f)
+                        color = ext.accentBlueContainer
                     ) {
                         Text(
-                            text = "v${mgr.getCurrentVersionName()} (${mgr.getCurrentVersionCode()})",
+                            text = "v${mgr.getCurrentVersionName()}",
                             fontSize = 11.sp,
                             fontWeight = FontWeight.Bold,
-                            color = ElectricBlue,
+                            color = ext.accentBlue,
                             modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
                         )
                     }
                 }
 
                 Text(
-                    text = "Blacksea Robotics APK güncellemelerini doğrudan GitHub Releases üzerinden otomatik denetler.",
+                    text = updateStatusText ?: "Uygulama sürümünüzü buradan kontrol edebilir ve yenilikleri görüntüleyebilirsiniz.",
                     fontSize = 12.sp,
-                    color = Color(0xFF94A3B8)
+                    color = if (latestAvailableRelease != null) ext.emeraldText else ext.textSecondary,
+                    fontWeight = if (latestAvailableRelease != null) FontWeight.SemiBold else FontWeight.Normal
                 )
 
-                val isDebugSig = remember { mgr.isRunningAiStudioDebugSignature() }
-                val certShort = remember { mgr.getInstalledSigningCertSha256Short() }
-
-                Surface(
-                    shape = RoundedCornerShape(8.dp),
-                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
-                ) {
-                    Column(modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)) {
-                        Text(
-                            text = "Bağlı Depo: ${mgr.githubOwner}/${mgr.githubRepo}",
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            color = ElectricBlue
-                        )
-                        Text(
-                            text = if (isDebugSig) {
-                                "İmza: Debug / Test Sertifikası ($certShort)"
-                            } else {
-                                "İmza: Kalıcı Release Sertifikası ($certShort)"
-                            },
-                            fontSize = 10.sp,
-                            color = if (isDebugSig) Color(0xFFF59E0B) else Color(0xFF10B981),
-                            fontWeight = FontWeight.Medium
-                        )
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(4.dp))
+                Spacer(modifier = Modifier.height(2.dp))
 
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -370,41 +426,35 @@ fun ProfileScreen(
                                 isCheckingUpdate = false
                                 when (result) {
                                     is com.example.update.UpdateCheckResult.UpdateAvailable -> {
+                                        latestAvailableRelease = result.release
+                                        updateStatusText = "Yeni sürüm bulundu: v${result.release.versionName}"
                                         onShowUpdateDialog(result.release)
                                     }
                                     is com.example.update.UpdateCheckResult.UpToDate -> {
-                                        val msg = if (result.isRemoteOlder && result.latestRemote != null) {
-                                            "Daha yeni sürüm kullanıyorsunuz: v${result.currentVersionName} (${result.currentVersionCode})"
-                                        } else {
-                                            "Uygulamanız güncel! (v${result.currentVersionName} • Kod: ${result.currentVersionCode})"
-                                        }
-                                        Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                                        latestAvailableRelease = null
+                                        updateStatusText = "Uygulamanız güncel (v${result.currentVersionName})"
+                                        Toast.makeText(
+                                            context,
+                                            "Uygulamanız güncel (v${result.currentVersionName})",
+                                            Toast.LENGTH_SHORT
+                                        ).show()
                                     }
                                     is com.example.update.UpdateCheckResult.NoReleaseFound -> {
+                                        latestAvailableRelease = null
+                                        updateStatusText = "Uygulamanız güncel."
                                         Toast.makeText(
                                             context,
-                                            "Yeni sürüm bulunamadı: GitHub deposunda yayınlanmış sürüm yok.",
-                                            Toast.LENGTH_LONG
+                                            "Uygulamanız güncel.",
+                                            Toast.LENGTH_SHORT
                                         ).show()
                                     }
-                                    is com.example.update.UpdateCheckResult.ApkAssetMissing -> {
-                                        Toast.makeText(
-                                            context,
-                                            "Sürüm (${result.tagName}) bulundu ancak APK dosyası eklenmemiş.",
-                                            Toast.LENGTH_LONG
-                                        ).show()
-                                    }
-                                    is com.example.update.UpdateCheckResult.NetworkError -> {
-                                        Toast.makeText(
-                                            context,
-                                            "İnternet bağlantısı hatası: ${result.detail}",
-                                            Toast.LENGTH_LONG
-                                        ).show()
-                                    }
+                                    is com.example.update.UpdateCheckResult.ApkAssetMissing,
+                                    is com.example.update.UpdateCheckResult.NetworkError,
                                     is com.example.update.UpdateCheckResult.ApiError -> {
+                                        updateStatusText = AppMessages.UPDATE_CHECK_ERROR
                                         Toast.makeText(
                                             context,
-                                            "GitHub API hatası (${result.httpCode}): ${result.detail}",
+                                            AppMessages.UPDATE_CHECK_ERROR,
                                             Toast.LENGTH_LONG
                                         ).show()
                                     }
@@ -414,7 +464,10 @@ fun ProfileScreen(
                         enabled = !isCheckingUpdate,
                         modifier = Modifier.weight(1f).height(42.dp),
                         shape = RoundedCornerShape(10.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = ElectricBlue)
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = ext.accentBlueSolid,
+                            contentColor = Color.White
+                        )
                     ) {
                         if (isCheckingUpdate) {
                             androidx.compose.material3.CircularProgressIndicator(
@@ -438,88 +491,26 @@ fun ProfileScreen(
                             }
                         },
                         modifier = Modifier.height(42.dp),
-                        shape = RoundedCornerShape(10.dp)
+                        shape = RoundedCornerShape(10.dp),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.onSurface)
                     ) {
-                        Text("Geçmiş", fontSize = 12.sp)
+                        Text("Geçmiş", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                     }
                 }
 
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    OutlinedButton(
-                        onClick = {
-                            if (isResolvingLink) return@OutlinedButton
-                            isResolvingLink = true
-                            scope.launch {
-                                val res = mgr.resolvePublicDownloadUrl()
-                                isResolvingLink = false
-                                res.fold(
-                                    onSuccess = { downloadUrl ->
-                                        try {
-                                            val shareIntent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
-                                                type = "text/plain"
-                                                putExtra(android.content.Intent.EXTRA_SUBJECT, "Blacksea Robotics Android APK İndir")
-                                                putExtra(
-                                                    android.content.Intent.EXTRA_TEXT,
-                                                    "🤖 Blacksea Robotics Android uygulamasını indirmek için tıkla:\n$downloadUrl"
-                                                )
-                                            }
-                                            context.startActivity(
-                                                android.content.Intent.createChooser(shareIntent, "Uygulama İndirme Bağlantısını Paylaş")
-                                            )
-                                        } catch (e: Exception) {
-                                            Toast.makeText(context, "Paylaşım ekranı açılamadı.", Toast.LENGTH_SHORT).show()
-                                        }
-                                    },
-                                    onFailure = { err ->
-                                        Toast.makeText(context, err.message ?: "İndirme bağlantısı doğrulanamadı.", Toast.LENGTH_LONG).show()
-                                    }
-                                )
-                            }
-                        },
-                        enabled = !isResolvingLink,
-                        modifier = Modifier.weight(1f).height(42.dp).testTag("share_download_link_button"),
-                        shape = RoundedCornerShape(10.dp)
+                latestAvailableRelease?.let { pendingRelease ->
+                    Button(
+                        onClick = { onShowUpdateDialog(pendingRelease) },
+                        modifier = Modifier.fillMaxWidth().height(42.dp),
+                        shape = RoundedCornerShape(10.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = ext.emeraldSolid,
+                            contentColor = Color.White
+                        )
                     ) {
-                        Icon(imageVector = Icons.Default.Share, contentDescription = null, modifier = Modifier.size(16.dp), tint = ElectricBlue)
+                        Icon(imageVector = Icons.Default.Download, contentDescription = null, modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(6.dp))
-                        Text("İndirme Linkini Paylaş", fontSize = 11.sp, color = ElectricBlue)
-                    }
-
-                    OutlinedButton(
-                        onClick = {
-                            if (isResolvingLink) return@OutlinedButton
-                            isResolvingLink = true
-                            scope.launch {
-                                val res = mgr.resolvePublicDownloadUrl()
-                                isResolvingLink = false
-                                res.fold(
-                                    onSuccess = { targetUrl ->
-                                        try {
-                                            val browserIntent = android.content.Intent(
-                                                android.content.Intent.ACTION_VIEW,
-                                                android.net.Uri.parse(targetUrl)
-                                            )
-                                            context.startActivity(browserIntent)
-                                        } catch (e: Exception) {
-                                            Toast.makeText(context, "Tarayıcı açılamadı.", Toast.LENGTH_SHORT).show()
-                                        }
-                                    },
-                                    onFailure = { err ->
-                                        Toast.makeText(context, err.message ?: "Sayfa doğrulanamadı.", Toast.LENGTH_LONG).show()
-                                    }
-                                )
-                            }
-                        },
-                        enabled = !isResolvingLink,
-                        modifier = Modifier.weight(1f).height(42.dp).testTag("open_web_download_button"),
-                        shape = RoundedCornerShape(10.dp)
-                    ) {
-                        Icon(imageVector = Icons.Default.Download, contentDescription = null, modifier = Modifier.size(16.dp), tint = Color(0xFF10B981))
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("Web'den İndir", fontSize = 11.sp, color = Color(0xFF10B981))
+                        Text("Güncelle (v${pendingRelease.versionName})", fontSize = 12.sp, fontWeight = FontWeight.Bold)
                     }
                 }
             }
@@ -535,10 +526,10 @@ fun ProfileScreen(
                 text = {
                     if (isLoadingHistory) {
                         Box(modifier = Modifier.fillMaxWidth().height(140.dp), contentAlignment = Alignment.Center) {
-                            androidx.compose.material3.CircularProgressIndicator(color = ElectricBlue)
+                            androidx.compose.material3.CircularProgressIndicator(color = ext.accentBlue)
                         }
                     } else if (releaseHistory.isEmpty()) {
-                        Text("Henüz yayınlanmış bir sürüm geçmişi bulunamadı.", fontSize = 13.sp, color = Color(0xFF94A3B8))
+                        Text("Henüz yayınlanmış bir sürüm geçmişi bulunamadı.", fontSize = 13.sp, color = ext.textSecondary)
                     } else {
                         LazyColumn(
                             modifier = Modifier.fillMaxWidth().heightIn(max = 350.dp),
@@ -551,6 +542,7 @@ fun ProfileScreen(
                                 Surface(
                                     shape = RoundedCornerShape(10.dp),
                                     color = MaterialTheme.colorScheme.surfaceVariant,
+                                    border = BorderStroke(1.dp, ext.cardBorder),
                                     modifier = Modifier.fillMaxWidth()
                                 ) {
                                     Column(modifier = Modifier.padding(10.dp)) {
@@ -563,12 +555,12 @@ fun ProfileScreen(
                                                 text = "v${item.versionName}",
                                                 fontWeight = FontWeight.Bold,
                                                 fontSize = 14.sp,
-                                                color = ElectricBlue
+                                                color = ext.accentBlue
                                             )
                                             if (item.versionCode == mgr.getCurrentVersionCode()) {
                                                 Surface(
                                                     shape = RoundedCornerShape(6.dp),
-                                                    color = Color(0xFF10B981)
+                                                    color = ext.emeraldSolid
                                                 ) {
                                                     Text(
                                                         text = "Şu Anki",
@@ -605,20 +597,21 @@ fun ProfileScreen(
                 .height(48.dp)
                 .testTag("sign_out_button"),
             shape = RoundedCornerShape(12.dp),
+            border = BorderStroke(1.dp, ext.dangerText.copy(alpha = 0.45f)),
             colors = ButtonDefaults.outlinedButtonColors(
-                contentColor = Color(0xFFEF4444)
+                contentColor = ext.dangerText
             )
         ) {
             Icon(
                 imageVector = Icons.Default.ExitToApp,
                 contentDescription = null,
-                tint = Color(0xFFEF4444)
+                tint = ext.dangerText
             )
             Spacer(modifier = Modifier.width(8.dp))
             Text(
                 text = "Oturumu Kapat",
                 fontWeight = FontWeight.Bold,
-                color = Color(0xFFEF4444)
+                color = ext.dangerText
             )
         }
 
@@ -627,7 +620,7 @@ fun ProfileScreen(
         Text(
             text = "BLACKSEA ROBOTICS Platformu • v${mgr.getCurrentVersionName()}",
             fontSize = 11.sp,
-            color = Color(0xFF94A3B8)
+            color = ext.textMuted
         )
     }
 
@@ -650,9 +643,12 @@ fun ProfileScreen(
                             onSignOutComplete = onSignOut
                         )
                     },
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFEF4444))
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = ext.dangerSolid,
+                        contentColor = Color.White
+                    )
                 ) {
-                    Text("Çıkış Yap", color = Color.White)
+                    Text("Çıkış Yap", color = Color.White, fontWeight = FontWeight.Bold)
                 }
             },
             dismissButton = {
@@ -755,15 +751,20 @@ fun ProfileScreen(
                                     )
                                     showEditDialog = false
                                     Toast.makeText(context, "Profil güncellendi!", Toast.LENGTH_SHORT).show()
+                                } catch (ce: CancellationException) {
+                                    throw ce
                                 } catch (e: Exception) {
-                                    Toast.makeText(context, "Hata: ${e.message}", Toast.LENGTH_LONG).show()
+                                    Toast.makeText(context, sanitizeUserErrorMessage(e), Toast.LENGTH_LONG).show()
                                 }
                             }
                         }
                     },
-                    colors = ButtonDefaults.buttonColors(containerColor = ElectricBlue)
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = ext.accentBlueSolid,
+                        contentColor = Color.White
+                    )
                 ) {
-                    Text("Kaydet")
+                    Text("Kaydet", fontWeight = FontWeight.Bold)
                 }
             },
             dismissButton = {

@@ -5,8 +5,9 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
-import android.util.Log
+import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -33,6 +34,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -42,9 +44,10 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.example.data.BlackseaRepository
-import com.example.model.UserRole
+import com.example.data.UserProfileLoadState
 import com.example.model.UserStatus
 import com.example.notifications.BackgroundNotificationWorker
+import com.example.notifications.RealtimeNotificationService
 import com.example.notifications.TeamNotificationDispatcher
 import com.example.ui.MainScreen
 import com.example.ui.screens.AuthScreen
@@ -53,6 +56,8 @@ import com.example.ui.theme.ElectricBlue
 import com.example.update.AppReleaseInfo
 import com.example.update.AppUpdateManager
 import com.example.update.UpdateCheckResult
+import com.example.util.logDebug
+import com.example.util.logDebugWarn
 import com.google.firebase.Firebase
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.auth
@@ -75,7 +80,16 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        enableEdgeToEdge()
+        enableEdgeToEdge(
+            statusBarStyle = SystemBarStyle.auto(
+                android.graphics.Color.TRANSPARENT,
+                android.graphics.Color.TRANSPARENT
+            ),
+            navigationBarStyle = SystemBarStyle.auto(
+                android.graphics.Color.TRANSPARENT,
+                android.graphics.Color.TRANSPARENT
+            )
+        )
         TeamNotificationDispatcher.ensureNotificationChannels(this)
         handleNotificationIntent(intent)
 
@@ -137,8 +151,12 @@ fun AppContent(
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { isGranted ->
-        Log.d("Notifications", "POST_NOTIFICATIONS granted: $isGranted")
-        if (!isGranted) {
+        logDebug("Notifications", "POST_NOTIFICATIONS granted: $isGranted")
+        if (isGranted) {
+            if (isAuthCompleted) {
+                RealtimeNotificationService.startIfEligible(context)
+            }
+        } else {
             val enabled = NotificationManagerCompat.from(context).areNotificationsEnabled()
             if (!enabled) {
                 showNotificationRationale = true
@@ -201,7 +219,7 @@ fun AppContent(
                                     versionName = vName,
                                     versionCode = vCode,
                                     title = doc.getString("title") ?: "Yeni Güncelleme Mevcut",
-                                    changelog = doc.getString("changelog") ?: "• Yeni dosya paylaşım sistemi (Resim, Video, Ses, CAD)\n• Otomatik APK güncelleme sistemi\n• Hata düzeltmeleri",
+                                    changelog = doc.getString("changelog") ?: "• Yeni medya ve dosya paylaşım deneyimi\n• Otomatik güncelleme desteği\n• Hata düzeltmeleri ve iyileştirmeler",
                                     publishedAt = doc.getString("publishedAt") ?: "Bugün",
                                     apkDownloadUrl = resolvedUrl,
                                     apkFileName = doc.getString("apkFileName") ?: "BlackseaRobotics-v$vName.apk",
@@ -225,7 +243,7 @@ fun AppContent(
         } catch (ce: CancellationException) {
             throw ce
         } catch (e: Exception) {
-            Log.w("MainActivity", "Live update stream error: ${e.message}")
+            logDebugWarn("MainActivity", "Live update stream error", e)
         }
     }
 
@@ -234,43 +252,110 @@ fun AppContent(
         val activeUid = currentUser?.uid
         if (activeUid != null && isAuthCompleted) {
             BackgroundNotificationWorker.schedulePeriodicSync(context)
+            RealtimeNotificationService.startIfEligible(context)
             performUpdateCheckAndNotify()
         }
     }
 
-    // Real-time event-driven OS notifications while app is alive (never floods backlog on startup)
+    // Live profile observation for instant kick-out when revoked/deleted + event-driven notifications
     val authenticatedUid = if (isAuthCompleted) currentUser?.uid else null
-    val activeProfile by remember(authenticatedUid) {
-        if (authenticatedUid.isNullOrBlank()) flowOf(null) else repository.observeUserProfile(authenticatedUid)
-    }.collectAsState(initial = null)
+    val profileState by remember(authenticatedUid) {
+        if (authenticatedUid.isNullOrBlank()) {
+            flowOf(UserProfileLoadState.Loading)
+        } else {
+            repository.observeUserProfileState(authenticatedUid)
+        }
+    }.collectAsState(initial = UserProfileLoadState.Loading)
 
-    val activeIsManager = activeProfile?.let { profile ->
-        profile.isSuperAdmin ||
-            profile.role == UserRole.ADMIN.displayName ||
-            profile.roles.contains("Yönetici") ||
-            profile.roles.contains("Takım Kaptanı") ||
-            profile.roles.contains("Yetkili Öğretmen") ||
-            profile.email.equals("filim3290@gmail.com", ignoreCase = true)
-    } ?: false
+    val activeProfile = (profileState as? UserProfileLoadState.Found)?.profile
+    val activeIsManager = activeProfile?.isManagerAccount() ?: false
+
+    LaunchedEffect(authenticatedUid, profileState) {
+        if (authenticatedUid == null) return@LaunchedEffect
+        when (val state = profileState) {
+            is UserProfileLoadState.Loading -> Unit
+            is UserProfileLoadState.Missing -> {
+                val isFounderEmail = currentUser?.email.equals("filim3290@gmail.com", ignoreCase = true)
+                if (!isFounderEmail) {
+                    BackgroundNotificationWorker.cancelPeriodicSync(context)
+                    RealtimeNotificationService.stop(context)
+                    isAuthCompleted = false
+                    Toast.makeText(
+                        context,
+                        "Hesabınız yönetici tarafından kaldırıldığı için oturum kapatıldı.",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+            }
+            is UserProfileLoadState.Found -> {
+                val profile = state.profile
+                val isFounder = profile.isSuperAdmin ||
+                    profile.email.equals("filim3290@gmail.com", ignoreCase = true) ||
+                    currentUser?.email.equals("filim3290@gmail.com", ignoreCase = true)
+                val isApproved = UserStatus.isActive(profile.status) || isFounder
+                if (!isApproved) {
+                    BackgroundNotificationWorker.cancelPeriodicSync(context)
+                    RealtimeNotificationService.stop(context)
+                    isAuthCompleted = false
+                    if (UserStatus.isRevoked(profile.status)) {
+                        Toast.makeText(
+                            context,
+                            "Uygulama erişiminiz yönetici tarafından kaldırıldı.",
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
+                } else {
+                    RealtimeNotificationService.startIfEligible(context)
+                    try {
+                        repository.ensureDefaultRoomsExist()
+                    } catch (_: Exception) {
+                    }
+                }
+            }
+        }
+    }
 
     LaunchedEffect(authenticatedUid, activeProfile?.status, activeIsManager, activeProfile?.team) {
         val uid = authenticatedUid ?: return@LaunchedEffect
         val profile = activeProfile ?: return@LaunchedEffect
-        val isApproved = UserStatus.isActive(profile.status) ||
-            profile.isSuperAdmin ||
-            profile.email.equals("filim3290@gmail.com", ignoreCase = true)
+        val isFounder = profile.isSuperAdmin ||
+            profile.email.equals("filim3290@gmail.com", ignoreCase = true) ||
+            currentUser?.email.equals("filim3290@gmail.com", ignoreCase = true)
+        val isApproved = UserStatus.isActive(profile.status) || isFounder
         if (!isApproved) return@LaunchedEffect
 
+        val profileJoinMs = profile.createdAt?.toDate()?.time ?: 0L
+        if (profileJoinMs > 0L) {
+            TeamNotificationDispatcher.recordUserJoinTimestampIfMissing(context, uid, profileJoinMs)
+        }
+        val effectiveJoinMs = if (profileJoinMs > 0L) {
+            profileJoinMs
+        } else {
+            TeamNotificationDispatcher.getUserJoinTimestampMs(context, uid)
+        }
+
+        var hasHandledInitialSnapshot = false
         repository.observeNotifications(
             userId = uid,
             isManager = activeIsManager,
-            userTeam = profile.team
+            userTeam = profile.team,
+            userCreatedAtMs = effectiveJoinMs
         ).collect { filteredNotifications ->
-            TeamNotificationDispatcher.processNotifications(
-                context = context,
-                userId = uid,
-                notifications = filteredNotifications
-            )
+            if (!hasHandledInitialSnapshot) {
+                TeamNotificationDispatcher.syncBaselineSilently(
+                    context = context,
+                    userId = uid,
+                    notifications = filteredNotifications
+                )
+                hasHandledInitialSnapshot = true
+            } else {
+                TeamNotificationDispatcher.processNotifications(
+                    context = context,
+                    userId = uid,
+                    notifications = filteredNotifications,
+                    userCreatedAtMs = effectiveJoinMs
+                )
+            }
         }
     }
 
@@ -331,7 +416,10 @@ fun AppContent(
                             context.startActivity(intent)
                         }
                     },
-                    colors = ButtonDefaults.buttonColors(containerColor = ElectricBlue)
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = ElectricBlue,
+                        contentColor = Color.White
+                    )
                 ) {
                     Text("Ayarlarda Aç")
                 }
@@ -385,6 +473,7 @@ fun AppContent(
                 onConsumeNotificationNav = onConsumeNotificationNav,
                 onShowUpdateDialog = { release -> availableUpdate = release },
                 onSignOut = {
+                    RealtimeNotificationService.stop(context)
                     BackgroundNotificationWorker.cancelPeriodicSync(context)
                     Firebase.auth.signOut()
                     currentUser = null

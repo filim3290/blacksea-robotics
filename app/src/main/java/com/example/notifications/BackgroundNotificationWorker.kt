@@ -1,7 +1,6 @@
 package com.example.notifications
 
 import android.content.Context
-import android.util.Log
 import androidx.work.Constraints
 import androidx.work.CoroutineWorker
 import androidx.work.ExistingPeriodicWorkPolicy
@@ -12,11 +11,11 @@ import androidx.work.WorkerParameters
 import com.example.data.BlackseaRepository
 import com.example.data.shouldUserReceiveNotification
 import com.example.model.TeamNotification
-import com.example.model.UserRole
 import com.example.model.UserStatus
 import com.example.update.AppReleaseInfo
 import com.example.update.AppUpdateManager
 import com.example.update.UpdateCheckResult
+import com.example.util.logDebugWarn
 import com.google.firebase.Firebase
 import com.google.firebase.auth.auth
 import kotlinx.coroutines.CancellationException
@@ -51,7 +50,7 @@ class BackgroundNotificationWorker(
                     request
                 )
             } catch (e: Exception) {
-                Log.w(TAG, "Failed to schedule periodic notification sync: ${e.message}")
+                logDebugWarn(TAG, "Failed to schedule periodic notification sync", e)
             }
         }
 
@@ -59,7 +58,7 @@ class BackgroundNotificationWorker(
             try {
                 WorkManager.getInstance(context.applicationContext).cancelUniqueWork(WORK_NAME)
             } catch (e: Exception) {
-                Log.w(TAG, "Failed to cancel periodic notification sync: ${e.message}")
+                logDebugWarn(TAG, "Failed to cancel periodic notification sync", e)
             }
         }
     }
@@ -75,11 +74,9 @@ class BackgroundNotificationWorker(
                 currentUser.email.equals("filim3290@gmail.com", ignoreCase = true)
 
             if (profile != null && (UserStatus.isActive(profile.status) || isSuperAdmin)) {
-                val isManager = isSuperAdmin ||
-                    profile.role == UserRole.ADMIN.displayName ||
-                    profile.roles.contains("Yönetici") ||
-                    profile.roles.contains("Takım Kaptanı") ||
-                    profile.roles.contains("Yetkili Öğretmen")
+                val isManager = profile.isManagerAccount()
+                val joinMs = profile.createdAt?.toDate()?.time
+                    ?: TeamNotificationDispatcher.getUserJoinTimestampMs(applicationContext, currentUser.uid)
 
                 val snapshot = repository.db.collection("notifications").get().await()
                 val allNotifications = snapshot.toObjects(TeamNotification::class.java)
@@ -88,14 +85,16 @@ class BackgroundNotificationWorker(
                         notif = notif,
                         userId = currentUser.uid,
                         isManager = isManager,
-                        userTeam = profile.team
+                        userTeam = profile.team,
+                        userCreatedAtMs = joinMs
                     )
                 }
 
                 TeamNotificationDispatcher.processNotifications(
                     context = applicationContext,
                     userId = currentUser.uid,
-                    notifications = filtered
+                    notifications = filtered,
+                    userCreatedAtMs = joinMs
                 )
             }
 
@@ -115,7 +114,7 @@ class BackgroundNotificationWorker(
         } catch (ce: CancellationException) {
             throw ce
         } catch (e: Exception) {
-            Log.w(TAG, "Background sync iteration failed: ${e.message}")
+            logDebugWarn(TAG, "Background sync iteration failed", e)
             if (runAttemptCount < 2) Result.retry() else Result.success()
         }
     }
@@ -156,7 +155,7 @@ class BackgroundNotificationWorker(
         } catch (ce: CancellationException) {
             throw ce
         } catch (e: Exception) {
-            Log.w(TAG, "Firestore background update check error: ${e.message}")
+            logDebugWarn(TAG, "Firestore background update check error", e)
         }
     }
 }

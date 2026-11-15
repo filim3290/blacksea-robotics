@@ -1,6 +1,7 @@
 package com.example.ui.screens
 
 import android.widget.Toast
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -24,12 +25,14 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.Campaign
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Notifications
+import androidx.compose.material.icons.filled.Restore
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material3.AlertDialog
@@ -83,6 +86,9 @@ import com.example.ui.components.TeamBadge
 import com.example.ui.components.UserRolesRow
 import com.example.ui.theme.ElectricBlue
 import com.example.ui.theme.PhoenixAmber
+import com.example.ui.theme.blackseaColors
+import com.example.util.AppMessages
+import com.example.util.sanitizeUserErrorMessage
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 
@@ -91,21 +97,36 @@ fun AdminScreen(
     repository: BlackseaRepository,
     currentUserProfile: UserProfile?,
     updateManager: com.example.update.AppUpdateManager? = null,
+    initialTabIndex: Int = 0,
     onShowUpdateDialog: (com.example.update.AppReleaseInfo) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    val ext = MaterialTheme.blackseaColors
 
     val allUsers by repository.observeAllUsers().collectAsState(initial = emptyList())
     val announcements by repository.observeAnnouncements().collectAsState(initial = emptyList())
 
     val pendingUsers = allUsers.filter { UserStatus.isPending(it.status) }
     val approvedUsers = allUsers.filter { UserStatus.isActive(it.status) }
+    val restrictedUsers = allUsers.filter { UserStatus.isRevoked(it.status) || UserStatus.isRejected(it.status) }
+    val currentUid = currentUserProfile?.userId?.ifBlank { currentUserProfile.id }.orEmpty()
 
-    var selectedTabIndex by remember { mutableIntStateOf(0) }
+    fun isProtectedUser(user: UserProfile): Boolean {
+        val targetId = user.userId.ifBlank { user.id }
+        return (currentUid.isNotBlank() && targetId == currentUid) ||
+            user.email.equals("filim3290@gmail.com", ignoreCase = true)
+    }
+
+    var selectedTabIndex by remember { mutableIntStateOf(initialTabIndex.coerceIn(0, 4)) }
     val tabs = remember {
         listOf("Kullanıcılar", "Onaylar", "Bildirim Gönder", "Duyurular", "Uygulama Güncellemesi")
+    }
+    LaunchedEffect(initialTabIndex) {
+        if (initialTabIndex in tabs.indices) {
+            selectedTabIndex = initialTabIndex
+        }
     }
 
     // Broadcast Notification State
@@ -113,8 +134,11 @@ fun AdminScreen(
     var broadcastMessage by remember { mutableStateOf("") }
     var isSendingBroadcast by remember { mutableStateOf(false) }
 
-    // Edit Member Dialog State
+    // Edit Member & Account Action Dialog State
     var memberToEdit by remember { mutableStateOf<UserProfile?>(null) }
+    var userToRevoke by remember { mutableStateOf<UserProfile?>(null) }
+    var userToDelete by remember { mutableStateOf<UserProfile?>(null) }
+    var isPerformingUserAction by remember { mutableStateOf(false) }
     var showNewAnnouncementDialog by remember { mutableStateOf(false) }
     var showBroadcastUpdateDialog by remember { mutableStateOf(false) }
 
@@ -127,7 +151,7 @@ fun AdminScreen(
         Surface(
             modifier = Modifier.fillMaxWidth(),
             color = MaterialTheme.colorScheme.surface,
-            shadowElevation = 2.dp
+            shadowElevation = if (ext.isDark) 2.dp else 1.dp
         ) {
             Column(modifier = Modifier.padding(16.dp)) {
                 Row(
@@ -137,7 +161,7 @@ fun AdminScreen(
                     Icon(
                         imageVector = Icons.Default.Security,
                         contentDescription = null,
-                        tint = Color(0xFFE11D48),
+                        tint = ext.adminRedText,
                         modifier = Modifier.size(24.dp)
                     )
                     Text(
@@ -149,9 +173,9 @@ fun AdminScreen(
                 }
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
-                    text = "Üyelerin gerçek isimlerini, ekiplerini, özel rollerini ve hesap durumlarını yönetin.",
+                    text = "Üyelerin gerçek isimlerini, ekiplerini, özel rollerini, erişim yetkilerini ve hesap durumlarını yönetin.",
                     fontSize = 12.sp,
-                    color = Color(0xFF94A3B8)
+                    color = ext.textSecondary
                 )
             }
         }
@@ -175,7 +199,7 @@ fun AdminScreen(
                         Text(
                             text = "$title$count",
                             fontWeight = if (selectedTabIndex == index) FontWeight.Bold else FontWeight.Normal,
-                            color = if (selectedTabIndex == index) ElectricBlue else MaterialTheme.colorScheme.onSurfaceVariant
+                            color = if (selectedTabIndex == index) ext.accentBlue else ext.textMuted
                         )
                     }
                 )
@@ -184,7 +208,7 @@ fun AdminScreen(
 
         when (selectedTabIndex) {
             0 -> {
-                // Approved Members List with Multi-Roles
+                // Approved & Restricted Members List
                 LazyColumn(
                     modifier = Modifier
                         .fillMaxSize()
@@ -194,13 +218,15 @@ fun AdminScreen(
                 ) {
                     itemsIndexed(
                         items = approvedUsers,
-                        key = { index, u -> "${u.userId.ifBlank { u.id }}_$index" }
+                        key = { index, u -> "active_${u.userId.ifBlank { u.id }}_$index" }
                     ) { _, user ->
+                        val protected = isProtectedUser(user)
                         Card(
                             modifier = Modifier.fillMaxWidth(),
                             shape = RoundedCornerShape(12.dp),
                             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+                            border = BorderStroke(1.dp, ext.cardBorder),
+                            elevation = CardDefaults.cardElevation(defaultElevation = if (ext.isDark) 2.dp else 1.dp)
                         ) {
                             Row(
                                 modifier = Modifier
@@ -216,14 +242,14 @@ fun AdminScreen(
                                 ) {
                                     Surface(
                                         shape = CircleShape,
-                                        color = ElectricBlue.copy(alpha = 0.2f),
+                                        color = ext.accentBlueContainer,
                                         modifier = Modifier.size(42.dp)
                                     ) {
                                         Box(contentAlignment = Alignment.Center) {
                                             Text(
                                                 text = user.getFullName().take(1).uppercase(),
                                                 fontWeight = FontWeight.Bold,
-                                                color = ElectricBlue,
+                                                color = ext.accentBlue,
                                                 fontSize = 16.sp
                                             )
                                         }
@@ -233,12 +259,13 @@ fun AdminScreen(
                                         Text(
                                             text = user.getFullName(),
                                             fontWeight = FontWeight.Bold,
-                                            fontSize = 15.sp
+                                            fontSize = 15.sp,
+                                            color = MaterialTheme.colorScheme.onSurface
                                         )
                                         Text(
                                             text = "${user.email} • @${user.username.ifBlank { "bsr_uye" }}",
                                             fontSize = 11.sp,
-                                            color = Color(0xFF94A3B8)
+                                            color = ext.textMuted
                                         )
                                         Spacer(modifier = Modifier.height(4.dp))
                                         Row(
@@ -251,12 +278,163 @@ fun AdminScreen(
                                     }
                                 }
 
-                                IconButton(onClick = { memberToEdit = user }) {
-                                    Icon(
-                                        imageVector = Icons.Default.Edit,
-                                        contentDescription = "Rol ve Ekip Düzenle",
-                                        tint = ElectricBlue
-                                    )
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    IconButton(onClick = { memberToEdit = user }) {
+                                        Icon(
+                                            imageVector = Icons.Default.Edit,
+                                            contentDescription = "Rol ve Ekip Düzenle",
+                                            tint = ext.accentBlue
+                                        )
+                                    }
+                                    if (!protected) {
+                                        IconButton(
+                                            onClick = { userToRevoke = user },
+                                            modifier = Modifier.testTag("revoke_user_${user.userId.ifBlank { user.id }}")
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.Block,
+                                                contentDescription = "Erişimi Kaldır",
+                                                tint = ext.amberText
+                                            )
+                                        }
+                                        IconButton(
+                                            onClick = { userToDelete = user },
+                                            modifier = Modifier.testTag("delete_user_${user.userId.ifBlank { user.id }}")
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.Delete,
+                                                contentDescription = "Kullanıcıyı Sil",
+                                                tint = ext.dangerText
+                                            )
+                                        }
+                                    } else {
+                                        Surface(
+                                            shape = RoundedCornerShape(6.dp),
+                                            color = ext.accentBlueContainer
+                                        ) {
+                                            Text(
+                                                text = "Korumalı",
+                                                fontSize = 10.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                color = ext.accentBlue,
+                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if (restrictedUsers.isNotEmpty()) {
+                        item {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text(
+                                text = "Erişimi Kaldırılan / Reddedilen Kullanıcılar (${restrictedUsers.size})",
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = ext.dangerText,
+                                modifier = Modifier.padding(vertical = 4.dp)
+                            )
+                        }
+
+                        itemsIndexed(
+                            items = restrictedUsers,
+                            key = { index, u -> "restricted_${u.userId.ifBlank { u.id }}_$index" }
+                        ) { _, user ->
+                            val isRevoked = UserStatus.isRevoked(user.status)
+                            Card(
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(12.dp),
+                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                                border = BorderStroke(1.dp, ext.dangerText.copy(alpha = 0.3f)),
+                                elevation = CardDefaults.cardElevation(defaultElevation = if (ext.isDark) 1.dp else 0.dp)
+                            ) {
+                                Column(modifier = Modifier.padding(14.dp)) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(
+                                                text = user.getFullName(),
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 15.sp,
+                                                color = MaterialTheme.colorScheme.onSurface
+                                            )
+                                            Text(
+                                                text = "${user.email} • @${user.username.ifBlank { "bsr_uye" }}",
+                                                fontSize = 11.sp,
+                                                color = ext.textMuted
+                                            )
+                                        }
+                                        Surface(
+                                            shape = RoundedCornerShape(6.dp),
+                                            color = ext.dangerContainer
+                                        ) {
+                                            Text(
+                                                text = if (isRevoked) "Erişim Kaldırıldı" else "Reddedildi",
+                                                fontSize = 10.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                color = ext.dangerText,
+                                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                            )
+                                        }
+                                    }
+
+                                    Spacer(modifier = Modifier.height(10.dp))
+
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.End,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        OutlinedButton(
+                                            onClick = { userToDelete = user },
+                                            shape = RoundedCornerShape(8.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.Delete,
+                                                contentDescription = null,
+                                                tint = ext.dangerText,
+                                                modifier = Modifier.size(16.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(4.dp))
+                                            Text("Sil", color = ext.dangerText, fontSize = 12.sp)
+                                        }
+
+                                        Spacer(modifier = Modifier.width(8.dp))
+
+                                        Button(
+                                            onClick = {
+                                                scope.launch {
+                                                    try {
+                                                        repository.updateUserRolesAndTeam(
+                                                            targetUserId = user.userId.ifBlank { user.id },
+                                                            team = user.team,
+                                                            roles = user.roles.ifEmpty { listOf(PredefinedRoles.getDefaultTeamRole(user.team)) },
+                                                            status = UserStatus.APPROVED.value
+                                                        )
+                                                        Toast.makeText(context, "${user.getFullName()} erişimi geri verildi.", Toast.LENGTH_SHORT).show()
+                                                    } catch (ce: CancellationException) {
+                                                        throw ce
+                                                    } catch (e: Exception) {
+                                                        Toast.makeText(context, sanitizeUserErrorMessage(e), Toast.LENGTH_SHORT).show()
+                                                    }
+                                                }
+                                            },
+                                            shape = RoundedCornerShape(8.dp),
+                                            colors = ButtonDefaults.buttonColors(
+                                                containerColor = ext.emeraldSolid,
+                                                contentColor = Color.White
+                                            )
+                                        ) {
+                                            Icon(imageVector = Icons.Default.Restore, contentDescription = null, modifier = Modifier.size(16.dp))
+                                            Spacer(modifier = Modifier.width(4.dp))
+                                            Text("Erişimi Geri Ver", fontSize = 12.sp)
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -283,7 +461,7 @@ fun AdminScreen(
                             ) {
                                 Text(
                                     text = "Onay bekleyen yeni üye kaydı bulunmuyor.",
-                                    color = Color(0xFF94A3B8),
+                                    color = ext.textMuted,
                                     fontSize = 14.sp
                                 )
                             }
@@ -298,11 +476,12 @@ fun AdminScreen(
                             modifier = Modifier.fillMaxWidth(),
                             shape = RoundedCornerShape(12.dp),
                             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+                            border = BorderStroke(1.dp, ext.cardBorder),
+                            elevation = CardDefaults.cardElevation(defaultElevation = if (ext.isDark) 2.dp else 1.dp)
                         ) {
                             Column(modifier = Modifier.padding(14.dp)) {
-                                Text(text = user.getFullName(), fontWeight = FontWeight.Bold, fontSize = 15.sp)
-                                Text(text = "${user.email} • @${user.username}", fontSize = 12.sp, color = Color(0xFF94A3B8))
+                                Text(text = user.getFullName(), fontWeight = FontWeight.Bold, fontSize = 15.sp, color = MaterialTheme.colorScheme.onSurface)
+                                Text(text = "${user.email} • @${user.username}", fontSize = 12.sp, color = ext.textMuted)
                                 Spacer(modifier = Modifier.height(6.dp))
                                 TeamBadge(teamName = user.team)
 
@@ -313,6 +492,16 @@ fun AdminScreen(
                                     horizontalArrangement = Arrangement.End,
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
+                                    IconButton(onClick = { userToDelete = user }) {
+                                        Icon(
+                                            imageVector = Icons.Default.Delete,
+                                            contentDescription = "Başvuruyu Sil",
+                                            tint = ext.dangerText
+                                        )
+                                    }
+
+                                    Spacer(modifier = Modifier.width(4.dp))
+
                                     OutlinedButton(
                                         onClick = {
                                             scope.launch {
@@ -327,15 +516,15 @@ fun AdminScreen(
                                                 } catch (ce: CancellationException) {
                                                     throw ce
                                                 } catch (e: Exception) {
-                                                    Toast.makeText(context, "İşlem başarısız: ${e.message}", Toast.LENGTH_SHORT).show()
+                                                    Toast.makeText(context, sanitizeUserErrorMessage(e), Toast.LENGTH_SHORT).show()
                                                 }
                                             }
                                         },
                                         shape = RoundedCornerShape(8.dp)
                                     ) {
-                                        Icon(imageVector = Icons.Default.Close, contentDescription = null, tint = Color(0xFFEF4444), modifier = Modifier.size(16.dp))
+                                        Icon(imageVector = Icons.Default.Close, contentDescription = null, tint = ext.dangerText, modifier = Modifier.size(16.dp))
                                         Spacer(modifier = Modifier.width(4.dp))
-                                        Text("Reddet", color = Color(0xFFEF4444))
+                                        Text("Reddet", color = ext.dangerText)
                                     }
 
                                     Spacer(modifier = Modifier.width(8.dp))
@@ -354,12 +543,15 @@ fun AdminScreen(
                                                 } catch (ce: CancellationException) {
                                                     throw ce
                                                 } catch (e: Exception) {
-                                                    Toast.makeText(context, "Onaylanamadı: ${e.message}", Toast.LENGTH_SHORT).show()
+                                                    Toast.makeText(context, sanitizeUserErrorMessage(e), Toast.LENGTH_SHORT).show()
                                                 }
                                             }
                                         },
                                         shape = RoundedCornerShape(8.dp),
-                                        colors = ButtonDefaults.buttonColors(containerColor = ElectricBlue)
+                                        colors = ButtonDefaults.buttonColors(
+                                            containerColor = ext.accentBlueSolid,
+                                            contentColor = Color.White
+                                        )
                                     ) {
                                         Icon(imageVector = Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp))
                                         Spacer(modifier = Modifier.width(4.dp))
@@ -386,7 +578,8 @@ fun AdminScreen(
                             modifier = Modifier.fillMaxWidth(),
                             shape = RoundedCornerShape(16.dp),
                             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+                            border = BorderStroke(1.dp, ext.cardBorder),
+                            elevation = CardDefaults.cardElevation(defaultElevation = if (ext.isDark) 2.dp else 1.dp)
                         ) {
                             Column(
                                 modifier = Modifier.padding(18.dp),
@@ -398,14 +591,14 @@ fun AdminScreen(
                                 ) {
                                     Surface(
                                         shape = CircleShape,
-                                        color = ElectricBlue.copy(alpha = 0.15f),
+                                        color = ext.accentBlueContainer,
                                         modifier = Modifier.size(42.dp)
                                     ) {
                                         Box(contentAlignment = Alignment.Center) {
                                             Icon(
                                                 imageVector = Icons.Default.Campaign,
                                                 contentDescription = null,
-                                                tint = ElectricBlue,
+                                                tint = ext.accentBlue,
                                                 modifier = Modifier.size(24.dp)
                                             )
                                         }
@@ -420,7 +613,7 @@ fun AdminScreen(
                                         Text(
                                             text = "Tüm takım üyelerine anlık bildirim ve sistem duyurusu iletilir.",
                                             fontSize = 12.sp,
-                                            color = Color(0xFF94A3B8)
+                                            color = ext.textSecondary
                                         )
                                     }
                                 }
@@ -464,8 +657,10 @@ fun AdminScreen(
                                                 broadcastTitle = ""
                                                 broadcastMessage = ""
                                                 Toast.makeText(context, "Bildirim tüm takıma başarıyla gönderildi!", Toast.LENGTH_LONG).show()
+                                            } catch (ce: CancellationException) {
+                                                throw ce
                                             } catch (e: Exception) {
-                                                Toast.makeText(context, "Gönderilemedi: ${e.message}", Toast.LENGTH_SHORT).show()
+                                                Toast.makeText(context, sanitizeUserErrorMessage(e), Toast.LENGTH_SHORT).show()
                                             } finally {
                                                 isSendingBroadcast = false
                                             }
@@ -474,7 +669,10 @@ fun AdminScreen(
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .height(48.dp),
-                                    colors = ButtonDefaults.buttonColors(containerColor = ElectricBlue),
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = ext.accentBlueSolid,
+                                        contentColor = Color.White
+                                    ),
                                     shape = RoundedCornerShape(10.dp),
                                     enabled = !isSendingBroadcast
                                 ) {
@@ -507,7 +705,10 @@ fun AdminScreen(
                     Button(
                         onClick = { showNewAnnouncementDialog = true },
                         modifier = Modifier.fillMaxWidth(),
-                        colors = ButtonDefaults.buttonColors(containerColor = ElectricBlue),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = ext.accentBlueSolid,
+                            contentColor = Color.White
+                        ),
                         shape = RoundedCornerShape(10.dp)
                     ) {
                         Icon(imageVector = Icons.Default.Campaign, contentDescription = null)
@@ -528,7 +729,8 @@ fun AdminScreen(
                             Card(
                                 modifier = Modifier.fillMaxWidth(),
                                 shape = RoundedCornerShape(12.dp),
-                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                                border = BorderStroke(1.dp, ext.cardBorder)
                             ) {
                                 Column(modifier = Modifier.padding(14.dp)) {
                                     Row(
@@ -536,7 +738,7 @@ fun AdminScreen(
                                         horizontalArrangement = Arrangement.SpaceBetween,
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
-                                        Text(text = announcement.title, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                                        Text(text = announcement.title, fontWeight = FontWeight.Bold, fontSize = 15.sp, color = MaterialTheme.colorScheme.onSurface)
                                         IconButton(
                                             onClick = {
                                                 scope.launch {
@@ -546,16 +748,16 @@ fun AdminScreen(
                                                     } catch (ce: CancellationException) {
                                                         throw ce
                                                     } catch (e: Exception) {
-                                                        Toast.makeText(context, "Duyuru silinemedi: ${e.message}", Toast.LENGTH_SHORT).show()
+                                                        Toast.makeText(context, sanitizeUserErrorMessage(e), Toast.LENGTH_SHORT).show()
                                                     }
                                                 }
                                             }
                                         ) {
-                                            Icon(imageVector = Icons.Default.Delete, contentDescription = "Sil", tint = Color(0xFFEF4444))
+                                            Icon(imageVector = Icons.Default.Delete, contentDescription = "Sil", tint = ext.dangerText)
                                         }
                                     }
                                     Spacer(modifier = Modifier.height(4.dp))
-                                    Text(text = announcement.content, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    Text(text = announcement.content, fontSize = 13.sp, color = ext.textSecondary)
                                 }
                             }
                         }
@@ -564,7 +766,7 @@ fun AdminScreen(
             }
 
             4 -> {
-                // Tab 4: Uygulama Güncellemesi (App Release & OTA Status)
+                // Tab 4: Uygulama Güncellemesi (Clean release management)
                 val mgr = updateManager ?: remember { com.example.update.AppUpdateManager(context) }
                 var latestRelease by remember { mutableStateOf<com.example.update.AppReleaseInfo?>(null) }
                 var isChecking by remember { mutableStateOf(false) }
@@ -577,23 +779,20 @@ fun AdminScreen(
                     when (res) {
                         is com.example.update.UpdateCheckResult.UpdateAvailable -> {
                             latestRelease = res.release
-                            checkStatusMessage = "Yeni sürüm bulundu: v${res.release.versionName} (Kod: ${res.release.versionCode})"
+                            checkStatusMessage = "Yeni sürüm bulundu: v${res.release.versionName}"
                         }
                         is com.example.update.UpdateCheckResult.UpToDate -> {
-                            latestRelease = res.latestRemote
-                            checkStatusMessage = "Uygulama güncel (v${res.currentVersionName} • Kod: ${res.currentVersionCode})"
+                            latestRelease = null
+                            checkStatusMessage = "Uygulamanız güncel (v${res.currentVersionName})"
                         }
                         is com.example.update.UpdateCheckResult.NoReleaseFound -> {
-                            checkStatusMessage = "GitHub'da yayınlanmış sürüm bulunamadı."
+                            latestRelease = null
+                            checkStatusMessage = "Uygulamanız güncel."
                         }
-                        is com.example.update.UpdateCheckResult.ApkAssetMissing -> {
-                            checkStatusMessage = "APK dosyası bulunamadı (${res.tagName})."
-                        }
-                        is com.example.update.UpdateCheckResult.NetworkError -> {
-                            checkStatusMessage = "İnternet bağlantısı hatası: ${res.detail}"
-                        }
+                        is com.example.update.UpdateCheckResult.ApkAssetMissing,
+                        is com.example.update.UpdateCheckResult.NetworkError,
                         is com.example.update.UpdateCheckResult.ApiError -> {
-                            checkStatusMessage = "GitHub API hatası (${res.httpCode}): ${res.detail}"
+                            checkStatusMessage = AppMessages.UPDATE_CHECK_ERROR
                         }
                     }
                 }
@@ -610,7 +809,8 @@ fun AdminScreen(
                             modifier = Modifier.fillMaxWidth(),
                             shape = RoundedCornerShape(14.dp),
                             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+                            border = BorderStroke(1.dp, ext.cardBorder),
+                            elevation = CardDefaults.cardElevation(defaultElevation = if (ext.isDark) 2.dp else 1.dp)
                         ) {
                             Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                                 Row(
@@ -618,14 +818,14 @@ fun AdminScreen(
                                     horizontalArrangement = Arrangement.SpaceBetween,
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    Text("Mevcut Kurulu Sürüm", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                                    Text("Mevcut Uygulama Sürümü", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurface)
                                     Surface(
                                         shape = RoundedCornerShape(6.dp),
-                                        color = ElectricBlue.copy(alpha = 0.15f)
+                                        color = ext.accentBlueContainer
                                     ) {
                                         Text(
-                                            text = "v${mgr.getCurrentVersionName()} (Code: ${mgr.getCurrentVersionCode()})",
-                                            color = ElectricBlue,
+                                            text = "v${mgr.getCurrentVersionName()}",
+                                            color = ext.accentBlue,
                                             fontWeight = FontWeight.Bold,
                                             fontSize = 12.sp,
                                             modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
@@ -633,102 +833,17 @@ fun AdminScreen(
                                     }
                                 }
 
-                                var showRepoEditDialog by remember { mutableStateOf(false) }
-                                var repoOwnerInput by remember { mutableStateOf(mgr.githubOwner) }
-                                var repoNameInput by remember { mutableStateOf(mgr.githubRepo) }
-                                var repoTokenInput by remember { mutableStateOf(mgr.githubToken) }
-
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
                                     horizontalArrangement = Arrangement.SpaceBetween,
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    Column {
-                                        Text("GitHub Releases Dağıtımı", fontSize = 13.sp, color = Color(0xFF94A3B8))
-                                        Text("${mgr.githubOwner}/${mgr.githubRepo}", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = ElectricBlue)
-                                    }
-                                    TextButton(onClick = {
-                                        repoOwnerInput = mgr.githubOwner
-                                        repoNameInput = mgr.githubRepo
-                                        repoTokenInput = mgr.githubToken
-                                        showRepoEditDialog = true
-                                    }) {
-                                        Text("Değiştir", fontSize = 12.sp, color = ElectricBlue)
-                                    }
-                                }
-
-                                if (showRepoEditDialog) {
-                                    AlertDialog(
-                                        onDismissRequest = { showRepoEditDialog = false },
-                                        title = { Text("GitHub Repository Ayarla", fontWeight = FontWeight.Bold) },
-                                        text = {
-                                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                                Text("APK güncellemelerinin kontrol edileceği GitHub kullanıcı ve repo adınızı girin:", fontSize = 12.sp, color = Color(0xFF94A3B8))
-                                                OutlinedTextField(
-                                                    value = repoOwnerInput,
-                                                    onValueChange = { repoOwnerInput = it },
-                                                    label = { Text("Kullanıcı / Organizasyon Adı") },
-                                                    placeholder = { Text("filim3290") },
-                                                    modifier = Modifier.fillMaxWidth()
-                                                )
-                                                OutlinedTextField(
-                                                    value = repoNameInput,
-                                                    onValueChange = { repoNameInput = it },
-                                                    label = { Text("Repository Adı") },
-                                                    placeholder = { Text("blacksea-robotics") },
-                                                    modifier = Modifier.fillMaxWidth()
-                                                )
-                                                OutlinedTextField(
-                                                    value = repoTokenInput,
-                                                    onValueChange = { repoTokenInput = it },
-                                                    label = { Text("GitHub Token (İsteğe bağlı / Private Repo için)") },
-                                                    placeholder = { Text("ghp_...") },
-                                                    modifier = Modifier.fillMaxWidth()
-                                                )
-                                            }
-                                        },
-                                        confirmButton = {
-                                            Button(onClick = {
-                                                if (repoOwnerInput.isNotBlank() && repoNameInput.isNotBlank()) {
-                                                    mgr.githubOwner = repoOwnerInput.trim()
-                                                    mgr.githubRepo = repoNameInput.trim()
-                                                    mgr.githubToken = repoTokenInput.trim()
-                                                    showRepoEditDialog = false
-                                                    Toast.makeText(context, "GitHub repository güncellendi!", Toast.LENGTH_SHORT).show()
-                                                }
-                                            }) {
-                                                Text("Kaydet")
-                                            }
-                                        },
-                                        dismissButton = {
-                                            Row {
-                                                TextButton(onClick = {
-                                                    mgr.resetToDefaultRepo()
-                                                    repoOwnerInput = mgr.githubOwner
-                                                    repoNameInput = mgr.githubRepo
-                                                    Toast.makeText(context, "Varsayılan depo geri yüklendi!", Toast.LENGTH_SHORT).show()
-                                                }) {
-                                                    Text("Varsayılana Sıfırla", color = PhoenixAmber)
-                                                }
-                                                TextButton(onClick = { showRepoEditDialog = false }) {
-                                                    Text("İptal")
-                                                }
-                                            }
-                                        }
-                                    )
-                                }
-
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Text("Güncelleme Durumu", fontSize = 13.sp, color = Color(0xFF94A3B8))
+                                    Text("Güncelleme Durumu", fontSize = 13.sp, color = ext.textSecondary)
                                     Text(
                                         text = checkStatusMessage ?: "Kontrol ediliyor...",
                                         fontSize = 12.sp,
                                         fontWeight = FontWeight.Bold,
-                                        color = if (latestRelease != null) Color(0xFF10B981) else Color(0xFF94A3B8)
+                                        color = if (latestRelease != null) ext.emeraldText else ext.textMuted
                                     )
                                 }
 
@@ -744,29 +859,24 @@ fun AdminScreen(
                                             when (res) {
                                                 is com.example.update.UpdateCheckResult.UpdateAvailable -> {
                                                     latestRelease = res.release
-                                                    checkStatusMessage = "Yeni sürüm: v${res.release.versionName} (Kod: ${res.release.versionCode})"
+                                                    checkStatusMessage = "Yeni sürüm bulundu: v${res.release.versionName}"
                                                     onShowUpdateDialog(res.release)
                                                 }
                                                 is com.example.update.UpdateCheckResult.UpToDate -> {
-                                                    latestRelease = res.latestRemote
-                                                    checkStatusMessage = "Uygulama güncel (v${res.currentVersionName} • Kod: ${res.currentVersionCode})"
-                                                    Toast.makeText(context, "Uygulamanız güncel! (v${res.currentVersionName})", Toast.LENGTH_SHORT).show()
+                                                    latestRelease = null
+                                                    checkStatusMessage = "Uygulamanız güncel (v${res.currentVersionName})"
+                                                    Toast.makeText(context, "Uygulamanız güncel (v${res.currentVersionName})", Toast.LENGTH_SHORT).show()
                                                 }
                                                 is com.example.update.UpdateCheckResult.NoReleaseFound -> {
-                                                    checkStatusMessage = "Yeni sürüm bulunamadı."
-                                                    Toast.makeText(context, "GitHub'da yayınlanmış sürüm bulunamadı.", Toast.LENGTH_LONG).show()
+                                                    latestRelease = null
+                                                    checkStatusMessage = "Uygulamanız güncel."
+                                                    Toast.makeText(context, "Uygulamanız güncel.", Toast.LENGTH_SHORT).show()
                                                 }
-                                                is com.example.update.UpdateCheckResult.ApkAssetMissing -> {
-                                                    checkStatusMessage = "APK bulunamadı (${res.tagName})."
-                                                    Toast.makeText(context, "Sürüm (${res.tagName}) bulundu ancak APK dosyası eklenmemiş.", Toast.LENGTH_LONG).show()
-                                                }
-                                                is com.example.update.UpdateCheckResult.NetworkError -> {
-                                                    checkStatusMessage = "İnternet bağlantısı hatası."
-                                                    Toast.makeText(context, res.detail, Toast.LENGTH_LONG).show()
-                                                }
+                                                is com.example.update.UpdateCheckResult.ApkAssetMissing,
+                                                is com.example.update.UpdateCheckResult.NetworkError,
                                                 is com.example.update.UpdateCheckResult.ApiError -> {
-                                                    checkStatusMessage = "GitHub API hatası (${res.httpCode})."
-                                                    Toast.makeText(context, res.detail, Toast.LENGTH_LONG).show()
+                                                    checkStatusMessage = AppMessages.UPDATE_CHECK_ERROR
+                                                    Toast.makeText(context, AppMessages.UPDATE_CHECK_ERROR, Toast.LENGTH_LONG).show()
                                                 }
                                             }
                                         }
@@ -774,16 +884,19 @@ fun AdminScreen(
                                     enabled = !isChecking,
                                     modifier = Modifier.fillMaxWidth().height(44.dp),
                                     shape = RoundedCornerShape(10.dp),
-                                    colors = ButtonDefaults.buttonColors(containerColor = ElectricBlue)
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = ext.accentBlueSolid,
+                                        contentColor = Color.White
+                                    )
                                 ) {
                                     if (isChecking) {
-                                        androidx.compose.material3.CircularProgressIndicator(
+                                        CircularProgressIndicator(
                                             modifier = Modifier.size(18.dp),
                                             color = Color.White,
                                             strokeWidth = 2.dp
                                         )
                                     } else {
-                                        Text("Releases & Veritabanını Kontrol Et", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                                        Text("Güncellemeleri Kontrol Et", fontWeight = FontWeight.Bold, fontSize = 13.sp)
                                     }
                                 }
 
@@ -791,37 +904,12 @@ fun AdminScreen(
                                     onClick = { showBroadcastUpdateDialog = true },
                                     modifier = Modifier.fillMaxWidth().height(42.dp),
                                     shape = RoundedCornerShape(10.dp),
-                                    colors = ButtonDefaults.buttonColors(containerColor = PhoenixAmber)
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = PhoenixAmber,
+                                        contentColor = Color.Black
+                                    )
                                 ) {
-                                    Text("Yeni Sürüm Yayınla", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color.Black)
-                                }
-
-                                OutlinedButton(
-                                    onClick = {
-                                        scope.launch {
-                                            val res = mgr.resolvePublicDownloadUrl()
-                                            res.fold(
-                                                onSuccess = { targetUrl ->
-                                                    try {
-                                                        val browserIntent = android.content.Intent(
-                                                            android.content.Intent.ACTION_VIEW,
-                                                            android.net.Uri.parse(targetUrl)
-                                                        )
-                                                        context.startActivity(browserIntent)
-                                                    } catch (e: Exception) {
-                                                        Toast.makeText(context, "Tarayıcı açılamadı.", Toast.LENGTH_SHORT).show()
-                                                    }
-                                                },
-                                                onFailure = { err ->
-                                                    Toast.makeText(context, err.message ?: "Releases sayfası doğrulanamadı.", Toast.LENGTH_LONG).show()
-                                                }
-                                            )
-                                        }
-                                    },
-                                    modifier = Modifier.fillMaxWidth().height(40.dp),
-                                    shape = RoundedCornerShape(10.dp)
-                                ) {
-                                    Text("GitHub Releases Sayfasını Aç", fontSize = 12.sp, color = Color(0xFF10B981), fontWeight = FontWeight.SemiBold)
+                                    Text("Yeni Sürüm Duyurusu Gönder", fontSize = 12.sp, fontWeight = FontWeight.Bold)
                                 }
                             }
                         }
@@ -833,7 +921,9 @@ fun AdminScreen(
                             Card(
                                 modifier = Modifier.fillMaxWidth(),
                                 shape = RoundedCornerShape(14.dp),
-                                colors = CardDefaults.cardColors(containerColor = Color(0xFF0F172A))
+                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                                border = BorderStroke(1.dp, ext.cardBorder),
+                                elevation = CardDefaults.cardElevation(defaultElevation = if (ext.isDark) 2.dp else 1.dp)
                             ) {
                                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                                     Row(
@@ -842,14 +932,14 @@ fun AdminScreen(
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
                                         Text(
-                                            text = "🚀 ${rel.title}",
+                                            text = "Yeni sürüm bulundu: v${rel.versionName}",
                                             fontWeight = FontWeight.Bold,
                                             fontSize = 15.sp,
-                                            color = Color.White
+                                            color = MaterialTheme.colorScheme.onSurface
                                         )
                                         Surface(
                                             shape = RoundedCornerShape(6.dp),
-                                            color = if (rel.isForceUpdate) Color(0xFFEF4444) else Color(0xFF10B981)
+                                            color = if (rel.isForceUpdate) ext.dangerSolid else ext.emeraldSolid
                                         ) {
                                             Text(
                                                 text = if (rel.isForceUpdate) "ZORUNLU" else "YENİ",
@@ -861,21 +951,16 @@ fun AdminScreen(
                                         }
                                     }
 
-                                    Text(
-                                        text = "APK Dosyası: ${rel.apkFileName} (${if (rel.apkSize > 0) "${rel.apkSize / (1024 * 1024)} MB" else "Hazır"})",
-                                        fontSize = 12.sp,
-                                        color = Color(0xFF94A3B8)
-                                    )
-
                                     Surface(
                                         shape = RoundedCornerShape(8.dp),
-                                        color = Color(0xFF1E293B),
+                                        color = MaterialTheme.colorScheme.surfaceVariant,
+                                        border = BorderStroke(1.dp, ext.cardBorder),
                                         modifier = Modifier.fillMaxWidth()
                                     ) {
                                         Text(
                                             text = rel.changelog,
                                             fontSize = 12.sp,
-                                            color = Color(0xFFE2E8F0),
+                                            color = ext.textSecondary,
                                             modifier = Modifier.padding(10.dp)
                                         )
                                     }
@@ -886,9 +971,12 @@ fun AdminScreen(
                                         onClick = { onShowUpdateDialog(rel) },
                                         modifier = Modifier.fillMaxWidth().height(42.dp),
                                         shape = RoundedCornerShape(10.dp),
-                                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF10B981))
+                                        colors = ButtonDefaults.buttonColors(
+                                            containerColor = ext.emeraldSolid,
+                                            contentColor = Color.White
+                                        )
                                     ) {
-                                        Text("Güncelleme Ekranını Başlat", fontWeight = FontWeight.Bold)
+                                        Text("Güncelle", fontWeight = FontWeight.Bold)
                                     }
                                 }
                             }
@@ -919,7 +1007,7 @@ fun AdminScreen(
                     } catch (ce: CancellationException) {
                         throw ce
                     } catch (e: Exception) {
-                        Toast.makeText(context, "Güncellenemedi: ${e.message}", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(context, sanitizeUserErrorMessage(e), Toast.LENGTH_SHORT).show()
                     }
                 }
             }
@@ -944,7 +1032,7 @@ fun AdminScreen(
                     } catch (ce: CancellationException) {
                         throw ce
                     } catch (e: Exception) {
-                        Toast.makeText(context, "Duyuru yayınlanamadı: ${e.message}", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(context, sanitizeUserErrorMessage(e), Toast.LENGTH_SHORT).show()
                     }
                 }
             }
@@ -957,41 +1045,30 @@ fun AdminScreen(
         val currentVerName = remember { mgr.getCurrentVersionName() }
         val nextVerCode = remember { mgr.getCurrentVersionCode() + 1 }
         var vName by remember { mutableStateOf(currentVerName) }
-        var vCodeStr by remember { mutableStateOf(nextVerCode.toString()) }
         var vTitle by remember { mutableStateOf("Blacksea Robotics v$currentVerName Yayında") }
-        var vChangelog by remember { mutableStateOf("• Görsel ve video önizleme sistemi eklendi\n• Otomatik APK güncelleme ve indirme sistemi geliştirildi\n• Hata düzeltmeleri ve kararlılık iyileştirmeleri") }
-        var vApkUrl by remember { mutableStateOf("https://github.com/${mgr.githubOwner}/${mgr.githubRepo}/releases/download/v$currentVerName/BlackseaRobotics-v$currentVerName.apk") }
+        var vChangelog by remember { mutableStateOf("• Görsel ve video önizleme sistemi eklendi\n• Otomatik uygulama güncelleme sistemi geliştirildi\n• Kararlılık iyileştirmeleri") }
         var isForce by remember { mutableStateOf(false) }
         var isBroadcasting by remember { mutableStateOf(false) }
 
         AlertDialog(
             onDismissRequest = { if (!isBroadcasting) showBroadcastUpdateDialog = false },
             title = {
-                Text("🚀 Tüm Takıma Yeni Sürüm Yayınla", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                Text("Yeni Sürüm Duyurusu Gönder", fontWeight = FontWeight.Bold, fontSize = 16.sp)
             },
             text = {
                 Column(
                     modifier = Modifier.verticalScroll(rememberScrollState()),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    Text("Bu işlem veritabanına yeni sürüm kaydı ekler ve tüm takım üyelerine anında 'Yeni Güncelleme Mevcut' bildirimi gönderir.", fontSize = 12.sp, color = Color(0xFF94A3B8))
+                    Text("Tüm takım üyelerine yeni sürüm bildirimini ve değişiklik notlarını iletir.", fontSize = 12.sp, color = ext.textSecondary)
 
-                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedTextField(
-                            value = vName,
-                            onValueChange = { vName = it },
-                            label = { Text("Sürüm Adı") },
-                            placeholder = { Text("1.0.4") },
-                            modifier = Modifier.weight(1f)
-                        )
-                        OutlinedTextField(
-                            value = vCodeStr,
-                            onValueChange = { vCodeStr = it },
-                            label = { Text("Sürüm Kodu") },
-                            placeholder = { Text("5") },
-                            modifier = Modifier.weight(1f)
-                        )
-                    }
+                    OutlinedTextField(
+                        value = vName,
+                        onValueChange = { vName = it },
+                        label = { Text("Sürüm") },
+                        placeholder = { Text("1.1.0") },
+                        modifier = Modifier.fillMaxWidth()
+                    )
 
                     OutlinedTextField(
                         value = vTitle,
@@ -1003,15 +1080,8 @@ fun AdminScreen(
                     OutlinedTextField(
                         value = vChangelog,
                         onValueChange = { vChangelog = it },
-                        label = { Text("Değişiklik Notları") },
+                        label = { Text("Yenilikler / Değişiklikler") },
                         minLines = 3,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-
-                    OutlinedTextField(
-                        value = vApkUrl,
-                        onValueChange = { vApkUrl = it },
-                        label = { Text("APK İndirme Linki (İsteğe Bağlı)") },
                         modifier = Modifier.fillMaxWidth()
                     )
 
@@ -1028,55 +1098,160 @@ fun AdminScreen(
             confirmButton = {
                 Button(
                     onClick = {
-                        val parsedCode = vCodeStr.toIntOrNull() ?: 5
+                        val cleanVName = vName.trim()
+                        val resolvedUrl = mgr.normalizeDownloadUrl(null, cleanVName)
                         isBroadcasting = true
                         scope.launch {
                             val res = updateManager?.broadcastUpdateToTeam(
-                                versionName = vName.trim(),
-                                versionCode = parsedCode,
+                                versionName = cleanVName,
+                                versionCode = nextVerCode,
                                 title = vTitle.trim(),
                                 changelog = vChangelog.trim(),
-                                apkDownloadUrl = vApkUrl.trim(),
+                                apkDownloadUrl = resolvedUrl,
                                 isForceUpdate = isForce
                             )
                             isBroadcasting = false
                             showBroadcastUpdateDialog = false
                             if (res != null && res.isSuccess) {
-                                Toast.makeText(context, "Yeni sürüm tüm kullanıcılara yayınlandı!", Toast.LENGTH_LONG).show()
-                                val cleanVName = vName.trim()
+                                Toast.makeText(context, "Yeni sürüm duyurusu tüm üyelere gönderildi!", Toast.LENGTH_LONG).show()
                                 val rel = com.example.update.AppReleaseInfo(
                                     tagName = "v$cleanVName",
                                     versionName = cleanVName,
-                                    versionCode = parsedCode,
+                                    versionCode = nextVerCode,
                                     title = vTitle.trim(),
                                     changelog = vChangelog.trim(),
                                     publishedAt = "Bugün",
-                                    apkDownloadUrl = vApkUrl.trim().ifBlank {
-                                        "https://github.com/${updateManager.githubOwner}/${updateManager.githubRepo}/releases/download/v$cleanVName/BlackseaRobotics-v$cleanVName.apk"
-                                    },
+                                    apkDownloadUrl = resolvedUrl,
                                     apkFileName = "BlackseaRobotics-v$cleanVName.apk",
                                     apkSize = 20 * 1024 * 1024L,
                                     isForceUpdate = isForce
                                 )
                                 onShowUpdateDialog(rel)
                             } else {
-                                Toast.makeText(context, "Yayınlama başarısız oldu.", Toast.LENGTH_SHORT).show()
+                                Toast.makeText(context, AppMessages.GENERIC_ERROR, Toast.LENGTH_SHORT).show()
                             }
                         }
                     },
                     enabled = !isBroadcasting && vName.isNotBlank(),
-                    colors = ButtonDefaults.buttonColors(containerColor = PhoenixAmber)
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = PhoenixAmber,
+                        contentColor = Color.Black
+                    )
                 ) {
                     if (isBroadcasting) {
                         CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.Black)
                     } else {
-                        Text("Yayınla ve Bildir", fontWeight = FontWeight.Bold, color = Color.Black)
+                        Text("Yayınla ve Bildir", fontWeight = FontWeight.Bold)
                     }
                 }
             },
             dismissButton = {
                 TextButton(onClick = { showBroadcastUpdateDialog = false }, enabled = !isBroadcasting) {
                     Text("İptal")
+                }
+            }
+        )
+    }
+
+    // Revoke User Access Confirmation Dialog
+    if (userToRevoke != null) {
+        val target = userToRevoke!!
+        AlertDialog(
+            onDismissRequest = { if (!isPerformingUserAction) userToRevoke = null },
+            title = { Text("Uygulama Erişimini Kaldır", fontWeight = FontWeight.Bold) },
+            text = {
+                Text(
+                    "${target.getFullName()} kullanıcısının uygulama erişimi kaldırılacak ve aktif oturumu kapatılacaktır. Daha sonra isterseniz erişimi geri verebilirsiniz.",
+                    color = ext.textSecondary
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val targetId = target.userId.ifBlank { target.id }
+                        isPerformingUserAction = true
+                        scope.launch {
+                            try {
+                                repository.revokeUserAccess(targetId)
+                                Toast.makeText(context, "${target.getFullName()} erişimi kaldırıldı.", Toast.LENGTH_SHORT).show()
+                                userToRevoke = null
+                            } catch (ce: CancellationException) {
+                                throw ce
+                            } catch (e: Exception) {
+                                Toast.makeText(context, sanitizeUserErrorMessage(e), Toast.LENGTH_SHORT).show()
+                            } finally {
+                                isPerformingUserAction = false
+                            }
+                        }
+                    },
+                    enabled = !isPerformingUserAction,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = ext.dangerSolid,
+                        contentColor = Color.White
+                    )
+                ) {
+                    if (isPerformingUserAction) {
+                        CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.White, strokeWidth = 2.dp)
+                    } else {
+                        Text("Erişimi Kaldır", fontWeight = FontWeight.Bold)
+                    }
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { userToRevoke = null }, enabled = !isPerformingUserAction) {
+                    Text("Vazgeç")
+                }
+            }
+        )
+    }
+
+    // Delete User Account Confirmation Dialog
+    if (userToDelete != null) {
+        val target = userToDelete!!
+        AlertDialog(
+            onDismissRequest = { if (!isPerformingUserAction) userToDelete = null },
+            title = { Text("Kullanıcıyı Sil", fontWeight = FontWeight.Bold, color = ext.dangerText) },
+            text = {
+                Text(
+                    "${target.getFullName()} (${target.email}) hesabı sistemden kalıcı olarak silinecek ve kullanıcının uygulama erişimi derhal sonlandırılacaktır. Devam etmek istiyor musunuz?",
+                    color = ext.textSecondary
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val targetId = target.userId.ifBlank { target.id }
+                        isPerformingUserAction = true
+                        scope.launch {
+                            try {
+                                repository.deleteUserAccount(targetId)
+                                Toast.makeText(context, "${target.getFullName()} silindi.", Toast.LENGTH_SHORT).show()
+                                userToDelete = null
+                            } catch (ce: CancellationException) {
+                                throw ce
+                            } catch (e: Exception) {
+                                Toast.makeText(context, sanitizeUserErrorMessage(e), Toast.LENGTH_SHORT).show()
+                            } finally {
+                                isPerformingUserAction = false
+                            }
+                        }
+                    },
+                    enabled = !isPerformingUserAction,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = ext.dangerSolid,
+                        contentColor = Color.White
+                    )
+                ) {
+                    if (isPerformingUserAction) {
+                        CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.White, strokeWidth = 2.dp)
+                    } else {
+                        Text("Kullanıcıyı Sil", fontWeight = FontWeight.Bold)
+                    }
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { userToDelete = null }, enabled = !isPerformingUserAction) {
+                    Text("Vazgeç")
                 }
             }
         )
@@ -1117,12 +1292,14 @@ fun EditMemberRolesDialog(
         "Proje Sorumlusu"
     )
 
+    val ext = MaterialTheme.blackseaColors
+
     AlertDialog(
         onDismissRequest = onDismiss,
         title = {
             Column {
                 Text(user.getFullName(), fontWeight = FontWeight.Bold, fontSize = 17.sp)
-                Text(user.email, fontSize = 11.sp, color = Color(0xFF94A3B8))
+                Text(user.email, fontSize = 11.sp, color = ext.textMuted)
             }
         },
         text = {
@@ -1168,13 +1345,13 @@ fun EditMemberRolesDialog(
                     currentRoles.forEach { role ->
                         Surface(
                             shape = RoundedCornerShape(8.dp),
-                            color = ElectricBlue.copy(alpha = 0.15f)
+                            color = ext.accentBlueContainer
                         ) {
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
                                 modifier = Modifier.padding(start = 8.dp, top = 2.dp, bottom = 2.dp, end = 4.dp)
                             ) {
-                                Text(text = role, fontSize = 11.sp, fontWeight = FontWeight.Bold, color = ElectricBlue)
+                                Text(text = role, fontSize = 11.sp, fontWeight = FontWeight.Bold, color = ext.accentBlue)
                                 IconButton(
                                     onClick = { currentRoles = currentRoles - role },
                                     modifier = Modifier.size(20.dp)
@@ -1187,7 +1364,7 @@ fun EditMemberRolesDialog(
                 }
 
                 // Add Predefined Role
-                Text("Hızlı Rol Ekle:", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = Color(0xFF94A3B8))
+                Text("Hızlı Rol Ekle:", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = ext.textMuted)
                 FlowRow(
                     horizontalArrangement = Arrangement.spacedBy(4.dp),
                     verticalArrangement = Arrangement.spacedBy(4.dp)
@@ -1226,7 +1403,7 @@ fun EditMemberRolesDialog(
                         },
                         modifier = Modifier.size(44.dp)
                     ) {
-                        Icon(imageVector = Icons.Default.Add, contentDescription = "Ekle", tint = ElectricBlue)
+                        Icon(imageVector = Icons.Default.Add, contentDescription = "Ekle", tint = ext.accentBlue)
                     }
                 }
             }
@@ -1234,7 +1411,10 @@ fun EditMemberRolesDialog(
         confirmButton = {
             Button(
                 onClick = { onSave(selectedTeam, currentRoles.ifEmpty { listOf(PredefinedRoles.getDefaultTeamRole(selectedTeam)) }) },
-                colors = ButtonDefaults.buttonColors(containerColor = ElectricBlue)
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = ext.accentBlueSolid,
+                    contentColor = Color.White
+                )
             ) {
                 Text("Kaydet")
             }
@@ -1303,7 +1483,10 @@ fun NewAnnouncementDialog(
                     }
                 },
                 enabled = title.isNotBlank() && content.isNotBlank(),
-                colors = ButtonDefaults.buttonColors(containerColor = ElectricBlue)
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = ElectricBlue,
+                    contentColor = Color.White
+                )
             ) {
                 Text("Yayınla")
             }

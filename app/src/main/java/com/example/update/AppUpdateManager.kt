@@ -9,9 +9,12 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
-import android.util.Log
 import androidx.core.content.FileProvider
 import com.example.BuildConfig
+import com.example.util.AppMessages
+import com.example.util.logDebug
+import com.example.util.logDebugError
+import com.example.util.logDebugWarn
 import com.google.firebase.Firebase
 import com.google.firebase.auth.auth
 import com.google.firebase.firestore.FieldValue
@@ -110,6 +113,11 @@ class AppUpdateManager(private val context: Context) {
         if (savedInstalled > BuildConfig.VERSION_CODE) {
             prefs.edit().remove("last_installed_version").apply()
         }
+
+        // Remove any legacy plaintext token entry if present
+        if (prefs.contains("github_token")) {
+            prefs.edit().remove("github_token").apply()
+        }
     }
 
     var githubOwner: String
@@ -137,10 +145,6 @@ class AppUpdateManager(private val context: Context) {
                 .remove("last_check_timestamp")
                 .apply()
         }
-
-    var githubToken: String
-        get() = prefs.getString("github_token", "") ?: ""
-        set(value) = prefs.edit().putString("github_token", value.trim()).apply()
 
     fun resetToDefaultRepo() {
         prefs.edit()
@@ -206,7 +210,7 @@ class AppUpdateManager(private val context: Context) {
             }
             extractSigningSha256(pkgInfo)
         } catch (e: Exception) {
-            Log.w(TAG, "Failed to read installed signing certs: ${e.message}")
+            logDebugWarn(TAG, "Failed to read installed signing certs", e)
             emptySet()
         }
     }
@@ -350,7 +354,7 @@ class AppUpdateManager(private val context: Context) {
 
             Result.success(Unit)
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to broadcast update: ${e.message}", e)
+            logDebugError(TAG, "Failed to broadcast update", e)
             Result.failure(e)
         }
     }
@@ -424,7 +428,7 @@ class AppUpdateManager(private val context: Context) {
                     }
                 }
             } catch (e: Exception) {
-                Log.w(TAG, "Failed to parse cached release: ${e.message}")
+                logDebugWarn(TAG, "Failed to parse cached release", e)
             }
         }
 
@@ -436,15 +440,11 @@ class AppUpdateManager(private val context: Context) {
                 .header("Accept", "application/vnd.github.v3+json")
                 .header("User-Agent", "BlackseaRobotics-AndroidApp/$currentName")
 
-            if (githubToken.isNotBlank()) {
-                reqBuilder.header("Authorization", "Bearer $githubToken")
-            }
-
             httpClient.newCall(reqBuilder.build()).execute().use { response ->
                 if (response.isSuccessful) {
                     val bodyString = response.body?.string().orEmpty()
                     if (bodyString.isBlank()) {
-                        return@withContext UpdateCheckResult.ApiError(response.code, "GitHub API boş yanıt döndürdü.")
+                        return@withContext UpdateCheckResult.ApiError(response.code, AppMessages.UPDATE_CHECK_ERROR)
                     }
                     val jsonObject = JSONObject(bodyString)
                     val isDraft = jsonObject.optBoolean("draft", false)
@@ -460,38 +460,25 @@ class AppUpdateManager(private val context: Context) {
                         return@withContext evaluateReleaseComparison(parsed, currentCode, currentName)
                     }
                 } else if (response.code != 404) {
-                    val msg = when (response.code) {
-                        403, 429 -> "GitHub API hız sınırına (rate limit) ulaşıldı veya erişim reddedildi."
-                        401 -> "GitHub yetkilendirme hatası (HTTP 401)."
-                        else -> "GitHub sunucu hatası (HTTP ${response.code})."
-                    }
-                    Log.e(TAG, "GitHub /releases/latest error: HTTP ${response.code}")
-                    return@withContext UpdateCheckResult.ApiError(response.code, msg)
+                    logDebugError(TAG, "Release check server error: HTTP ${response.code}")
+                    return@withContext UpdateCheckResult.ApiError(response.code, AppMessages.UPDATE_CHECK_ERROR)
                 }
             }
 
-            // 3. If /releases/latest returned 404 (no 'latest' release or only prereleases/repo missing), query /releases list
+            // 3. Fallback to /releases list if /releases/latest returned 404 or only prereleases
             val listUrl = "https://api.github.com/repos/$githubOwner/$githubRepo/releases?per_page=10"
             val listReq = Request.Builder()
                 .url(listUrl)
                 .header("Accept", "application/vnd.github.v3+json")
                 .header("User-Agent", "BlackseaRobotics-AndroidApp/$currentName")
-                .apply {
-                    if (githubToken.isNotBlank()) header("Authorization", "Bearer $githubToken")
-                }
                 .build()
 
             httpClient.newCall(listReq).execute().use { listResponse ->
                 if (!listResponse.isSuccessful) {
-                    if (listResponse.code == 404) {
-                        return@withContext UpdateCheckResult.ApiError(
-                            404,
-                            "GitHub deposu bulunamadı veya gizli ($githubOwner/$githubRepo)."
-                        )
-                    }
+                    logDebugError(TAG, "Release list error: HTTP ${listResponse.code}")
                     return@withContext UpdateCheckResult.ApiError(
                         listResponse.code,
-                        "GitHub Releases listesi alınamadı (HTTP ${listResponse.code})."
+                        AppMessages.UPDATE_CHECK_ERROR
                     )
                 }
 
@@ -522,17 +509,17 @@ class AppUpdateManager(private val context: Context) {
                 return@withContext evaluateReleaseComparison(bestParsed, currentCode, currentName)
             }
         } catch (e: java.net.UnknownHostException) {
-            Log.e(TAG, "Network error (UnknownHost): ${e.message}")
-            UpdateCheckResult.NetworkError("İnternet bağlantısı yok veya GitHub sunucusuna ulaşılamıyor.")
+            logDebugError(TAG, "Network error (UnknownHost)", e)
+            UpdateCheckResult.NetworkError(AppMessages.UPDATE_CHECK_ERROR)
         } catch (e: java.net.SocketTimeoutException) {
-            Log.e(TAG, "Network timeout: ${e.message}")
-            UpdateCheckResult.NetworkError("Bağlantı zaman aşımına uğradı. İnternet bağlantınızı kontrol edin.")
+            logDebugError(TAG, "Network timeout", e)
+            UpdateCheckResult.NetworkError(AppMessages.UPDATE_CHECK_ERROR)
         } catch (e: java.io.IOException) {
-            Log.e(TAG, "IO error during update check: ${e.message}", e)
-            UpdateCheckResult.NetworkError("Ağ bağlantı hatası: ${e.localizedMessage ?: "Bağlantı kurulamadı"}")
+            logDebugError(TAG, "IO error during update check", e)
+            UpdateCheckResult.NetworkError(AppMessages.UPDATE_CHECK_ERROR)
         } catch (e: Exception) {
-            Log.e(TAG, "Unexpected update check error: ${e.message}", e)
-            UpdateCheckResult.ApiError(-1, e.localizedMessage ?: "Bilinmeyen güncelleme kontrolü hatası.")
+            logDebugError(TAG, "Unexpected update check error", e)
+            UpdateCheckResult.ApiError(-1, AppMessages.UPDATE_CHECK_ERROR)
         }
     }
 
@@ -543,15 +530,15 @@ class AppUpdateManager(private val context: Context) {
         return when (val detailed = checkLatestReleaseDetailed(forceRefresh)) {
             is UpdateCheckResult.UpdateAvailable -> Result.success(detailed.release)
             is UpdateCheckResult.UpToDate -> Result.success(null)
-            is UpdateCheckResult.NoReleaseFound -> Result.failure(Exception("GitHub üzerinde yayınlanmış sürüm bulunamadı."))
-            is UpdateCheckResult.ApkAssetMissing -> Result.failure(Exception("Sürüm (${detailed.tagName}) bulundu ancak .apk dosyası eklenmemiş."))
-            is UpdateCheckResult.NetworkError -> Result.failure(Exception(detailed.detail))
-            is UpdateCheckResult.ApiError -> Result.failure(Exception(detailed.detail))
+            is UpdateCheckResult.NoReleaseFound -> Result.failure(Exception("Yeni sürüm bulunamadı."))
+            is UpdateCheckResult.ApkAssetMissing -> Result.failure(Exception(AppMessages.UPDATE_CHECK_ERROR))
+            is UpdateCheckResult.NetworkError -> Result.failure(Exception(AppMessages.UPDATE_CHECK_ERROR))
+            is UpdateCheckResult.ApiError -> Result.failure(Exception(AppMessages.UPDATE_CHECK_ERROR))
         }
     }
 
     /**
-     * Resolves a verified, non-404 public download or releases URL for sharing and browser opening.
+     * Resolves a verified public download URL internally.
      */
     suspend fun resolvePublicDownloadUrl(): Result<String> = withContext(Dispatchers.IO) {
         try {
@@ -560,10 +547,6 @@ class AppUpdateManager(private val context: Context) {
                 .url(latestApiUrl)
                 .header("Accept", "application/vnd.github.v3+json")
                 .header("User-Agent", "BlackseaRobotics-AndroidApp/${BuildConfig.VERSION_NAME}")
-
-            if (githubToken.isNotBlank()) {
-                reqBuilder.header("Authorization", "Bearer $githubToken")
-            }
 
             httpClient.newCall(reqBuilder.build()).execute().use { response ->
                 if (response.isSuccessful) {
@@ -588,9 +571,6 @@ class AppUpdateManager(private val context: Context) {
                 .url(repoApiUrl)
                 .header("Accept", "application/vnd.github.v3+json")
                 .header("User-Agent", "BlackseaRobotics-AndroidApp/${BuildConfig.VERSION_NAME}")
-                .apply {
-                    if (githubToken.isNotBlank()) header("Authorization", "Bearer $githubToken")
-                }
                 .build()
 
             httpClient.newCall(repoReq).execute().use { repoRes ->
@@ -599,24 +579,24 @@ class AppUpdateManager(private val context: Context) {
                     val isPrivate = repoJson.optBoolean("private", false)
                     if (isPrivate) {
                         return@withContext Result.failure(
-                            Exception("Depo ($githubOwner/$githubRepo) şu anda gizli (Private). Herkese açık yapmak için GitHub Settings > Danger Zone'dan Public yapın.")
+                            Exception(AppMessages.UPDATE_CHECK_ERROR)
                         )
                     }
                     return@withContext Result.success("https://github.com/$githubOwner/$githubRepo/releases")
                 } else {
                     return@withContext Result.failure(
-                        Exception("GitHub deposu bulunamadı veya gizli (Private): https://github.com/$githubOwner/$githubRepo")
+                        Exception(AppMessages.UPDATE_CHECK_ERROR)
                     )
                 }
             }
         } catch (e: Exception) {
-            Log.e(TAG, "resolvePublicDownloadUrl error: ${e.message}")
-            Result.failure(Exception("GitHub'a erişilemedi. İnternet bağlantınızı kontrol edin."))
+            logDebugError(TAG, "resolvePublicDownloadUrl error", e)
+            Result.failure(Exception(AppMessages.UPDATE_CHECK_ERROR))
         }
     }
 
     /**
-     * Fetches release history for the "Güncelleme Geçmişi" screen.
+     * Fetches release history for the version history dialog.
      */
     suspend fun fetchReleaseHistory(): Result<List<AppReleaseInfo>> = withContext(Dispatchers.IO) {
         val url = "https://api.github.com/repos/$githubOwner/$githubRepo/releases?per_page=10"
@@ -625,10 +605,6 @@ class AppUpdateManager(private val context: Context) {
                 .url(url)
                 .header("Accept", "application/vnd.github.v3+json")
                 .header("User-Agent", "BlackseaRobotics-AndroidApp/${BuildConfig.VERSION_NAME}")
-
-            if (githubToken.isNotBlank()) {
-                reqBuilder.header("Authorization", "Bearer $githubToken")
-            }
 
             httpClient.newCall(reqBuilder.build()).execute().use { response ->
                 if (!response.isSuccessful) {
@@ -649,7 +625,7 @@ class AppUpdateManager(private val context: Context) {
                 Result.success(list)
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Fetch history error: ${e.message}")
+            logDebugError(TAG, "Fetch history error", e)
             Result.failure(e)
         }
     }
@@ -708,13 +684,24 @@ class AppUpdateManager(private val context: Context) {
 
         val cleanChangelog = body
             .lines()
-            .filterNot {
-                it.contains("forceUpdate:", ignoreCase = true) ||
-                    it.contains("versionCode:", ignoreCase = true) ||
-                    it.contains("versionName:", ignoreCase = true) ||
-                    it.contains("applicationId:", ignoreCase = true) ||
-                    it.contains("certSha256:", ignoreCase = true) ||
-                    it.contains("sha256:", ignoreCase = true)
+            .filterNot { line ->
+                val lower = line.lowercase()
+                lower.contains("forceupdate") ||
+                    lower.contains("force_update") ||
+                    lower.contains("versioncode") ||
+                    lower.contains("versionname") ||
+                    lower.contains("applicationid") ||
+                    lower.contains("certsha256") ||
+                    lower.contains("sha256") ||
+                    lower.contains("sha-256") ||
+                    lower.contains("sha1") ||
+                    lower.contains("sha-1") ||
+                    lower.contains("sürüm kodu") ||
+                    lower.contains("keystore") ||
+                    lower.contains("github.com") ||
+                    lower.contains(".apk") ||
+                    lower.contains("imza sertifikası") ||
+                    lower.contains("imza özeti")
             }
             .joinToString("\n")
             .trim()
@@ -724,7 +711,7 @@ class AppUpdateManager(private val context: Context) {
             versionName = cleanTag.ifBlank { name },
             versionCode = versionCode,
             title = name.ifBlank { "Sürüm $tagName" },
-            changelog = cleanChangelog.ifBlank { "Performans iyileştirmeleri ve hata düzeltmeleri." },
+            changelog = cleanChangelog.ifBlank { "Yeni özellikler ve iyileştirmeler." },
             publishedAt = publishedAt,
             apkDownloadUrl = apkUrl,
             apkFileName = apkFileName.ifBlank { "BlackseaRobotics-$tagName.apk" },
@@ -745,20 +732,19 @@ class AppUpdateManager(private val context: Context) {
     ): File? = withContext(Dispatchers.IO) {
         val downloadUrl = releaseInfo.apkDownloadUrl.trim()
         if (downloadUrl.isBlank() || !(downloadUrl.startsWith("http://") || downloadUrl.startsWith("https://"))) {
-            onProgress(UpdateDownloadState.Error("Geçerli bir APK indirme bağlantısı bulunamadı."))
+            onProgress(UpdateDownloadState.Error(AppMessages.UPDATE_DOWNLOAD_ERROR))
             return@withContext null
         }
 
         if (!downloadUrl.endsWith(".apk", ignoreCase = true) && !downloadUrl.contains("/releases/download/", ignoreCase = true)) {
-            onProgress(UpdateDownloadState.Error("İndirme bağlantısı doğrudan bir APK dosyasına işaret etmiyor ($downloadUrl)."))
+            onProgress(UpdateDownloadState.Error(AppMessages.UPDATE_DOWNLOAD_ERROR))
             return@withContext null
         }
 
         val installedPreCheck = getInstalledSigningCertSha256()
         if (!isReleaseSignatureCompatible(releaseInfo, installedPreCheck)) {
-            val installedShort = installedPreCheck.firstOrNull().orEmpty().take(16).uppercase()
-            val expectedShort = releaseInfo.expectedCertSha256.take(16).uppercase()
-            val msg = "İmza Uyuşmazlığı: Bu sürüm mevcut uygulamanın imza sertifikasıyla eşleşmiyor; üzerine güncellenemez.\n• Kurulu imza: $installedShort...\n• Release imza: $expectedShort...\nTemiz kurulum için eski uygulamayı kaldırıp yeni APK'yı tarayıcıdan kurabilirsiniz."
+            logDebugWarn(TAG, "Signature mismatch pre-check failed for ${releaseInfo.tagName}")
+            val msg = "Bu güncelleme mevcut sürümün üzerine doğrudan yüklenemiyor. Lütfen yeni sürümü tarayıcıdan indirip yeniden kurun."
             onProgress(
                 UpdateDownloadState.Error(
                     message = msg,
@@ -783,29 +769,24 @@ class AppUpdateManager(private val context: Context) {
                 .url(downloadUrl)
                 .header("User-Agent", "BlackseaRobotics-AndroidApp/${BuildConfig.VERSION_NAME}")
                 .header("Accept", "application/vnd.android.package-archive, application/octet-stream, */*")
-            if (githubToken.isNotBlank() && downloadUrl.contains("github.com", ignoreCase = true)) {
-                reqBuilder.header("Authorization", "Bearer $githubToken")
-            }
 
             httpClient.newCall(reqBuilder.build()).execute().use { response ->
                 if (!response.isSuccessful) {
-                    val msg = "GitHub üzerinden APK indirilemedi (HTTP ${response.code}). Lütfen release'in yayında ve deponun herkese açık olduğundan emin olun."
-                    Log.e(TAG, "Download failed: HTTP ${response.code} for $downloadUrl")
-                    onProgress(UpdateDownloadState.Error(msg))
+                    logDebugError(TAG, "Download failed: HTTP ${response.code} for $downloadUrl")
+                    onProgress(UpdateDownloadState.Error(AppMessages.UPDATE_DOWNLOAD_ERROR))
                     return@withContext null
                 }
 
                 val contentType = response.header("Content-Type").orEmpty().lowercase()
                 if (contentType.contains("text/html") || contentType.contains("application/xhtml")) {
-                    val msg = "APK yerine HTML web sayfası döndü (Content-Type: $contentType). İndirme bağlantısı doğrudan APK dosyası değil."
-                    Log.e(TAG, msg)
-                    onProgress(UpdateDownloadState.Error(msg))
+                    logDebugError(TAG, "Download returned HTML ($contentType) instead of APK")
+                    onProgress(UpdateDownloadState.Error(AppMessages.UPDATE_DOWNLOAD_ERROR))
                     return@withContext null
                 }
 
                 val body = response.body
                 if (body == null) {
-                    onProgress(UpdateDownloadState.Error("Sunucudan boş yanıt alındı."))
+                    onProgress(UpdateDownloadState.Error(AppMessages.UPDATE_DOWNLOAD_ERROR))
                     return@withContext null
                 }
 
@@ -837,17 +818,15 @@ class AppUpdateManager(private val context: Context) {
                 // 1. Completeness & Size verification
                 if (!tempFile.exists() || downloadedBytes < MIN_VALID_APK_BYTES) {
                     tempFile.delete()
-                    val msg = "İndirilen dosya geçersiz veya çok küçük (${downloadedBytes} bayt). Eksik indirme veya hata sayfası olabilir."
-                    Log.e(TAG, msg)
-                    onProgress(UpdateDownloadState.Error(msg))
+                    logDebugError(TAG, "Downloaded file too small: $downloadedBytes bytes")
+                    onProgress(UpdateDownloadState.Error(AppMessages.UPDATE_DOWNLOAD_ERROR))
                     return@withContext null
                 }
 
                 if (headerLength > 0 && downloadedBytes != headerLength) {
                     tempFile.delete()
-                    val msg = "APK indirmesi yarım kaldı ($downloadedBytes / $headerLength bayt). Lütfen tekrar deneyin."
-                    Log.e(TAG, msg)
-                    onProgress(UpdateDownloadState.Error(msg))
+                    logDebugError(TAG, "Incomplete download: $downloadedBytes / $headerLength bytes")
+                    onProgress(UpdateDownloadState.Error(AppMessages.UPDATE_DOWNLOAD_ERROR))
                     return@withContext null
                 }
             }
@@ -858,9 +837,8 @@ class AppUpdateManager(private val context: Context) {
                 val n = fis.read(magic)
                 if (n < 4 || magic[0] != 0x50.toByte() || magic[1] != 0x4B.toByte() || magic[2] != 0x03.toByte() || magic[3] != 0x04.toByte()) {
                     tempFile.delete()
-                    val msg = "İndirilen dosya geçerli bir APK/ZIP formatında değil (HTML veya bozuk dosya)."
-                    Log.e(TAG, msg)
-                    onProgress(UpdateDownloadState.Error(msg))
+                    logDebugError(TAG, "Invalid APK archive magic bytes")
+                    onProgress(UpdateDownloadState.Error(AppMessages.UPDATE_DOWNLOAD_ERROR))
                     return@withContext null
                 }
             }
@@ -870,9 +848,8 @@ class AppUpdateManager(private val context: Context) {
                 val computedSha = calculateFileSha256(tempFile)
                 if (!computedSha.equals(releaseInfo.expectedSha256, ignoreCase = true)) {
                     tempFile.delete()
-                    val msg = "Güvenlik hatası: İndirilen APK'nın SHA-256 bütünlüğü doğrulanamadı."
-                    Log.e(TAG, "$msg Expected=${releaseInfo.expectedSha256}, Actual=$computedSha")
-                    onProgress(UpdateDownloadState.Error(msg))
+                    logDebugError(TAG, "SHA-256 mismatch! Expected=${releaseInfo.expectedSha256}, Actual=$computedSha")
+                    onProgress(UpdateDownloadState.Error(AppMessages.UPDATE_DOWNLOAD_ERROR))
                     return@withContext null
                 }
             }
@@ -881,17 +858,15 @@ class AppUpdateManager(private val context: Context) {
             val archiveInfo = getArchivePackageInfo(tempFile)
             if (archiveInfo == null) {
                 tempFile.delete()
-                val msg = "Android paket bilgisi okunamadı. İndirilen APK bozuk olabilir."
-                Log.e(TAG, msg)
-                onProgress(UpdateDownloadState.Error(msg))
+                logDebugError(TAG, "Failed to read package info from downloaded APK")
+                onProgress(UpdateDownloadState.Error(AppMessages.UPDATE_DOWNLOAD_ERROR))
                 return@withContext null
             }
 
             if (archiveInfo.packageName != context.packageName) {
                 tempFile.delete()
-                val msg = "Paket adı (applicationId) uyuşmuyor!\nKurulu: ${context.packageName}\nİndirilen APK: ${archiveInfo.packageName}"
-                Log.e(TAG, msg)
-                onProgress(UpdateDownloadState.Error(msg))
+                logDebugError(TAG, "Package name mismatch: expected=${context.packageName}, got=${archiveInfo.packageName}")
+                onProgress(UpdateDownloadState.Error(AppMessages.UPDATE_DOWNLOAD_ERROR))
                 return@withContext null
             }
 
@@ -899,27 +874,19 @@ class AppUpdateManager(private val context: Context) {
             val currentVCode = getCurrentVersionCode().toLong()
             if (downloadedVCode <= currentVCode) {
                 tempFile.delete()
-                val msg = "Sürüm kodu (versionCode) hatası: İndirilen APK sürüm kodu ($downloadedVCode), telefondaki kurulu sürümden ($currentVCode) büyük değil. Yeni sürüm oluşturulmadan güncelleme yapılamaz."
-                Log.e(TAG, msg)
-                onProgress(UpdateDownloadState.Error(msg))
+                logDebugError(TAG, "Downloaded versionCode ($downloadedVCode) <= current ($currentVCode)")
+                onProgress(UpdateDownloadState.Error(AppMessages.UPDATE_DOWNLOAD_ERROR))
                 return@withContext null
             }
 
             val installedCerts = getInstalledSigningCertSha256()
             val downloadedCerts = extractSigningSha256(archiveInfo)
-            Log.i(TAG, "APK check OK -> pkg=${archiveInfo.packageName}, vCode=$downloadedVCode (current=$currentVCode), installedCerts=$installedCerts, apkCerts=$downloadedCerts")
+            logDebug(TAG, "APK check OK -> pkg=${archiveInfo.packageName}, vCode=$downloadedVCode")
 
             if (installedCerts.isNotEmpty() && downloadedCerts.isNotEmpty() && installedCerts.intersect(downloadedCerts).isEmpty()) {
                 tempFile.delete()
-                val installedShort = installedCerts.first().take(16).uppercase()
-                val downloadedShort = downloadedCerts.first().take(16).uppercase()
-                val sourceHint = if (isRunningAiStudioDebugSignature()) {
-                    "Telefondaki uygulama geliştirme/önizleme (debug) imzası taşıyor; GitHub Release APK ise kalıcı release keystore ile imzalanmış."
-                } else {
-                    "Telefondaki uygulama ile indirilen APK farklı imza sertifikalarıyla imzalanmış."
-                }
-                val msg = "İmza Uyuşmazlığı: $sourceHint\n• Kurulu imza: $installedShort...\n• Yeni APK imzası: $downloadedShort...\nAndroid güvenlik kuralı gereği farklı imzalı APK eski sürümün üzerine yazılamaz. İlk kurulum için mevcut uygulamayı kaldırıp yeni imzalı APK'yı kurabilir veya GitHub Actions'ta kurulu sürümle aynı keystore'u kullanabilirsiniz."
-                Log.e(TAG, "Signature mismatch! Installed=$installedCerts, Downloaded=$downloadedCerts")
+                logDebugError(TAG, "Signature mismatch! Installed=$installedCerts, Downloaded=$downloadedCerts")
+                val msg = "Bu güncelleme mevcut sürümün üzerine doğrudan yüklenemiyor. Lütfen yeni sürümü tarayıcıdan indirip yeniden kurun."
                 onProgress(
                     UpdateDownloadState.Error(
                         message = msg,
@@ -939,9 +906,8 @@ class AppUpdateManager(private val context: Context) {
             destinationFile
         } catch (e: Exception) {
             tempFile.delete()
-            val msg = "İndirme hatası: ${e.message ?: "Bilinmeyen ağ hatası"}"
-            Log.e(TAG, msg, e)
-            onProgress(UpdateDownloadState.Error(msg))
+            logDebugError(TAG, "Download error", e)
+            onProgress(UpdateDownloadState.Error(AppMessages.UPDATE_DOWNLOAD_ERROR))
             null
         }
     }
@@ -989,7 +955,7 @@ class AppUpdateManager(private val context: Context) {
      */
     suspend fun installApkWithPackageInstaller(apkFile: File): Result<Unit> = withContext(Dispatchers.IO) {
         if (!apkFile.exists() || apkFile.length() < MIN_VALID_APK_BYTES) {
-            return@withContext Result.failure(Exception("Geçerli APK dosyası bulunamadı."))
+            return@withContext Result.failure(Exception(AppMessages.UPDATE_INSTALL_ERROR))
         }
 
         var session: PackageInstaller.Session? = null
@@ -1030,17 +996,17 @@ class AppUpdateManager(private val context: Context) {
             val pendingIntent = PendingIntent.getBroadcast(context, sessionId, receiverIntent, flags)
 
             session.commit(pendingIntent.intentSender)
-            Log.i(TAG, "PackageInstaller session $sessionId committed for ${apkFile.name}")
+            logDebug(TAG, "PackageInstaller session $sessionId committed for ${apkFile.name}")
             Result.success(Unit)
         } catch (e: Exception) {
             session?.abandon()
-            Log.e(TAG, "PackageInstaller commit failed: ${e.message}", e)
+            logDebugError(TAG, "PackageInstaller commit failed", e)
             UpdateInstallResultBus.update(
                 InstallResultState.Error(
                     statusCode = PackageInstaller.STATUS_FAILURE,
                     statusName = "SESSION_EXCEPTION",
-                    rawMessage = e.message.orEmpty(),
-                    userMessage = "PackageInstaller başlatılamadı: ${e.message}"
+                    rawMessage = "",
+                    userMessage = AppMessages.UPDATE_INSTALL_ERROR
                 )
             )
             Result.failure(e)
@@ -1052,7 +1018,7 @@ class AppUpdateManager(private val context: Context) {
      */
     fun installApkViaFileProvider(apkFile: File): Result<Unit> {
         if (!apkFile.exists()) {
-            return Result.failure(Exception("APK dosyası bulunamadı."))
+            return Result.failure(Exception(AppMessages.UPDATE_INSTALL_ERROR))
         }
 
         return try {
@@ -1070,7 +1036,7 @@ class AppUpdateManager(private val context: Context) {
             context.startActivity(installIntent)
             Result.success(Unit)
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to launch FileProvider installer: ${e.message}", e)
+            logDebugError(TAG, "Failed to launch FileProvider installer", e)
             Result.failure(e)
         }
     }

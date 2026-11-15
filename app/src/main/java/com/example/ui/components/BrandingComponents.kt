@@ -67,10 +67,19 @@ import com.example.R
 import com.example.model.TeamType
 import com.example.ui.theme.ElectricBlue
 import com.example.ui.theme.ManagementColor
+import com.example.ui.theme.ManagementDarkInk
+import com.example.ui.theme.ManagementLightInk
 import com.example.ui.theme.MechanicColor
+import com.example.ui.theme.MechanicDarkInk
+import com.example.ui.theme.MechanicLightInk
 import com.example.ui.theme.PRColor
+import com.example.ui.theme.PRDarkInk
+import com.example.ui.theme.PRLightInk
 import com.example.ui.theme.PhoenixAmber
 import com.example.ui.theme.SoftwareColor
+import com.example.ui.theme.SoftwareDarkInk
+import com.example.ui.theme.SoftwareLightInk
+import com.example.ui.theme.blackseaColors
 
 @Composable
 fun BlackseaLogo(
@@ -90,6 +99,7 @@ fun BlackseaLogo(
 fun BlackseaTeamBanner(
     modifier: Modifier = Modifier
 ) {
+    val ext = MaterialTheme.blackseaColors
     Card(
         modifier = modifier
             .fillMaxWidth()
@@ -98,19 +108,13 @@ fun BlackseaTeamBanner(
         colors = CardDefaults.cardColors(
             containerColor = Color.Transparent
         ),
-        elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
+        elevation = CardDefaults.cardElevation(defaultElevation = if (ext.isDark) 4.dp else 6.dp)
     ) {
         Box(
             modifier = Modifier
                 .fillMaxWidth()
                 .background(
-                    Brush.horizontalGradient(
-                        colors = listOf(
-                            Color(0xFF0F172A),
-                            Color(0xFF1E293B),
-                            Color(0xFF1E3A8A)
-                        )
-                    )
+                    Brush.horizontalGradient(colors = ext.bannerGradientColors)
                 )
                 .padding(18.dp)
         ) {
@@ -124,7 +128,7 @@ fun BlackseaTeamBanner(
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(
                             text = "BLACKSEA ROBOTICS",
-                            color = Color.White,
+                            color = ext.bannerTitleColor,
                             fontSize = 18.sp,
                             fontWeight = FontWeight.Black,
                             letterSpacing = 1.sp
@@ -132,21 +136,21 @@ fun BlackseaTeamBanner(
                         Spacer(modifier = Modifier.width(6.dp))
                         Surface(
                             shape = RoundedCornerShape(4.dp),
-                            color = ElectricBlue.copy(alpha = 0.3f)
+                            color = Color.White.copy(alpha = 0.16f)
                         ) {
                             Text(
                                 text = "BSR",
-                                color = ElectricBlue,
+                                color = Color(0xFF7DD3FC),
                                 fontSize = 10.sp,
                                 fontWeight = FontWeight.Bold,
-                                modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
+                                modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
                             )
                         }
                     }
 
                     Text(
                         text = "Ünye Fen Lisesi Robotik Takımı",
-                        color = Color(0xFF94A3B8),
+                        color = ext.bannerSubtitleColor,
                         fontSize = 12.sp,
                         fontWeight = FontWeight.Medium
                     )
@@ -155,7 +159,7 @@ fun BlackseaTeamBanner(
 
                     Text(
                         text = "ONE TEAM. ONE VISION. ONE ROBOT.",
-                        color = PhoenixAmber,
+                        color = ext.bannerMottoColor,
                         fontSize = 11.sp,
                         fontWeight = FontWeight.ExtraBold,
                         letterSpacing = 0.8.sp
@@ -171,12 +175,34 @@ fun TeamBadge(
     teamName: String,
     modifier: Modifier = Modifier
 ) {
+    val isDark = MaterialTheme.blackseaColors.isDark
+    val bgAlpha = if (isDark) 0.22f else 0.14f
     val (bgColor, textColor, icon) = when (teamName) {
-        TeamType.MANAGEMENT.displayName -> Triple(ManagementColor.copy(alpha = 0.15f), ManagementColor, Icons.Default.Security)
-        TeamType.PR.displayName -> Triple(PRColor.copy(alpha = 0.15f), PRColor, Icons.Default.Handshake)
-        TeamType.MECHANIC.displayName -> Triple(MechanicColor.copy(alpha = 0.15f), MechanicColor, Icons.Default.Engineering)
-        TeamType.SOFTWARE.displayName -> Triple(SoftwareColor.copy(alpha = 0.15f), SoftwareColor, Icons.Default.Memory)
-        else -> Triple(ElectricBlue.copy(alpha = 0.15f), ElectricBlue, Icons.Default.Group)
+        TeamType.MANAGEMENT.displayName -> Triple(
+            ManagementColor.copy(alpha = bgAlpha),
+            if (isDark) ManagementDarkInk else ManagementLightInk,
+            Icons.Default.Security
+        )
+        TeamType.PR.displayName -> Triple(
+            PRColor.copy(alpha = bgAlpha),
+            if (isDark) PRDarkInk else PRLightInk,
+            Icons.Default.Handshake
+        )
+        TeamType.MECHANIC.displayName -> Triple(
+            MechanicColor.copy(alpha = bgAlpha),
+            if (isDark) MechanicDarkInk else MechanicLightInk,
+            Icons.Default.Engineering
+        )
+        TeamType.SOFTWARE.displayName -> Triple(
+            SoftwareColor.copy(alpha = bgAlpha),
+            if (isDark) SoftwareDarkInk else SoftwareLightInk,
+            Icons.Default.Memory
+        )
+        else -> Triple(
+            ElectricBlue.copy(alpha = bgAlpha),
+            MaterialTheme.blackseaColors.accentBlue,
+            Icons.Default.Group
+        )
     }
 
     Surface(
@@ -210,16 +236,21 @@ fun RoleBadge(
     role: String,
     modifier: Modifier = Modifier
 ) {
+    val isDark = MaterialTheme.blackseaColors.isDark
+    val alpha = if (isDark) 0.24f else 0.14f
     val (bgColor, textColor) = when (role) {
-        "Yetkili Öğretmen" -> Pair(Color(0xFF8B5CF6).copy(alpha = 0.18f), Color(0xFF7C3AED))
-        "Takım Kaptanı" -> Pair(PhoenixAmber.copy(alpha = 0.18f), Color(0xFFD97706))
-        "Takım Yardımcısı" -> Pair(Color(0xFFF97316).copy(alpha = 0.18f), Color(0xFFEA580C))
-        "Yönetici" -> Pair(Color(0xFFE11D48).copy(alpha = 0.18f), Color(0xFFE11D48))
-        "Elektronik Sorumlusu" -> Pair(ElectricBlue.copy(alpha = 0.18f), ElectricBlue)
-        "Tasarım Sorumlusu" -> Pair(Color(0xFF10B981).copy(alpha = 0.18f), Color(0xFF059669))
-        "Sosyal Medya Sorumlusu" -> Pair(PRColor.copy(alpha = 0.18f), PRColor)
-        "Proje Sorumlusu" -> Pair(Color(0xFF0284C7).copy(alpha = 0.18f), Color(0xFF0369A1))
-        else -> Pair(Color(0xFF64748B).copy(alpha = 0.12f), Color(0xFF475569))
+        "Yetkili Öğretmen" -> Pair(Color(0xFF8B5CF6).copy(alpha = alpha), if (isDark) Color(0xFFC4B5FD) else Color(0xFF6D28D9))
+        "Takım Kaptanı" -> Pair(PhoenixAmber.copy(alpha = alpha), if (isDark) Color(0xFFFCD34D) else Color(0xFFB45309))
+        "Takım Yardımcısı" -> Pair(Color(0xFFF97316).copy(alpha = alpha), if (isDark) Color(0xFFFDBA74) else Color(0xFFC2410C))
+        "Yönetici" -> Pair(Color(0xFFE11D48).copy(alpha = alpha), if (isDark) Color(0xFFFDA4AF) else Color(0xFFBE123C))
+        "Elektronik Sorumlusu" -> Pair(ElectricBlue.copy(alpha = alpha), if (isDark) Color(0xFF38BDF8) else Color(0xFF0369A1))
+        "Tasarım Sorumlusu" -> Pair(Color(0xFF10B981).copy(alpha = alpha), if (isDark) Color(0xFF34D399) else Color(0xFF047857))
+        "Sosyal Medya Sorumlusu" -> Pair(PRColor.copy(alpha = alpha), if (isDark) PRDarkInk else PRLightInk)
+        "Proje Sorumlusu" -> Pair(Color(0xFF0284C7).copy(alpha = alpha), if (isDark) Color(0xFF7DD3FC) else Color(0xFF0369A1))
+        else -> Pair(
+            MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.12f),
+            MaterialTheme.blackseaColors.textSecondary
+        )
     }
 
     Surface(
@@ -301,10 +332,11 @@ fun AnimatedHeartLikeButton(
             .padding(horizontal = 6.dp, vertical = 4.dp)
             .testTag("heart_like_button")
     ) {
+        val ext = MaterialTheme.blackseaColors
         Icon(
             imageVector = if (isLiked) Icons.Filled.Favorite else Icons.Outlined.FavoriteBorder,
             contentDescription = if (isLiked) "Beğenildi" else "Beğen",
-            tint = if (isLiked) Color(0xFFEF4444) else Color(0xFF94A3B8),
+            tint = if (isLiked) ext.dangerSolid else ext.textMuted,
             modifier = Modifier
                 .size(20.dp)
                 .scale(scale)
@@ -314,7 +346,7 @@ fun AnimatedHeartLikeButton(
             text = likeCount.toString(),
             fontSize = 13.sp,
             fontWeight = if (isLiked) FontWeight.Bold else FontWeight.SemiBold,
-            color = if (isLiked) Color(0xFFEF4444) else Color(0xFF64748B)
+            color = if (isLiked) ext.dangerText else ext.textSecondary
         )
     }
 }
@@ -324,14 +356,16 @@ fun IdeaCategoryBadge(
     category: String,
     modifier: Modifier = Modifier
 ) {
+    val isDark = MaterialTheme.blackseaColors.isDark
+    val alpha = if (isDark) 0.24f else 0.14f
     val (bgColor, textColor) = when (category) {
-        "Yeni", "Yeni fikir" -> Pair(Color(0xFF0284C7).copy(alpha = 0.15f), Color(0xFF0284C7))
-        "Geliştiriliyor", "Geliştirilecek" -> Pair(Color(0xFFF59E0B).copy(alpha = 0.15f), Color(0xFFD97706))
-        "Değerlendiriliyor" -> Pair(Color(0xFF8B5CF6).copy(alpha = 0.15f), Color(0xFF7C3AED))
-        "Kabul Edildi", "Kabul edildi" -> Pair(Color(0xFF10B981).copy(alpha = 0.15f), Color(0xFF059669))
-        "Tamamlandı" -> Pair(Color(0xFF059669).copy(alpha = 0.20f), Color(0xFF047857))
-        "Reddedildi" -> Pair(Color(0xFFEF4444).copy(alpha = 0.15f), Color(0xFFDC2626))
-        else -> Pair(Color(0xFF64748B).copy(alpha = 0.15f), Color(0xFF64748B))
+        "Yeni", "Yeni fikir" -> Pair(Color(0xFF0284C7).copy(alpha = alpha), if (isDark) Color(0xFF38BDF8) else Color(0xFF0369A1))
+        "Geliştiriliyor", "Geliştirilecek" -> Pair(Color(0xFFF59E0B).copy(alpha = alpha), if (isDark) Color(0xFFFBBF24) else Color(0xFFB45309))
+        "Değerlendiriliyor" -> Pair(Color(0xFF8B5CF6).copy(alpha = alpha), if (isDark) Color(0xFFC4B5FD) else Color(0xFF6D28D9))
+        "Kabul Edildi", "Kabul edildi" -> Pair(Color(0xFF10B981).copy(alpha = alpha), if (isDark) Color(0xFF34D399) else Color(0xFF047857))
+        "Tamamlandı" -> Pair(Color(0xFF059669).copy(alpha = alpha), if (isDark) Color(0xFF6EE7B7) else Color(0xFF065F46))
+        "Reddedildi" -> Pair(Color(0xFFEF4444).copy(alpha = alpha), if (isDark) Color(0xFFFCA5A5) else Color(0xFFB91C1C))
+        else -> Pair(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.14f), MaterialTheme.blackseaColors.textSecondary)
     }
 
     Surface(
@@ -356,16 +390,18 @@ fun CodeSnippetViewer(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
+    val ext = MaterialTheme.blackseaColors
     Card(
         modifier = modifier.fillMaxWidth(),
         shape = RoundedCornerShape(12.dp),
-        colors = CardDefaults.cardColors(containerColor = Color(0xFF0F172A))
+        colors = CardDefaults.cardColors(containerColor = ext.codeBackground),
+        border = androidx.compose.foundation.BorderStroke(1.dp, ext.cardBorder)
     ) {
         Column(modifier = Modifier.fillMaxWidth()) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .background(Color(0xFF1E293B))
+                    .background(ext.codeHeaderBackground)
                     .padding(horizontal = 12.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
@@ -377,12 +413,12 @@ fun CodeSnippetViewer(
                     Icon(
                         imageVector = Icons.Default.Code,
                         contentDescription = null,
-                        tint = ElectricBlue,
+                        tint = ext.accentBlue,
                         modifier = Modifier.size(16.dp)
                     )
                     Text(
                         text = fileName,
-                        color = Color.White,
+                        color = ext.textPrimary,
                         fontSize = 13.sp,
                         fontWeight = FontWeight.SemiBold,
                         fontFamily = FontFamily.Monospace
@@ -401,7 +437,7 @@ fun CodeSnippetViewer(
                     Icon(
                         imageVector = Icons.Default.ContentCopy,
                         contentDescription = "Kodu Kopyala",
-                        tint = Color(0xFF94A3B8),
+                        tint = ext.textSecondary,
                         modifier = Modifier.size(16.dp)
                     )
                 }
@@ -415,7 +451,7 @@ fun CodeSnippetViewer(
             ) {
                 Text(
                     text = codeContent,
-                    color = Color(0xFF38BDF8),
+                    color = ext.codeTextColor,
                     fontSize = 12.sp,
                     fontFamily = FontFamily.Monospace,
                     lineHeight = 18.sp

@@ -1,5 +1,6 @@
 package com.example.ui.screens
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -56,6 +57,7 @@ import com.example.ui.components.TeamBadge
 import com.example.ui.components.UserRolesRow
 import com.example.ui.theme.ElectricBlue
 import com.example.ui.theme.PhoenixAmber
+import com.example.ui.theme.blackseaColors
 
 @Composable
 fun HomeScreen(
@@ -77,9 +79,8 @@ fun HomeScreen(
     }
     val activities by repository.observeTeamActivity().collectAsState(initial = emptyList())
 
-    val isAdmin = currentUserProfile?.isSuperAdmin == true ||
-            currentUserProfile?.email.equals("filim3290@gmail.com", ignoreCase = true) ||
-            currentUserProfile?.roles?.any { it in listOf("Yönetici", "Takım Kaptanı", "Yetkili Öğretmen") } == true
+    val ext = MaterialTheme.blackseaColors
+    val isAdmin = currentUserProfile?.isManagerAccount() == true
 
     LazyColumn(
         modifier = modifier
@@ -98,7 +99,8 @@ fun HomeScreen(
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+                border = BorderStroke(1.dp, ext.cardBorder),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
             ) {
                 Column(
                     modifier = Modifier
@@ -124,7 +126,8 @@ fun HomeScreen(
                         Spacer(modifier = Modifier.height(12.dp))
                         Surface(
                             shape = RoundedCornerShape(10.dp),
-                            color = Color(0xFFE11D48).copy(alpha = 0.12f),
+                            color = ext.adminRedSolid.copy(alpha = 0.12f),
+                            border = BorderStroke(1.dp, ext.adminRedSolid.copy(alpha = 0.25f)),
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clickable { onNavigateToAdmin() }
@@ -141,17 +144,17 @@ fun HomeScreen(
                                     Icon(
                                         imageVector = Icons.Default.Security,
                                         contentDescription = null,
-                                        tint = Color(0xFFE11D48),
+                                        tint = ext.adminRedText,
                                         modifier = Modifier.size(16.dp)
                                     )
                                     Text(
                                         text = "Yönetici Paneli (Rol ve Duyuru Yönetimi)",
                                         fontSize = 12.sp,
                                         fontWeight = FontWeight.Bold,
-                                        color = Color(0xFFE11D48)
+                                        color = ext.adminRedText
                                     )
                                 }
-                                Text("Aç >", fontSize = 11.sp, color = Color(0xFFE11D48), fontWeight = FontWeight.Bold)
+                                Text("Aç >", fontSize = 11.sp, color = ext.adminRedText, fontWeight = FontWeight.Bold)
                             }
                         }
                     }
@@ -165,10 +168,10 @@ fun HomeScreen(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                QuickStatCard(title = "Odalar", count = "4", icon = Icons.Default.ChatBubble, color = ElectricBlue, modifier = Modifier.weight(1f))
-                QuickStatCard(title = "Fikirler", count = ideas.size.toString(), icon = Icons.Default.Lightbulb, color = PhoenixAmber, modifier = Modifier.weight(1f))
-                QuickStatCard(title = "Dosyalar", count = files.size.toString(), icon = Icons.Default.Folder, color = Color(0xFF10B981), modifier = Modifier.weight(1f))
-                QuickStatCard(title = "Üyeler", count = approvedUsers.size.toString(), icon = Icons.Default.Person, color = Color(0xFF8B5CF6), modifier = Modifier.weight(1f))
+                QuickStatCard(title = "Odalar", count = "4", icon = Icons.Default.ChatBubble, color = ext.accentBlue, modifier = Modifier.weight(1f))
+                QuickStatCard(title = "Fikirler", count = ideas.size.toString(), icon = Icons.Default.Lightbulb, color = ext.amberText, modifier = Modifier.weight(1f))
+                QuickStatCard(title = "Dosyalar", count = files.size.toString(), icon = Icons.Default.Folder, color = ext.emeraldText, modifier = Modifier.weight(1f))
+                QuickStatCard(title = "Üyeler", count = approvedUsers.size.toString(), icon = Icons.Default.Person, color = if (ext.isDark) Color(0xFFA78BFA) else Color(0xFF6D28D9), modifier = Modifier.weight(1f))
             }
         }
 
@@ -177,15 +180,16 @@ fun HomeScreen(
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(16.dp),
+                border = BorderStroke(1.dp, ext.cardBorder),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+                elevation = CardDefaults.cardElevation(defaultElevation = if (ext.isDark) 2.dp else 1.dp)
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Icon(imageVector = Icons.Default.ElectricBolt, contentDescription = null, tint = PhoenixAmber, modifier = Modifier.size(20.dp))
+                        Icon(imageVector = Icons.Default.ElectricBolt, contentDescription = null, tint = ext.amberText, modifier = Modifier.size(20.dp))
                         Text(
                             text = "Bugün Takımda Neler Oldu?",
                             fontSize = 16.sp,
@@ -207,7 +211,7 @@ fun HomeScreen(
                             ) {
                                 Surface(
                                     shape = CircleShape,
-                                    color = ElectricBlue.copy(alpha = 0.15f),
+                                    color = ext.accentBlue,
                                     modifier = Modifier.size(8.dp)
                                 ) {}
 
@@ -223,7 +227,7 @@ fun HomeScreen(
                                     Text(
                                         text = "${act.userTeam} • ${act.timeAgo}",
                                         fontSize = 11.sp,
-                                        color = Color(0xFF94A3B8)
+                                        color = ext.textMuted
                                     )
                                 }
                             }
@@ -232,7 +236,7 @@ fun HomeScreen(
                         Text(
                             text = "Bugün henüz yeni bir aktivite kaydedilmedi. Odalarda mesajlaşabilir, yeni bir fikir ekleyebilir veya teknik çalışma dosyası yükleyebilirsiniz.",
                             fontSize = 12.sp,
-                            color = Color(0xFF94A3B8),
+                            color = ext.textSecondary,
                             lineHeight = 18.sp
                         )
                     }
@@ -248,7 +252,7 @@ fun HomeScreen(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Icon(imageVector = Icons.Default.Campaign, contentDescription = null, tint = PhoenixAmber, modifier = Modifier.size(20.dp))
+                        Icon(imageVector = Icons.Default.Campaign, contentDescription = null, tint = ext.amberText, modifier = Modifier.size(20.dp))
                         Text(text = "Takım Duyuruları", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onBackground)
                     }
 
@@ -258,8 +262,9 @@ fun HomeScreen(
                         Card(
                             modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
                             shape = RoundedCornerShape(12.dp),
+                            border = BorderStroke(1.dp, ext.cardBorder),
                             colors = CardDefaults.cardColors(
-                                containerColor = if (announcement.isPinned) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f) else MaterialTheme.colorScheme.surface
+                                containerColor = if (announcement.isPinned) ext.accentBlueContainer.copy(alpha = 0.45f) else MaterialTheme.colorScheme.surface
                             )
                         ) {
                             Column(modifier = Modifier.padding(14.dp)) {
@@ -268,14 +273,14 @@ fun HomeScreen(
                                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                                 ) {
                                     if (announcement.isPinned) {
-                                        Icon(imageVector = Icons.Default.PushPin, contentDescription = "Sabitlendi", tint = PhoenixAmber, modifier = Modifier.size(14.dp))
+                                        Icon(imageVector = Icons.Default.PushPin, contentDescription = "Sabitlendi", tint = ext.amberText, modifier = Modifier.size(14.dp))
                                     }
-                                    Text(text = announcement.title, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                                    Text(text = announcement.title, fontWeight = FontWeight.Bold, fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurface)
                                 }
                                 Spacer(modifier = Modifier.height(4.dp))
-                                Text(text = announcement.content, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 3, overflow = TextOverflow.Ellipsis)
+                                Text(text = announcement.content, fontSize = 13.sp, color = ext.textSecondary, maxLines = 3, overflow = TextOverflow.Ellipsis)
                                 Spacer(modifier = Modifier.height(6.dp))
-                                Text(text = "Yayınlayan: ${announcement.authorName}", fontSize = 11.sp, color = Color(0xFF94A3B8))
+                                Text(text = "Yayınlayan: ${announcement.authorName}", fontSize = 11.sp, color = ext.textMuted)
                             }
                         }
                     }
@@ -303,6 +308,7 @@ fun HomeScreen(
                             .padding(vertical = 4.dp)
                             .clickable { onNavigateToRoom(room.roomId) },
                         shape = RoundedCornerShape(12.dp),
+                        border = BorderStroke(1.dp, ext.cardBorder),
                         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
                     ) {
                         Row(
@@ -314,17 +320,17 @@ fun HomeScreen(
                         ) {
                             Surface(
                                 shape = CircleShape,
-                                color = ElectricBlue.copy(alpha = 0.15f),
+                                color = ext.accentBlueContainer,
                                 modifier = Modifier.size(40.dp)
                             ) {
                                 Box(contentAlignment = Alignment.Center) {
-                                    Icon(imageVector = Icons.Default.QuestionAnswer, contentDescription = null, tint = ElectricBlue, modifier = Modifier.size(20.dp))
+                                    Icon(imageVector = Icons.Default.QuestionAnswer, contentDescription = null, tint = ext.accentBlue, modifier = Modifier.size(20.dp))
                                 }
                             }
 
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(text = room.name, fontSize = 14.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
-                                Text(text = room.description, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                Text(text = room.description, fontSize = 12.sp, color = ext.textSecondary, maxLines = 1, overflow = TextOverflow.Ellipsis)
                             }
                         }
                     }
@@ -348,6 +354,7 @@ fun HomeScreen(
                     ) { _, user ->
                         Card(
                             shape = RoundedCornerShape(12.dp),
+                            border = BorderStroke(1.dp, ext.cardBorder),
                             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
                             modifier = Modifier.width(140.dp)
                         ) {
@@ -357,15 +364,22 @@ fun HomeScreen(
                             ) {
                                 Surface(
                                     shape = CircleShape,
-                                    color = ElectricBlue.copy(alpha = 0.2f),
+                                    color = ext.accentBlueContainer,
                                     modifier = Modifier.size(38.dp)
                                 ) {
                                     Box(contentAlignment = Alignment.Center) {
-                                        Text(text = user.getFullName().take(1).uppercase(), fontWeight = FontWeight.Bold, color = ElectricBlue, fontSize = 15.sp)
+                                        Text(text = user.getFullName().take(1).uppercase(), fontWeight = FontWeight.Bold, color = ext.accentBlue, fontSize = 15.sp)
                                     }
                                 }
                                 Spacer(modifier = Modifier.height(6.dp))
-                                Text(text = user.getFullName(), fontSize = 12.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                Text(
+                                    text = user.getFullName(),
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
                                 Spacer(modifier = Modifier.height(3.dp))
                                 TeamBadge(teamName = user.team)
                             }
@@ -385,9 +399,11 @@ fun QuickStatCard(
     color: Color,
     modifier: Modifier = Modifier
 ) {
+    val ext = MaterialTheme.blackseaColors
     Card(
         modifier = modifier,
         shape = RoundedCornerShape(12.dp),
+        border = BorderStroke(1.dp, ext.cardBorder),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
     ) {
         Column(
@@ -397,7 +413,7 @@ fun QuickStatCard(
             Icon(imageVector = icon, contentDescription = null, tint = color, modifier = Modifier.size(18.dp))
             Spacer(modifier = Modifier.height(4.dp))
             Text(text = count, fontSize = 16.sp, fontWeight = FontWeight.Black, color = MaterialTheme.colorScheme.onSurface)
-            Text(text = title, fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, fontWeight = FontWeight.Medium)
+            Text(text = title, fontSize = 10.sp, color = ext.textSecondary, fontWeight = FontWeight.Medium)
         }
     }
 }

@@ -62,7 +62,19 @@ test("Authenticated user cannot create profile for another user", async () => {
   );
 });
 
-test("Authenticated user can send message in room", async () => {
+test("Active approved user can send message in room", async () => {
+  await testEnv.withSecurityRulesDisabled(async (ctx) => {
+    await ctx.firestore().collection("users").doc("user1").set({
+      userId: "user1",
+      displayName: "Ahmet Yılmaz",
+      email: "user1@example.com",
+      team: "Yazılım Ekibi",
+      role: "Takım Üyesi",
+      roles: ["Takım Üyesi"],
+      status: "approved"
+    });
+  });
+
   const authedDb = testEnv.authenticatedContext("user1", { email: "user1@example.com" }).firestore();
   await assertSucceeds(
     authedDb.collection("rooms").doc("general").collection("messages").doc("msg1").set({
@@ -76,4 +88,118 @@ test("Authenticated user can send message in room", async () => {
       updatedAt: new Date()
     })
   );
+});
+
+test("Revoked or pending user cannot read notifications or send room messages", async () => {
+  await testEnv.withSecurityRulesDisabled(async (ctx) => {
+    await ctx.firestore().collection("users").doc("revoked_u").set({
+      userId: "revoked_u",
+      email: "revoked@example.com",
+      status: "revoked"
+    });
+    await ctx.firestore().collection("users").doc("pending_u").set({
+      userId: "pending_u",
+      email: "pending@example.com",
+      status: "pending"
+    });
+  });
+
+  const revokedDb = testEnv.authenticatedContext("revoked_u", { email: "revoked@example.com" }).firestore();
+  await assertFails(revokedDb.collection("notifications").get());
+  await assertFails(
+    revokedDb.collection("rooms").doc("general").collection("messages").doc("m_rev").set({
+      roomId: "general",
+      senderId: "revoked_u",
+      text: "blocked"
+    })
+  );
+
+  const pendingDb = testEnv.authenticatedContext("pending_u", { email: "pending@example.com" }).firestore();
+  await assertFails(pendingDb.collection("rooms").doc("general").collection("messages").get());
+});
+
+test("Pending or revoked user can reapply and send member_pending notification to managers", async () => {
+  await testEnv.withSecurityRulesDisabled(async (ctx) => {
+    await ctx.firestore().collection("users").doc("applicant_u").set({
+      userId: "applicant_u",
+      email: "applicant@example.com",
+      status: "revoked",
+      role: "Yazılım Üyesi",
+      roles: ["Yazılım Üyesi"],
+      isSuperAdmin: false
+    });
+  });
+
+  const applicantDb = testEnv.authenticatedContext("applicant_u", { email: "applicant@example.com" }).firestore();
+  await assertSucceeds(
+    applicantDb.collection("users").doc("applicant_u").update({
+      status: "pending"
+    })
+  );
+  await assertFails(
+    applicantDb.collection("users").doc("applicant_u").update({
+      status: "approved"
+    })
+  );
+  await assertSucceeds(
+    applicantDb.collection("notifications").doc("notif_pending_1").set({
+      recipientUserId: "managers",
+      type: "member_pending",
+      senderId: "applicant_u",
+      title: "Yeni Üye Başvurusu",
+      message: "Onay bekliyor"
+    })
+  );
+  await assertFails(
+    applicantDb.collection("notifications").doc("notif_spam_1").set({
+      recipientUserId: "all",
+      type: "broadcast",
+      senderId: "applicant_u",
+      title: "Spam",
+      message: "Blocked"
+    })
+  );
+});
+
+test("Active manager can revoke or delete non-self/non-founder users while normal users cannot", async () => {
+  await testEnv.withSecurityRulesDisabled(async (ctx) => {
+    await ctx.firestore().collection("users").doc("mgr1").set({
+      userId: "mgr1",
+      email: "mgr1@example.com",
+      role: "Yönetici",
+      roles: ["Yönetici"],
+      status: "approved",
+      isSuperAdmin: true
+    });
+    await ctx.firestore().collection("users").doc("member1").set({
+      userId: "member1",
+      email: "member1@example.com",
+      role: "Yazılım Üyesi",
+      roles: ["Yazılım Üyesi"],
+      status: "approved",
+      isSuperAdmin: false
+    });
+    await ctx.firestore().collection("users").doc("founder1").set({
+      userId: "founder1",
+      email: "filim3290@gmail.com",
+      role: "Yönetici",
+      roles: ["Yönetici"],
+      status: "active",
+      isSuperAdmin: true
+    });
+  });
+
+  const mgrDb = testEnv.authenticatedContext("mgr1", { email: "mgr1@example.com" }).firestore();
+  const memberDb = testEnv.authenticatedContext("member1", { email: "member1@example.com" }).firestore();
+
+  // Normal user cannot delete another user
+  await assertFails(memberDb.collection("users").doc("mgr1").delete());
+
+  // Manager cannot delete self or founder
+  await assertFails(mgrDb.collection("users").doc("mgr1").delete());
+  await assertFails(mgrDb.collection("users").doc("founder1").delete());
+
+  // Manager can revoke and delete regular member
+  await assertSucceeds(mgrDb.collection("users").doc("member1").update({ status: "revoked" }));
+  await assertSucceeds(mgrDb.collection("users").doc("member1").delete());
 });

@@ -65,7 +65,8 @@ enum class UserStatus(val value: String) {
     ACTIVE("active"),
     APPROVED("approved"), // legacy support
     PENDING("pending"),
-    REJECTED("rejected");
+    REJECTED("rejected"),
+    REVOKED("revoked");
 
     companion object {
         fun isActive(status: String?): Boolean {
@@ -78,6 +79,10 @@ enum class UserStatus(val value: String) {
 
         fun isRejected(status: String?): Boolean {
             return status.equals("rejected", ignoreCase = true)
+        }
+
+        fun isRevoked(status: String?): Boolean {
+            return status.equals("revoked", ignoreCase = true)
         }
     }
 }
@@ -126,6 +131,16 @@ data class UserProfile(
     fun isApproved(): Boolean = UserStatus.isActive(status)
     fun isPending(): Boolean = UserStatus.isPending(status)
     fun isRejected(): Boolean = UserStatus.isRejected(status)
+    fun isRevoked(): Boolean = UserStatus.isRevoked(status)
+
+    fun isManagerAccount(): Boolean {
+        return isSuperAdmin ||
+            email.equals("filim3290@gmail.com", ignoreCase = true) ||
+            role == UserRole.ADMIN.displayName ||
+            roles.any {
+                it in listOf("Yönetici", "Takım Kaptanı", "Yetkili Öğretmen")
+            }
+    }
 }
 
 @IgnoreExtraProperties

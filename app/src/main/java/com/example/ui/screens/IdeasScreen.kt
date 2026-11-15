@@ -8,6 +8,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.slideInVertically
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -97,7 +98,10 @@ import com.example.ui.components.UserRolesRow
 import com.example.ui.components.getFileIcon
 import com.example.ui.components.getFileIconColor
 import com.example.ui.theme.ElectricBlue
+import com.example.ui.theme.blackseaColors
 import com.example.util.downloadFileToDevice
+import com.example.util.logDebugError
+import com.example.util.sanitizeUserErrorMessage
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
@@ -112,6 +116,7 @@ fun IdeasScreen(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    val ext = MaterialTheme.blackseaColors
 
     var selectedCategoryFilter by remember { mutableStateOf("Hepsi") }
     var selectedRoomFilter by remember { mutableStateOf("all") }
@@ -152,9 +157,7 @@ fun IdeasScreen(
         if (selectedCategoryFilter == "Hepsi") true else (idea.category == selectedCategoryFilter || (selectedCategoryFilter == "Yeni" && idea.category == "Yeni fikir"))
     }
 
-    val isAdminOrLeader = currentUserProfile?.isSuperAdmin == true ||
-            currentUserProfile?.email.equals("filim3290@gmail.com", ignoreCase = true) ||
-            currentUserProfile?.roles?.any { it in listOf("Yönetici", "Takım Kaptanı", "Yetkili Öğretmen") } == true
+    val isAdminOrLeader = currentUserProfile?.isManagerAccount() == true
 
     val timeFormatter = remember { SimpleDateFormat("dd MMM, HH:mm", Locale.getDefault()) }
 
@@ -227,7 +230,7 @@ fun IdeasScreen(
                         ) {
                             Text(
                                 text = "Bu filtrede henüz fikir bulunmuyor. Yeni bir fikir ekleyin!",
-                                color = Color(0xFF94A3B8),
+                                color = ext.textMuted,
                                 fontSize = 14.sp
                             )
                         }
@@ -250,7 +253,8 @@ fun IdeasScreen(
                             modifier = Modifier.fillMaxWidth(),
                             shape = RoundedCornerShape(16.dp),
                             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+                            border = BorderStroke(1.dp, ext.cardBorder),
+                            elevation = CardDefaults.cardElevation(defaultElevation = if (ext.isDark) 2.dp else 1.dp)
                         ) {
                             Column(modifier = Modifier.padding(16.dp)) {
                                 // Header: Room tag & Status Badge
@@ -268,7 +272,7 @@ fun IdeasScreen(
                                             text = "• ${idea.roomId.uppercase()} ODASI",
                                             fontSize = 11.sp,
                                             fontWeight = FontWeight.Bold,
-                                            color = Color(0xFF94A3B8)
+                                            color = ext.textMuted
                                         )
                                     }
 
@@ -282,7 +286,7 @@ fun IdeasScreen(
                                                 Icon(
                                                     imageVector = Icons.Default.Edit,
                                                     contentDescription = "Durumu Değiştir",
-                                                    tint = Color(0xFF94A3B8),
+                                                    tint = ext.textMuted,
                                                     modifier = Modifier.size(14.dp)
                                                 )
                                             }
@@ -312,7 +316,7 @@ fun IdeasScreen(
                                         text = idea.authorName,
                                         fontSize = 12.sp,
                                         fontWeight = FontWeight.Bold,
-                                        color = ElectricBlue
+                                        color = ext.accentBlue
                                     )
                                     if (idea.authorRoles.isNotEmpty()) {
                                         UserRolesRow(roles = idea.authorRoles.take(2))
@@ -321,7 +325,7 @@ fun IdeasScreen(
                                         Text(
                                             text = "· $dateFormatted",
                                             fontSize = 11.sp,
-                                            color = Color(0xFF94A3B8)
+                                            color = ext.textMuted
                                         )
                                     }
                                 }
@@ -436,7 +440,8 @@ fun IdeasScreen(
                                                     } catch (ce: CancellationException) {
                                                         throw ce
                                                     } catch (e: Exception) {
-                                                        Toast.makeText(context, "Beğeni güncellenemedi: ${e.message}", Toast.LENGTH_SHORT).show()
+                                                        logDebugError("IdeasScreen", "Toggle like failed", e)
+                                                        Toast.makeText(context, sanitizeUserErrorMessage(e, "Beğeni güncellenemedi."), Toast.LENGTH_SHORT).show()
                                                     }
                                                 }
                                             }
@@ -453,7 +458,7 @@ fun IdeasScreen(
                                             Icon(
                                                 imageVector = Icons.Default.ChatBubbleOutline,
                                                 contentDescription = "Yorumlar",
-                                                tint = Color(0xFF64748B),
+                                                tint = ext.textMuted,
                                                 modifier = Modifier.size(19.dp)
                                             )
                                             Spacer(modifier = Modifier.width(4.dp))
@@ -461,7 +466,7 @@ fun IdeasScreen(
                                                 text = "Yorumlar",
                                                 fontSize = 12.sp,
                                                 fontWeight = FontWeight.Medium,
-                                                color = Color(0xFF64748B)
+                                                color = ext.textMuted
                                             )
                                         }
                                     }
@@ -476,7 +481,8 @@ fun IdeasScreen(
                                                     } catch (ce: CancellationException) {
                                                         throw ce
                                                     } catch (e: Exception) {
-                                                        Toast.makeText(context, "Fikir silinemedi: ${e.message}", Toast.LENGTH_SHORT).show()
+                                                        logDebugError("IdeasScreen", "Delete idea failed", e)
+                                                        Toast.makeText(context, sanitizeUserErrorMessage(e, "Fikir silinemedi."), Toast.LENGTH_SHORT).show()
                                                     }
                                                 }
                                             },
@@ -485,7 +491,7 @@ fun IdeasScreen(
                                             Icon(
                                                 imageVector = Icons.Default.Delete,
                                                 contentDescription = "Sil",
-                                                tint = Color(0xFF94A3B8),
+                                                tint = ext.textMuted,
                                                 modifier = Modifier.size(18.dp)
                                             )
                                         }
@@ -553,7 +559,8 @@ fun IdeasScreen(
                     } catch (ce: CancellationException) {
                         throw ce
                     } catch (e: Exception) {
-                        Toast.makeText(context, "Fikir paylaşılamadı: ${e.message}", Toast.LENGTH_LONG).show()
+                        logDebugError("IdeasScreen", "Share idea failed", e)
+                        Toast.makeText(context, sanitizeUserErrorMessage(e, "Fikir paylaşılamadı."), Toast.LENGTH_LONG).show()
                     }
                 }
             }
@@ -575,7 +582,8 @@ fun IdeasScreen(
                     } catch (ce: CancellationException) {
                         throw ce
                     } catch (e: Exception) {
-                        Toast.makeText(context, "Durum güncellenemedi: ${e.message}", Toast.LENGTH_SHORT).show()
+                        logDebugError("IdeasScreen", "Update idea status failed", e)
+                        Toast.makeText(context, sanitizeUserErrorMessage(e, "Durum güncellenemedi."), Toast.LENGTH_SHORT).show()
                     }
                 }
             }
@@ -604,6 +612,7 @@ fun CreateIdeaDialog(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    val ext = MaterialTheme.blackseaColors
 
     var title by remember { mutableStateOf("") }
     var description by remember { mutableStateOf("") }
@@ -823,7 +832,7 @@ fun CreateIdeaDialog(
                                     Text(
                                         text = "${pickedType.uppercase()} · $pickedSizeFormatted",
                                         fontSize = 10.sp,
-                                        color = Color(0xFF94A3B8)
+                                        color = ext.textMuted
                                     )
                                 }
                                 if (!isUploading) {
@@ -864,7 +873,7 @@ fun CreateIdeaDialog(
 
                 if (isUploading) {
                     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Text(text = "Ek yükleniyor... %$uploadProgress", fontSize = 11.sp, color = ElectricBlue)
+                        Text(text = "Ek yükleniyor... %$uploadProgress", fontSize = 11.sp, color = ext.accentBlue)
                         LinearProgressIndicator(
                             progress = { uploadProgress / 100f },
                             modifier = Modifier.fillMaxWidth().height(5.dp),
@@ -874,7 +883,7 @@ fun CreateIdeaDialog(
                 }
 
                 if (uploadError != null) {
-                    Text(text = uploadError ?: "", color = Color(0xFFEF4444), fontSize = 11.sp)
+                    Text(text = uploadError ?: "", color = ext.dangerText, fontSize = 11.sp)
                 }
             }
         },
@@ -899,15 +908,21 @@ fun CreateIdeaDialog(
                                 )
                                 isUploading = false
                                 onSubmit(trimmedTitle, description.trim(), selectedCategory, selectedRoom, res)
+                            } catch (ce: CancellationException) {
+                                throw ce
                             } catch (e: Exception) {
+                                logDebugError("IdeasScreen", "Upload idea attachment failed", e)
                                 isUploading = false
-                                uploadError = e.localizedMessage ?: "Ek yüklenemedi"
+                                uploadError = sanitizeUserErrorMessage(e, "Ek yüklenemedi. Lütfen tekrar deneyin.")
                             }
                         }
                     }
                 },
                 enabled = title.isNotBlank() && !isUploading,
-                colors = ButtonDefaults.buttonColors(containerColor = ElectricBlue)
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = ElectricBlue,
+                    contentColor = Color.White
+                )
             ) {
                 if (isUploading) {
                     CircularProgressIndicator(color = Color.White, modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
@@ -941,6 +956,8 @@ fun ChangeStatusDialog(
         "Reddedildi"
     )
 
+    val ext = MaterialTheme.blackseaColors
+
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Fikir Durumunu Güncelle", fontWeight = FontWeight.Bold) },
@@ -953,8 +970,9 @@ fun ChangeStatusDialog(
                             .clickable { onSave(status) },
                         shape = RoundedCornerShape(8.dp),
                         colors = CardDefaults.cardColors(
-                            containerColor = if (status == currentStatus) ElectricBlue.copy(alpha = 0.2f) else MaterialTheme.colorScheme.surfaceVariant
-                        )
+                            containerColor = if (status == currentStatus) ext.accentBlueContainer else MaterialTheme.colorScheme.surfaceVariant
+                        ),
+                        border = BorderStroke(1.dp, if (status == currentStatus) ext.accentBlue else ext.cardBorder)
                     ) {
                         Row(
                             modifier = Modifier.padding(12.dp),
@@ -989,6 +1007,7 @@ fun IdeaCommentsBottomSheet(
     var commentText by remember { mutableStateOf("") }
     val sheetState = rememberModalBottomSheetState()
     val context = LocalContext.current
+    val ext = MaterialTheme.blackseaColors
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -1018,7 +1037,7 @@ fun IdeaCommentsBottomSheet(
                         Text(
                             text = "Henüz yorum yok. İlk yorumu siz yapın!",
                             fontSize = 12.sp,
-                            color = Color(0xFF94A3B8),
+                            color = ext.textMuted,
                             modifier = Modifier.padding(vertical = 12.dp)
                         )
                     }
@@ -1033,7 +1052,8 @@ fun IdeaCommentsBottomSheet(
                     Card(
                         modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(10.dp),
-                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                        border = BorderStroke(1.dp, ext.cardBorder)
                     ) {
                         Column(modifier = Modifier.padding(10.dp)) {
                             Row(
@@ -1049,7 +1069,7 @@ fun IdeaCommentsBottomSheet(
                                         text = comment.authorName,
                                         fontWeight = FontWeight.Bold,
                                         fontSize = 12.sp,
-                                        color = ElectricBlue
+                                        color = ext.accentBlue
                                     )
                                     if (comment.authorRoles.isNotEmpty()) {
                                         UserRolesRow(roles = comment.authorRoles.take(1))
@@ -1066,13 +1086,14 @@ fun IdeaCommentsBottomSheet(
                                                 } catch (ce: CancellationException) {
                                                     throw ce
                                                 } catch (e: Exception) {
-                                                    Toast.makeText(context, "Yorum silinemedi: ${e.message}", Toast.LENGTH_SHORT).show()
+                                                    logDebugError("IdeasScreen", "Delete comment failed", e)
+                                                    Toast.makeText(context, sanitizeUserErrorMessage(e, "Yorum silinemedi."), Toast.LENGTH_SHORT).show()
                                                 }
                                             }
                                         },
                                         modifier = Modifier.size(24.dp)
                                     ) {
-                                        Icon(imageVector = Icons.Default.Delete, contentDescription = "Yorumu Sil", tint = Color(0xFFEF4444), modifier = Modifier.size(14.dp))
+                                        Icon(imageVector = Icons.Default.Delete, contentDescription = "Yorumu Sil", tint = ext.dangerText, modifier = Modifier.size(14.dp))
                                     }
                                 }
                             }
@@ -1121,8 +1142,9 @@ fun IdeaCommentsBottomSheet(
                                 } catch (ce: CancellationException) {
                                     throw ce
                                 } catch (e: Exception) {
+                                    logDebugError("IdeasScreen", "Send comment failed", e)
                                     if (commentText.isBlank()) commentText = textToSend
-                                    Toast.makeText(context, "Yorum gönderilemedi: ${e.message}", Toast.LENGTH_SHORT).show()
+                                    Toast.makeText(context, sanitizeUserErrorMessage(e, "Yorum gönderilemedi."), Toast.LENGTH_SHORT).show()
                                 }
                             }
                         }

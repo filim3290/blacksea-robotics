@@ -79,6 +79,7 @@ import com.example.model.SharedProjectFile
 import com.example.model.TeamNotification
 import com.example.ui.theme.ElectricBlue
 import com.example.ui.theme.PhoenixAmber
+import com.example.ui.theme.blackseaColors
 import com.example.util.VoiceNotePlayer
 import com.example.util.downloadFileToDevice
 import java.text.SimpleDateFormat
@@ -122,8 +123,8 @@ fun openFileExternally(context: Context, url: String) {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
         context.startActivity(Intent.createChooser(intent, "Dosyayı aç"))
-    } catch (e: Exception) {
-        Toast.makeText(context, "Harici uygulama açılamadı: ${e.message}", Toast.LENGTH_LONG).show()
+    } catch (_: Exception) {
+        Toast.makeText(context, "Bu dosyayı açacak uygun bir uygulama bulunamadı.", Toast.LENGTH_LONG).show()
     }
 }
 
@@ -140,13 +141,15 @@ fun SharedFileCard(
     val timeFormat = remember { SimpleDateFormat("dd MMM, HH:mm", Locale.getDefault()) }
     val formattedTime = file.createdAt?.toDate()?.let { timeFormat.format(it) } ?: "Yeni"
 
+    val ext = MaterialTheme.blackseaColors
     Card(
         modifier = modifier
             .fillMaxWidth()
             .testTag("file_card_${file.id}"),
         shape = RoundedCornerShape(14.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+        border = androidx.compose.foundation.BorderStroke(1.dp, ext.cardBorder),
+        elevation = CardDefaults.cardElevation(defaultElevation = if (ext.isDark) 2.dp else 1.dp)
     ) {
         Column(modifier = Modifier.padding(14.dp)) {
             Row(
@@ -249,7 +252,7 @@ fun SharedFileCard(
                     Text(
                         text = "${file.uploadedByTeam.ifBlank { "Robotik Ekibi" }} • $formattedTime",
                         fontSize = 11.sp,
-                        color = Color(0xFF94A3B8)
+                        color = ext.textSecondary
                     )
                 }
 
@@ -269,7 +272,7 @@ fun SharedFileCard(
                         onClick = {
                             downloadFileToDevice(context, file.fileName, file.downloadUrl, file.content)
                         },
-                        colors = ButtonDefaults.buttonColors(containerColor = ElectricBlue),
+                        colors = ButtonDefaults.buttonColors(containerColor = ElectricBlue, contentColor = Color.White),
                         shape = RoundedCornerShape(8.dp),
                         contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp, vertical = 6.dp),
                         modifier = Modifier.height(34.dp)
@@ -344,7 +347,7 @@ fun FileUploadProgressDialog(
                             Text(
                                 text = "$fileSizeFormatted · Limit: 100 MB",
                                 fontSize = 12.sp,
-                                color = Color(0xFF94A3B8)
+                                color = MaterialTheme.blackseaColors.textSecondary
                             )
                         }
                     }
@@ -379,8 +382,8 @@ fun FileUploadProgressDialog(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
-                            Text(text = "Dosya yükleniyor...", fontSize = 12.sp, color = ElectricBlue)
-                            Text(text = "%$uploadProgress", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = ElectricBlue)
+                            Text(text = "Dosya yükleniyor...", fontSize = 12.sp, color = MaterialTheme.blackseaColors.accentBlue)
+                            Text(text = "%$uploadProgress", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.blackseaColors.accentBlue)
                         }
                         LinearProgressIndicator(
                             progress = { uploadProgress / 100f },
@@ -394,7 +397,7 @@ fun FileUploadProgressDialog(
                 if (errorMessage != null) {
                     Text(
                         text = "Hata: $errorMessage",
-                        color = Color(0xFFEF4444),
+                        color = MaterialTheme.blackseaColors.dangerText,
                         fontSize = 12.sp
                     )
                 }
@@ -404,7 +407,7 @@ fun FileUploadProgressDialog(
             if (errorMessage != null) {
                 Button(
                     onClick = onRetry,
-                    colors = ButtonDefaults.buttonColors(containerColor = ElectricBlue)
+                    colors = ButtonDefaults.buttonColors(containerColor = ElectricBlue, contentColor = Color.White)
                 ) {
                     Text("Tekrar Dene")
                 }
@@ -412,7 +415,7 @@ fun FileUploadProgressDialog(
                 Button(
                     onClick = onConfirmUpload,
                     enabled = !isUploading,
-                    colors = ButtonDefaults.buttonColors(containerColor = ElectricBlue)
+                    colors = ButtonDefaults.buttonColors(containerColor = ElectricBlue, contentColor = Color.White)
                 ) {
                     if (isUploading) {
                         CircularProgressIndicator(color = Color.White, modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
@@ -607,7 +610,7 @@ fun InAppFileViewerDialog(
                                 durationText.takeIf { it.isNotBlank() },
                                 file.description.takeIf { it.isNotBlank() }
                             ).joinToString(" · ").ifBlank { "Oynatmaya hazır" }
-                            Text(text = metaText, fontSize = 11.sp, color = Color(0xFF94A3B8))
+                            Text(text = metaText, fontSize = 11.sp, color = MaterialTheme.blackseaColors.textSecondary)
                         }
                     } else if (isAudio && file.downloadUrl.isNotBlank()) {
                         // Audio / Voice Note Player
@@ -621,14 +624,15 @@ fun InAppFileViewerDialog(
                             Icon(
                                 imageVector = Icons.Default.Mic,
                                 contentDescription = null,
-                                tint = ElectricBlue,
+                                tint = MaterialTheme.blackseaColors.accentBlue,
                                 modifier = Modifier.size(56.dp)
                             )
                             Spacer(modifier = Modifier.height(16.dp))
                             Text(
                                 text = file.fileName,
                                 fontWeight = FontWeight.Bold,
-                                fontSize = 16.sp
+                                fontSize = 16.sp,
+                                color = MaterialTheme.colorScheme.onSurface
                             )
                             Spacer(modifier = Modifier.height(16.dp))
                             VoiceNotePlayer(
@@ -643,9 +647,11 @@ fun InAppFileViewerDialog(
                     } else if (isCodeOrText && file.content.isNotBlank()) {
                         // Monospace Code Viewer with line numbers
                         val lines = remember(file.content) { file.content.lines() }
+                        val ext = MaterialTheme.blackseaColors
                         Surface(
                             shape = RoundedCornerShape(8.dp),
-                            color = Color(0xFF0F172A),
+                            color = ext.codeBackground,
+                            border = androidx.compose.foundation.BorderStroke(1.dp, ext.cardBorder),
                             modifier = Modifier.fillMaxSize()
                         ) {
                             Row(
@@ -660,7 +666,7 @@ fun InAppFileViewerDialog(
                                     lines.indices.forEach { idx ->
                                         Text(
                                             text = "${idx + 1}",
-                                            color = Color(0xFF64748B),
+                                            color = ext.codeLineNumberColor,
                                             fontSize = 12.sp,
                                             fontFamily = FontFamily.Monospace
                                         )
@@ -672,7 +678,7 @@ fun InAppFileViewerDialog(
                                     lines.forEach { line ->
                                         Text(
                                             text = line,
-                                            color = Color(0xFFE2E8F0),
+                                            color = ext.textPrimary,
                                             fontSize = 12.sp,
                                             fontFamily = FontFamily.Monospace
                                         )
@@ -698,20 +704,21 @@ fun InAppFileViewerDialog(
                                 text = file.fileName,
                                 fontSize = 15.sp,
                                 fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurface,
                                 textAlign = androidx.compose.ui.text.style.TextAlign.Center
                             )
                             Spacer(modifier = Modifier.height(4.dp))
                             Text(
                                 text = "${file.fileType.uppercase()} Dosyası • ${file.getFormattedSize()}",
                                 fontSize = 12.sp,
-                                color = Color(0xFF94A3B8)
+                                color = MaterialTheme.blackseaColors.textSecondary
                             )
                             Spacer(modifier = Modifier.height(20.dp))
                             Button(
                                 onClick = {
                                     downloadFileToDevice(context, file.fileName, file.downloadUrl, file.content)
                                 },
-                                colors = ButtonDefaults.buttonColors(containerColor = ElectricBlue),
+                                colors = ButtonDefaults.buttonColors(containerColor = ElectricBlue, contentColor = Color.White),
                                 shape = RoundedCornerShape(10.dp)
                             ) {
                                 Icon(imageVector = Icons.Default.Download, contentDescription = null, modifier = Modifier.size(16.dp))
@@ -756,7 +763,7 @@ fun InAppFileViewerDialog(
                     Spacer(modifier = Modifier.width(8.dp))
                     Button(
                         onClick = onDismiss,
-                        colors = ButtonDefaults.buttonColors(containerColor = ElectricBlue),
+                        colors = ButtonDefaults.buttonColors(containerColor = ElectricBlue, contentColor = Color.White),
                         shape = RoundedCornerShape(8.dp)
                     ) {
                         Text("Kapat")
@@ -826,7 +833,7 @@ fun NotificationCenterDialog(
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         if (unreadCount > 0) {
                             TextButton(onClick = onMarkAllRead) {
-                                Text("Tümünü Oku", fontSize = 12.sp, color = ElectricBlue)
+                                Text("Tümünü Oku", fontSize = 12.sp, color = MaterialTheme.blackseaColors.accentBlue)
                             }
                         }
                         IconButton(onClick = onDismiss) {
@@ -843,7 +850,7 @@ fun NotificationCenterDialog(
                     ) {
                         Text(
                             text = "Henüz bildiriminiz yok",
-                            color = Color(0xFF94A3B8),
+                            color = MaterialTheme.blackseaColors.textSecondary,
                             fontSize = 14.sp
                         )
                     }
@@ -872,7 +879,7 @@ fun NotificationCenterDialog(
                                     .clickable { onNotificationClick(notif) },
                                 shape = RoundedCornerShape(12.dp),
                                 colors = CardDefaults.cardColors(
-                                    containerColor = if (!notif.isRead) ElectricBlue.copy(alpha = 0.12f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
+                                    containerColor = if (!notif.isRead) ElectricBlue.copy(alpha = 0.12f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
                                 )
                             ) {
                                 Row(
@@ -881,7 +888,7 @@ fun NotificationCenterDialog(
                                 ) {
                                     Surface(
                                         shape = CircleShape,
-                                        color = if (!notif.isRead) ElectricBlue else Color(0xFF94A3B8),
+                                        color = if (!notif.isRead) MaterialTheme.blackseaColors.accentBlue else MaterialTheme.blackseaColors.textMuted,
                                         modifier = Modifier.size(8.dp)
                                     ) {}
 
@@ -905,7 +912,7 @@ fun NotificationCenterDialog(
                                             Text(
                                                 text = timeStr,
                                                 fontSize = 10.sp,
-                                                color = Color(0xFF94A3B8)
+                                                color = MaterialTheme.blackseaColors.textMuted
                                             )
                                         }
                                     }

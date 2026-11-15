@@ -8,6 +8,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.slideInVertically
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -89,9 +90,12 @@ import com.example.ui.components.getFileIcon
 import com.example.ui.components.getFileIconColor
 import com.example.ui.theme.ElectricBlue
 import com.example.ui.theme.PhoenixAmber
+import com.example.ui.theme.blackseaColors
 import com.example.util.AudioRecorderManager
 import com.example.util.VoiceNotePlayer
 import com.example.util.downloadFileToDevice
+import com.example.util.logDebugError
+import com.example.util.sanitizeUserErrorMessage
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -107,6 +111,7 @@ fun RoomsScreen(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    val ext = MaterialTheme.blackseaColors
 
     var selectedRoomId by remember { mutableStateOf(initialRoomId) }
     LaunchedEffect(initialRoomId) {
@@ -237,10 +242,7 @@ fun RoomsScreen(
         Pair("pr", "PR EKİBİ")
     )
 
-    val isAdmin = currentUserProfile?.isSuperAdmin == true ||
-            currentUserProfile?.email.equals("filim3290@gmail.com", ignoreCase = true) ||
-            currentUserProfile?.roles?.contains("Yönetici") == true ||
-            currentUserProfile?.roles?.contains("Takım Kaptanı") == true
+    val isAdmin = currentUserProfile?.isManagerAccount() == true
 
     val pinnedMessages = messages.filter { it.isPinned }
 
@@ -289,7 +291,8 @@ fun RoomsScreen(
                     .fillMaxWidth()
                     .padding(horizontal = 12.dp, vertical = 6.dp),
                 shape = RoundedCornerShape(10.dp),
-                colors = CardDefaults.cardColors(containerColor = PhoenixAmber.copy(alpha = 0.12f))
+                colors = CardDefaults.cardColors(containerColor = PhoenixAmber.copy(alpha = if (ext.isDark) 0.12f else 0.16f)),
+                border = BorderStroke(1.dp, ext.amberText.copy(alpha = 0.25f))
             ) {
                 Row(
                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
@@ -299,7 +302,7 @@ fun RoomsScreen(
                     Icon(
                         imageVector = Icons.Default.PushPin,
                         contentDescription = "Sabitli Mesaj",
-                        tint = PhoenixAmber,
+                        tint = ext.amberText,
                         modifier = Modifier.size(16.dp)
                     )
                     Column(modifier = Modifier.weight(1f)) {
@@ -314,7 +317,7 @@ fun RoomsScreen(
                         Text(
                             text = "${pinnedMessages.last().senderName} • ${pinnedMessages.last().senderTeam}",
                             fontSize = 10.sp,
-                            color = Color(0xFF94A3B8)
+                            color = ext.textSecondary
                         )
                     }
                 }
@@ -341,7 +344,7 @@ fun RoomsScreen(
                         Text(
                             text = "Bu odada henüz mesaj yok. İlk mesajı siz yazın!",
                             fontSize = 13.sp,
-                            color = Color(0xFF94A3B8)
+                            color = ext.textMuted
                         )
                     }
                 }
@@ -368,7 +371,8 @@ fun RoomsScreen(
                                 } catch (ce: CancellationException) {
                                     throw ce
                                 } catch (e: Exception) {
-                                    Toast.makeText(context, "Sabitleme başarısız: ${e.message}", Toast.LENGTH_SHORT).show()
+                                    logDebugError("RoomsScreen", "Toggle pin failed", e)
+                                    Toast.makeText(context, sanitizeUserErrorMessage(e, "Sabitleme işlemi yapılamadı."), Toast.LENGTH_SHORT).show()
                                 }
                             }
                         },
@@ -379,7 +383,8 @@ fun RoomsScreen(
                                 } catch (ce: CancellationException) {
                                     throw ce
                                 } catch (e: Exception) {
-                                    Toast.makeText(context, "Mesaj silinemedi: ${e.message}", Toast.LENGTH_SHORT).show()
+                                    logDebugError("RoomsScreen", "Delete message failed", e)
+                                    Toast.makeText(context, sanitizeUserErrorMessage(e, "Mesaj silinemedi."), Toast.LENGTH_SHORT).show()
                                 }
                             }
                         },
@@ -489,7 +494,7 @@ fun RoomsScreen(
                         Icon(
                             imageVector = Icons.Default.Delete,
                             contentDescription = "Kaydı İptal Et",
-                            tint = Color(0xFFEF4444)
+                            tint = ext.dangerText
                         )
                     }
 
@@ -560,8 +565,11 @@ fun RoomsScreen(
                                         )
 
                                         Toast.makeText(context, "Ses kaydı başarıyla gönderildi!", Toast.LENGTH_SHORT).show()
+                                    } catch (ce: CancellationException) {
+                                        throw ce
                                     } catch (e: Exception) {
-                                        Toast.makeText(context, "Ses kaydı gönderilemedi: ${e.message}", Toast.LENGTH_SHORT).show()
+                                        logDebugError("RoomsScreen", "Voice upload failed", e)
+                                        Toast.makeText(context, sanitizeUserErrorMessage(e, "Ses kaydı gönderilemedi."), Toast.LENGTH_SHORT).show()
                                     } finally {
                                         file.delete()
                                         isVoiceUploading = false
@@ -667,8 +675,11 @@ fun RoomsScreen(
                                             replyToSender = reply?.senderName ?: "",
                                             replyToText = reply?.text ?: ""
                                         )
+                                    } catch (ce: CancellationException) {
+                                        throw ce
                                     } catch (e: Exception) {
-                                        Toast.makeText(context, "Mesaj gönderilemedi: ${e.message}", Toast.LENGTH_SHORT).show()
+                                        logDebugError("RoomsScreen", "Send message failed", e)
+                                        Toast.makeText(context, sanitizeUserErrorMessage(e, "Mesaj gönderilemedi."), Toast.LENGTH_SHORT).show()
                                     } finally {
                                         isSending = false
                                     }
@@ -700,7 +711,7 @@ fun RoomsScreen(
             },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text("Görsel/video galeriden veya tüm cihaz dosyalarından yükleyebilir ya da kod yapıştırabilirsiniz:", fontSize = 13.sp, color = Color(0xFF94A3B8))
+                    Text("Görsel/video galeriden veya tüm cihaz dosyalarından yükleyebilir ya da kod yapıştırabilirsiniz:", fontSize = 13.sp, color = ext.textSecondary)
 
                     // Option 1: Zero-permission Photo & Video Picker with Preview
                     Card(
@@ -714,7 +725,8 @@ fun RoomsScreen(
                             }
                             .testTag("pick_visual_media_option"),
                         shape = RoundedCornerShape(12.dp),
-                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                        border = BorderStroke(1.dp, ext.cardBorder)
                     ) {
                         Row(
                             modifier = Modifier.padding(14.dp),
@@ -723,16 +735,16 @@ fun RoomsScreen(
                         ) {
                             Surface(
                                 shape = CircleShape,
-                                color = Color(0xFF10B981).copy(alpha = 0.15f),
+                                color = ext.emeraldSolid.copy(alpha = 0.15f),
                                 modifier = Modifier.size(40.dp)
                             ) {
                                 Box(contentAlignment = Alignment.Center) {
-                                    Icon(Icons.Default.PhotoLibrary, contentDescription = null, tint = Color(0xFF10B981), modifier = Modifier.size(22.dp))
+                                    Icon(Icons.Default.PhotoLibrary, contentDescription = null, tint = ext.emeraldText, modifier = Modifier.size(22.dp))
                                 }
                             }
                             Column {
-                                Text("Fotoğraf / Video Seç", fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                                Text("Galeriden önizlemeli fotoğraf veya video paylaşın", fontSize = 11.sp, color = Color(0xFF94A3B8))
+                                Text("Fotoğraf / Video Seç", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurface)
+                                Text("Galeriden önizlemeli fotoğraf veya video paylaşın", fontSize = 11.sp, color = ext.textMuted)
                             }
                         }
                     }
@@ -747,7 +759,8 @@ fun RoomsScreen(
                             }
                             .testTag("pick_any_file_option"),
                         shape = RoundedCornerShape(12.dp),
-                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                        border = BorderStroke(1.dp, ext.cardBorder)
                     ) {
                         Row(
                             modifier = Modifier.padding(14.dp),
@@ -756,16 +769,16 @@ fun RoomsScreen(
                         ) {
                             Surface(
                                 shape = CircleShape,
-                                color = ElectricBlue.copy(alpha = 0.15f),
+                                color = ext.accentBlueContainer,
                                 modifier = Modifier.size(40.dp)
                             ) {
                                 Box(contentAlignment = Alignment.Center) {
-                                    Icon(Icons.Default.UploadFile, contentDescription = null, tint = ElectricBlue, modifier = Modifier.size(22.dp))
+                                    Icon(Icons.Default.UploadFile, contentDescription = null, tint = ext.accentBlue, modifier = Modifier.size(22.dp))
                                 }
                             }
                             Column {
-                                Text("Cihazdan Dosya Seç", fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                                Text("PDF, Kod (.py, .cpp, .ino), CAD, ZIP, Ses (Maks 100 MB)", fontSize = 11.sp, color = Color(0xFF94A3B8))
+                                Text("Cihazdan Dosya Seç", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurface)
+                                Text("PDF, Kod (.py, .cpp, .ino), CAD, ZIP, Ses (Maks 100 MB)", fontSize = 11.sp, color = ext.textMuted)
                             }
                         }
                     }
@@ -779,7 +792,8 @@ fun RoomsScreen(
                                 showAttachmentDialog = true
                             },
                         shape = RoundedCornerShape(12.dp),
-                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                        border = BorderStroke(1.dp, ext.cardBorder)
                     ) {
                         Row(
                             modifier = Modifier.padding(14.dp),
@@ -792,12 +806,12 @@ fun RoomsScreen(
                                 modifier = Modifier.size(40.dp)
                             ) {
                                 Box(contentAlignment = Alignment.Center) {
-                                    Icon(Icons.Default.Code, contentDescription = null, tint = PhoenixAmber, modifier = Modifier.size(22.dp))
+                                    Icon(Icons.Default.Code, contentDescription = null, tint = ext.amberText, modifier = Modifier.size(22.dp))
                                 }
                             }
                             Column {
-                                Text("Kod Bloğu / Link Yapıştır", fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                                Text("Hızlıca kod veya link metni ekleyin", fontSize = 11.sp, color = Color(0xFF94A3B8))
+                                Text("Kod Bloğu / Link Yapıştır", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurface)
+                                Text("Hızlıca kod veya link metni ekleyin", fontSize = 11.sp, color = ext.textMuted)
                             }
                         }
                     }
@@ -890,9 +904,12 @@ fun RoomsScreen(
                         showUploadModal = false
                         pickedFileUri = null
                         Toast.makeText(context, "Dosya başarıyla gönderildi!", Toast.LENGTH_SHORT).show()
+                    } catch (ce: CancellationException) {
+                        throw ce
                     } catch (e: Exception) {
+                        logDebugError("RoomsScreen", "Upload file failed", e)
                         isUploadingFile = false
-                        uploadErrorMessage = e.localizedMessage ?: "Dosya yüklenemedi"
+                        uploadErrorMessage = sanitizeUserErrorMessage(e, "Dosya yüklenemedi. Lütfen tekrar deneyin.")
                     }
                 }
             },
@@ -923,6 +940,7 @@ fun MessageItemBubble(
     onDownloadFile: (String) -> Unit
 ) {
     val context = LocalContext.current
+    val ext = MaterialTheme.blackseaColors
     val timeFormatter = remember { SimpleDateFormat("HH:mm", Locale.getDefault()) }
     val formattedTime = message.createdAt?.toDate()?.let { timeFormatter.format(it) } ?: ""
 
@@ -978,6 +996,7 @@ fun MessageItemBubble(
             colors = CardDefaults.cardColors(
                 containerColor = if (isMyMessage) ElectricBlue else MaterialTheme.colorScheme.surfaceVariant
             ),
+            border = if (!isMyMessage) BorderStroke(1.dp, ext.cardBorder) else null,
             modifier = Modifier.widthIn(max = 310.dp)
         ) {
             Column(modifier = Modifier.padding(10.dp)) {
@@ -1129,7 +1148,7 @@ fun MessageItemBubble(
                                     Text(
                                         text = "${message.fileType.uppercase()} · Önizlemek İçin Dokunun",
                                         fontSize = 10.sp,
-                                        color = if (isMyMessage) Color.White.copy(alpha = 0.8f) else Color(0xFF94A3B8)
+                                        color = if (isMyMessage) Color.White.copy(alpha = 0.8f) else ext.textMuted
                                     )
                                 }
                             }
@@ -1144,7 +1163,7 @@ fun MessageItemBubble(
                                         text = "Aç",
                                         fontSize = 11.sp,
                                         fontWeight = FontWeight.Bold,
-                                        color = if (isMyMessage) Color.White else ElectricBlue,
+                                        color = if (isMyMessage) Color.White else ext.accentBlue,
                                         modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
                                     )
                                 }
@@ -1158,7 +1177,7 @@ fun MessageItemBubble(
                                         Icon(
                                             imageVector = Icons.Default.Download,
                                             contentDescription = "Cihaza İndir",
-                                            tint = if (isMyMessage) Color.White else ElectricBlue,
+                                            tint = if (isMyMessage) Color.White else ext.accentBlue,
                                             modifier = Modifier.size(16.dp)
                                         )
                                     }
@@ -1180,7 +1199,7 @@ fun MessageItemBubble(
                         Icon(
                             imageVector = Icons.Default.PushPin,
                             contentDescription = "Sabitlendi",
-                            tint = PhoenixAmber,
+                            tint = if (isMyMessage) PhoenixAmber else ext.amberText,
                             modifier = Modifier.size(12.dp)
                         )
                         Spacer(modifier = Modifier.width(4.dp))
@@ -1189,7 +1208,7 @@ fun MessageItemBubble(
                     Text(
                         text = formattedTime,
                         fontSize = 10.sp,
-                        color = if (isMyMessage) Color.White.copy(alpha = 0.7f) else Color(0xFF94A3B8)
+                        color = if (isMyMessage) Color.White.copy(alpha = 0.7f) else ext.textMuted
                     )
 
                     Spacer(modifier = Modifier.width(8.dp))
@@ -1197,7 +1216,7 @@ fun MessageItemBubble(
                     Icon(
                         imageVector = Icons.Default.Reply,
                         contentDescription = "Cevapla",
-                        tint = if (isMyMessage) Color.White.copy(alpha = 0.8f) else Color(0xFF94A3B8),
+                        tint = if (isMyMessage) Color.White.copy(alpha = 0.8f) else ext.textMuted,
                         modifier = Modifier
                             .size(14.dp)
                             .clickable { onReply() }
@@ -1208,7 +1227,7 @@ fun MessageItemBubble(
                         Icon(
                             imageVector = Icons.Default.PushPin,
                             contentDescription = "Sabitle",
-                            tint = if (isMyMessage) Color.White.copy(alpha = 0.8f) else Color(0xFF94A3B8),
+                            tint = if (isMyMessage) Color.White.copy(alpha = 0.8f) else ext.textMuted,
                             modifier = Modifier
                                 .size(14.dp)
                                 .clickable { onTogglePin() }
@@ -1218,7 +1237,7 @@ fun MessageItemBubble(
                         Icon(
                             imageVector = Icons.Default.Delete,
                             contentDescription = "Sil",
-                            tint = if (isMyMessage) Color.White.copy(alpha = 0.8f) else Color(0xFFEF4444),
+                            tint = if (isMyMessage) Color.White.copy(alpha = 0.8f) else ext.dangerText,
                             modifier = Modifier
                                 .size(14.dp)
                                 .clickable { onDelete() }
@@ -1293,7 +1312,10 @@ fun AttachmentPickerDialog(
                     }
                 },
                 enabled = fileName.isNotBlank(),
-                colors = ButtonDefaults.buttonColors(containerColor = ElectricBlue)
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = ElectricBlue,
+                    contentColor = Color.White
+                )
             ) {
                 Text("Ekle")
             }

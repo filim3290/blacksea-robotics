@@ -1,6 +1,7 @@
 package com.example.data
 
 import android.util.Log
+import com.example.BuildConfig
 import com.google.firebase.Firebase
 import com.google.firebase.auth.auth
 import com.google.firebase.firestore.FirebaseFirestoreException
@@ -18,6 +19,9 @@ enum class OperationType(val value: String) {
 }
 
 fun handleFirestoreError(exception: Throwable, operationType: OperationType, path: String?): String {
+    if (!BuildConfig.DEBUG) {
+        return ""
+    }
     val causes = generateSequence(exception) { it.cause }
     val rootError = causes.firstOrNull { it is FirebaseFirestoreException }
         ?: causes.firstOrNull { it !is CancellationException }
