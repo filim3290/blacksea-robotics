@@ -64,6 +64,7 @@ import com.example.ui.components.InAppFileViewerDialog
 import com.example.ui.components.SharedFileCard
 import com.example.ui.theme.ElectricBlue
 import com.example.util.downloadFileToDevice
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import java.util.Locale
 
@@ -239,8 +240,14 @@ fun FilesScreen(
                             canDelete = canDelete,
                             onDelete = {
                                 scope.launch {
-                                    repository.deleteSharedFile(file.id)
-                                    Toast.makeText(context, "Dosya silindi", Toast.LENGTH_SHORT).show()
+                                    try {
+                                        repository.deleteSharedFile(file.id)
+                                        Toast.makeText(context, "Dosya silindi", Toast.LENGTH_SHORT).show()
+                                    } catch (ce: CancellationException) {
+                                        throw ce
+                                    } catch (e: Exception) {
+                                        Toast.makeText(context, "Dosya silinemedi: ${e.message}", Toast.LENGTH_SHORT).show()
+                                    }
                                 }
                             }
                         )
@@ -401,7 +408,8 @@ fun FilesScreen(
                                 mediaDurationMs = uploadResult.mediaDurationMs,
                                 uploadedByName = currentUserProfile?.getFullName() ?: "Takım Üyesi",
                                 uploadedByTeam = currentUserProfile?.team ?: "",
-                                uploadedByRoles = currentUserProfile?.roles ?: emptyList()
+                                uploadedByRoles = currentUserProfile?.roles ?: emptyList(),
+                                notifyTeam = true
                             )
 
                             isUploading = false

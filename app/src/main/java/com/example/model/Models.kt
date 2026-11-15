@@ -249,11 +249,12 @@ data class TeamNotification(
     val recipientUserId: String = "", // "all", "managers", or specific userId
     val title: String = "",
     val message: String = "",
-    val type: String = "", // "member_pending", "member_approved", "message", "idea", "comment", "announcement"
+    val type: String = "", // "member_pending", "member_approved", "new_member", "message", "file", "idea", "comment", "announcement", "broadcast", "update"
     val targetId: String = "", // e.g. ideaId or userId
-    val targetRoomId: String = "", // e.g. "software"
+    val targetRoomId: String = "", // e.g. "software", "general"
     val isRead: Boolean = false,
     val readBy: List<String> = emptyList(), // User IDs who have read this notification
+    val senderId: String = "",
     val senderName: String = "",
     @ServerTimestamp val createdAt: Timestamp? = null
 ) {

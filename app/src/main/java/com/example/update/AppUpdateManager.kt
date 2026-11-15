@@ -12,6 +12,8 @@ import android.provider.Settings
 import android.util.Log
 import androidx.core.content.FileProvider
 import com.example.BuildConfig
+import com.google.firebase.Firebase
+import com.google.firebase.auth.auth
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import kotlinx.coroutines.Dispatchers
@@ -328,12 +330,18 @@ class AppUpdateManager(private val context: Context) {
             )
             firestore.collection("app_config").document("latest_update").set(payload).await()
 
+            val currentUid = try {
+                com.google.firebase.Firebase.auth.currentUser?.uid ?: ""
+            } catch (_: Exception) {
+                ""
+            }
             val notif = mapOf(
                 "recipientUserId" to "all",
                 "title" to "🔔 Yeni Güncelleme Mevcut",
                 "message" to "Blacksea Robotics için yeni bir sürüm (v$versionName) yayınlandı. Hemen güncelleyin!",
                 "type" to "update",
                 "targetId" to "update_v$versionName",
+                "senderId" to currentUid,
                 "senderName" to "Sistem",
                 "isRead" to false,
                 "createdAt" to FieldValue.serverTimestamp()

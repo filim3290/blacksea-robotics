@@ -83,6 +83,7 @@ import com.example.ui.components.TeamBadge
 import com.example.ui.components.UserRolesRow
 import com.example.ui.theme.ElectricBlue
 import com.example.ui.theme.PhoenixAmber
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 
 @Composable
@@ -315,13 +316,19 @@ fun AdminScreen(
                                     OutlinedButton(
                                         onClick = {
                                             scope.launch {
-                                                repository.updateUserRolesAndTeam(
-                                                    targetUserId = user.userId.ifBlank { user.id },
-                                                    team = user.team,
-                                                    roles = user.roles,
-                                                    status = UserStatus.REJECTED.value
-                                                )
-                                                Toast.makeText(context, "Kullanıcı başvurusu reddedildi", Toast.LENGTH_SHORT).show()
+                                                try {
+                                                    repository.updateUserRolesAndTeam(
+                                                        targetUserId = user.userId.ifBlank { user.id },
+                                                        team = user.team,
+                                                        roles = user.roles,
+                                                        status = UserStatus.REJECTED.value
+                                                    )
+                                                    Toast.makeText(context, "Kullanıcı başvurusu reddedildi", Toast.LENGTH_SHORT).show()
+                                                } catch (ce: CancellationException) {
+                                                    throw ce
+                                                } catch (e: Exception) {
+                                                    Toast.makeText(context, "İşlem başarısız: ${e.message}", Toast.LENGTH_SHORT).show()
+                                                }
                                             }
                                         },
                                         shape = RoundedCornerShape(8.dp)
@@ -336,13 +343,19 @@ fun AdminScreen(
                                     Button(
                                         onClick = {
                                             scope.launch {
-                                                repository.updateUserRolesAndTeam(
-                                                    targetUserId = user.userId.ifBlank { user.id },
-                                                    team = user.team,
-                                                    roles = user.roles.ifEmpty { listOf(PredefinedRoles.getDefaultTeamRole(user.team)) },
-                                                    status = UserStatus.APPROVED.value
-                                                )
-                                                Toast.makeText(context, "Kullanıcı onaylandı!", Toast.LENGTH_SHORT).show()
+                                                try {
+                                                    repository.updateUserRolesAndTeam(
+                                                        targetUserId = user.userId.ifBlank { user.id },
+                                                        team = user.team,
+                                                        roles = user.roles.ifEmpty { listOf(PredefinedRoles.getDefaultTeamRole(user.team)) },
+                                                        status = UserStatus.APPROVED.value
+                                                    )
+                                                    Toast.makeText(context, "Kullanıcı onaylandı!", Toast.LENGTH_SHORT).show()
+                                                } catch (ce: CancellationException) {
+                                                    throw ce
+                                                } catch (e: Exception) {
+                                                    Toast.makeText(context, "Onaylanamadı: ${e.message}", Toast.LENGTH_SHORT).show()
+                                                }
                                             }
                                         },
                                         shape = RoundedCornerShape(8.dp),
@@ -527,8 +540,14 @@ fun AdminScreen(
                                         IconButton(
                                             onClick = {
                                                 scope.launch {
-                                                    repository.deleteAnnouncement(announcement.id)
-                                                    Toast.makeText(context, "Duyuru silindi", Toast.LENGTH_SHORT).show()
+                                                    try {
+                                                        repository.deleteAnnouncement(announcement.id)
+                                                        Toast.makeText(context, "Duyuru silindi", Toast.LENGTH_SHORT).show()
+                                                    } catch (ce: CancellationException) {
+                                                        throw ce
+                                                    } catch (e: Exception) {
+                                                        Toast.makeText(context, "Duyuru silinemedi: ${e.message}", Toast.LENGTH_SHORT).show()
+                                                    }
                                                 }
                                             }
                                         ) {
@@ -888,14 +907,20 @@ fun AdminScreen(
             onDismiss = { memberToEdit = null },
             onSave = { newTeam, updatedRoles ->
                 scope.launch {
-                    repository.updateUserRolesAndTeam(
-                        targetUserId = user.userId.ifBlank { user.id },
-                        team = newTeam,
-                        roles = updatedRoles,
-                        status = user.status
-                    )
-                    memberToEdit = null
-                    Toast.makeText(context, "${user.getFullName()} güncellendi", Toast.LENGTH_SHORT).show()
+                    try {
+                        repository.updateUserRolesAndTeam(
+                            targetUserId = user.userId.ifBlank { user.id },
+                            team = newTeam,
+                            roles = updatedRoles,
+                            status = user.status
+                        )
+                        memberToEdit = null
+                        Toast.makeText(context, "${user.getFullName()} güncellendi", Toast.LENGTH_SHORT).show()
+                    } catch (ce: CancellationException) {
+                        throw ce
+                    } catch (e: Exception) {
+                        Toast.makeText(context, "Güncellenemedi: ${e.message}", Toast.LENGTH_SHORT).show()
+                    }
                 }
             }
         )
@@ -907,14 +932,20 @@ fun AdminScreen(
             onDismiss = { showNewAnnouncementDialog = false },
             onSubmit = { title, content, isPinned ->
                 scope.launch {
-                    repository.addAnnouncement(
-                        title = title,
-                        content = content,
-                        authorName = currentUserProfile?.getFullName() ?: "Yönetici",
-                        isPinned = isPinned
-                    )
-                    showNewAnnouncementDialog = false
-                    Toast.makeText(context, "Duyuru yayınlandı!", Toast.LENGTH_SHORT).show()
+                    try {
+                        repository.addAnnouncement(
+                            title = title,
+                            content = content,
+                            authorName = currentUserProfile?.getFullName() ?: "Yönetici",
+                            isPinned = isPinned
+                        )
+                        showNewAnnouncementDialog = false
+                        Toast.makeText(context, "Duyuru yayınlandı!", Toast.LENGTH_SHORT).show()
+                    } catch (ce: CancellationException) {
+                        throw ce
+                    } catch (e: Exception) {
+                        Toast.makeText(context, "Duyuru yayınlanamadı: ${e.message}", Toast.LENGTH_SHORT).show()
+                    }
                 }
             }
         )

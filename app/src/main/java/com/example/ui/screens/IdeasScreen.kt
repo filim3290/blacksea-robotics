@@ -98,6 +98,7 @@ import com.example.ui.components.getFileIcon
 import com.example.ui.components.getFileIconColor
 import com.example.ui.theme.ElectricBlue
 import com.example.util.downloadFileToDevice
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Locale
@@ -430,7 +431,13 @@ fun IdeasScreen(
                                             likeCount = idea.likeCount,
                                             onToggleLike = {
                                                 scope.launch {
-                                                    repository.toggleLikeIdea(idea.id, idea.likes)
+                                                    try {
+                                                        repository.toggleLikeIdea(idea.id, idea.likes)
+                                                    } catch (ce: CancellationException) {
+                                                        throw ce
+                                                    } catch (e: Exception) {
+                                                        Toast.makeText(context, "Beğeni güncellenemedi: ${e.message}", Toast.LENGTH_SHORT).show()
+                                                    }
                                                 }
                                             }
                                         )
@@ -463,8 +470,14 @@ fun IdeasScreen(
                                         IconButton(
                                             onClick = {
                                                 scope.launch {
-                                                    repository.deleteIdea(idea.id)
-                                                    Toast.makeText(context, "Fikir silindi", Toast.LENGTH_SHORT).show()
+                                                    try {
+                                                        repository.deleteIdea(idea.id)
+                                                        Toast.makeText(context, "Fikir silindi", Toast.LENGTH_SHORT).show()
+                                                    } catch (ce: CancellationException) {
+                                                        throw ce
+                                                    } catch (e: Exception) {
+                                                        Toast.makeText(context, "Fikir silinemedi: ${e.message}", Toast.LENGTH_SHORT).show()
+                                                    }
                                                 }
                                             },
                                             modifier = Modifier.size(28.dp)
@@ -514,28 +527,34 @@ fun IdeasScreen(
             onDismiss = { showCreateDialog = false },
             onSubmit = { title, desc, cat, room, uploadResult ->
                 scope.launch {
-                    val realName = currentUserProfile?.getFullName() ?: "Takım Üyesi"
-                    val roles = currentUserProfile?.roles ?: listOf("Takım Üyesi")
-                    val team = currentUserProfile?.team ?: "Genel Ekip"
+                    try {
+                        val realName = currentUserProfile?.getFullName() ?: "Takım Üyesi"
+                        val roles = currentUserProfile?.roles ?: listOf("Takım Üyesi")
+                        val team = currentUserProfile?.team ?: "Genel Ekip"
 
-                    repository.addIdea(
-                        roomId = room,
-                        title = title,
-                        description = desc,
-                        category = cat,
-                        authorName = realName,
-                        authorTeam = team,
-                        authorRoles = roles,
-                        fileName = uploadResult?.fileName ?: "",
-                        fileType = uploadResult?.fileType ?: "",
-                        fileUrl = uploadResult?.downloadUrl?.ifBlank { uploadResult.textContent } ?: "",
-                        fileSize = uploadResult?.fileSize ?: 0L,
-                        thumbnailUrl = uploadResult?.thumbnailUrl ?: "",
-                        storagePath = uploadResult?.storagePath ?: "",
-                        mediaDurationMs = uploadResult?.mediaDurationMs ?: 0L
-                    )
-                    showCreateDialog = false
-                    Toast.makeText(context, "Fikriniz takımla paylaşıldı!", Toast.LENGTH_SHORT).show()
+                        repository.addIdea(
+                            roomId = room,
+                            title = title,
+                            description = desc,
+                            category = cat,
+                            authorName = realName,
+                            authorTeam = team,
+                            authorRoles = roles,
+                            fileName = uploadResult?.fileName ?: "",
+                            fileType = uploadResult?.fileType ?: "",
+                            fileUrl = uploadResult?.downloadUrl?.ifBlank { uploadResult.textContent } ?: "",
+                            fileSize = uploadResult?.fileSize ?: 0L,
+                            thumbnailUrl = uploadResult?.thumbnailUrl ?: "",
+                            storagePath = uploadResult?.storagePath ?: "",
+                            mediaDurationMs = uploadResult?.mediaDurationMs ?: 0L
+                        )
+                        showCreateDialog = false
+                        Toast.makeText(context, "Fikriniz takımla paylaşıldı!", Toast.LENGTH_SHORT).show()
+                    } catch (ce: CancellationException) {
+                        throw ce
+                    } catch (e: Exception) {
+                        Toast.makeText(context, "Fikir paylaşılamadı: ${e.message}", Toast.LENGTH_LONG).show()
+                    }
                 }
             }
         )
@@ -549,9 +568,15 @@ fun IdeasScreen(
             onDismiss = { ideaToChangeStatus = null },
             onSave = { newStatus ->
                 scope.launch {
-                    repository.updateIdeaCategory(idea.id, newStatus)
-                    ideaToChangeStatus = null
-                    Toast.makeText(context, "Fikir durumu güncellendi: $newStatus", Toast.LENGTH_SHORT).show()
+                    try {
+                        repository.updateIdeaCategory(idea.id, newStatus)
+                        ideaToChangeStatus = null
+                        Toast.makeText(context, "Fikir durumu güncellendi: $newStatus", Toast.LENGTH_SHORT).show()
+                    } catch (ce: CancellationException) {
+                        throw ce
+                    } catch (e: Exception) {
+                        Toast.makeText(context, "Durum güncellenemedi: ${e.message}", Toast.LENGTH_SHORT).show()
+                    }
                 }
             }
         )
@@ -1035,8 +1060,14 @@ fun IdeaCommentsBottomSheet(
                                     IconButton(
                                         onClick = {
                                             scope.launch {
-                                                repository.deleteIdeaComment(idea.id, comment.id)
-                                                Toast.makeText(context, "Yorum silindi", Toast.LENGTH_SHORT).show()
+                                                try {
+                                                    repository.deleteIdeaComment(idea.id, comment.id)
+                                                    Toast.makeText(context, "Yorum silindi", Toast.LENGTH_SHORT).show()
+                                                } catch (ce: CancellationException) {
+                                                    throw ce
+                                                } catch (e: Exception) {
+                                                    Toast.makeText(context, "Yorum silinemedi: ${e.message}", Toast.LENGTH_SHORT).show()
+                                                }
                                             }
                                         },
                                         modifier = Modifier.size(24.dp)
@@ -1080,12 +1111,19 @@ fun IdeaCommentsBottomSheet(
                             val roles = currentUserProfile?.roles ?: emptyList()
                             commentText = ""
                             scope.launch {
-                                repository.addIdeaComment(
-                                    ideaId = idea.id,
-                                    text = textToSend,
-                                    authorName = realName,
-                                    authorRoles = roles
-                                )
+                                try {
+                                    repository.addIdeaComment(
+                                        ideaId = idea.id,
+                                        text = textToSend,
+                                        authorName = realName,
+                                        authorRoles = roles
+                                    )
+                                } catch (ce: CancellationException) {
+                                    throw ce
+                                } catch (e: Exception) {
+                                    if (commentText.isBlank()) commentText = textToSend
+                                    Toast.makeText(context, "Yorum gönderilemedi: ${e.message}", Toast.LENGTH_SHORT).show()
+                                }
                             }
                         }
                     },

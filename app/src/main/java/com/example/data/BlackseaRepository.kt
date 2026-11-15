@@ -57,6 +57,70 @@ data class FileUploadResult(
     val mediaDurationMs: Long = 0L
 )
 
+/**
+ * Determines whether [userId] should see and be notified about [notif].
+ * Rules:
+ * 1. Never notify a user for actions/messages/files/ideas/broadcasts they initiated themselves.
+ * 2. Direct personal notifications & manager-only notifications follow recipientUserId.
+ * 3. Broadcast/announcement, update, idea, and new_member notifications are delivered team-wide.
+ * 4. Message and file notifications are filtered strictly by general room or user's own team
+ *    (managers see all rooms except their own sent content).
+ */
+fun shouldUserReceiveNotification(
+    notif: TeamNotification,
+    userId: String,
+    isManager: Boolean,
+    userTeam: String = ""
+): Boolean {
+    // 1. Exclude sender from receiving notifications for their own content/actions
+    if (userId.isNotBlank() && notif.senderId.isNotBlank() && notif.senderId == userId) {
+        return false
+    }
+
+    // 2. Direct notification to this specific user (still respects senderId check above)
+    if (userId.isNotBlank() && notif.recipientUserId == userId) {
+        return true
+    }
+
+    // 3. Manager-only notifications (e.g. member_pending)
+    if (notif.recipientUserId == "managers") {
+        return isManager
+    }
+
+    return when (notif.type.lowercase()) {
+        // App version update notifications
+        "update" -> true
+
+        // Manager custom broadcasts & announcements
+        "broadcast", "announcement" -> true
+
+        // New idea or idea status update
+        "idea" -> true
+
+        // New team member joined notification (do not alert the joining member themselves)
+        "new_member" -> userId.isBlank() || notif.targetId != userId
+
+        // Chat room messages & shared files: own team or general team only (managers see all rooms)
+        "message", "file" -> {
+            if (isManager) {
+                true
+            } else {
+                val rId = notif.targetRoomId.lowercase()
+                val teamLower = userTeam.lowercase()
+                when {
+                    rId == "general" || rId.isBlank() -> true
+                    rId == "software" -> teamLower.contains("yazılım") || teamLower.contains("yazilim") || teamLower.contains("software")
+                    rId == "mechanic" -> teamLower.contains("mekanik") || teamLower.contains("mechanic")
+                    rId == "pr" -> teamLower.contains("pr")
+                    else -> teamLower.contains(rId)
+                }
+            }
+        }
+
+        else -> notif.recipientUserId == "all"
+    }
+}
+
 class BlackseaRepository(val db: FirebaseFirestore) {
 
     constructor(context: Context) : this(
@@ -639,16 +703,38 @@ class BlackseaRepository(val db: FirebaseFirestore) {
             "updatedAt" to FieldValue.serverTimestamp()
         )
         try {
+            val existingSnap = try {
+                docRef.get().await()
+            } catch (_: Exception) {
+                null
+            }
+            val previousStatus = existingSnap?.getString("status")
+            val memberProfile = existingSnap?.toObject(UserProfile::class.java)
+            val memberName = memberProfile?.getFullName()?.takeIf { it.isNotBlank() } ?: "Yeni Üye"
+            val transitionedToActive = !UserStatus.isActive(previousStatus) && UserStatus.isActive(status)
+
             docRef.set(payload, SetOptions.merge()).await()
 
-            // If user is approved, notify them
-            if (UserStatus.isActive(status)) {
+            // Notify both the approved member and the team ONLY when transitioning into active
+            if (transitionedToActive) {
+                val approverId = auth.currentUser?.uid ?: ""
                 createNotification(
                     recipientUserId = cleanId,
                     title = "Üyeliğiniz Onaylandı",
                     message = "Blacksea Robotics üyeliğiniz yönetici tarafından onaylandı. Takım alanlarına hoş geldiniz!",
                     type = "member_approved",
-                    targetId = cleanId
+                    targetId = cleanId,
+                    senderId = approverId
+                )
+                createNotification(
+                    recipientUserId = "all",
+                    title = "Yeni Takım Üyesi",
+                    message = "$memberName ($team) ekibe katıldı!",
+                    type = "new_member",
+                    targetId = cleanId,
+                    targetRoomId = team,
+                    senderName = memberName,
+                    senderId = approverId
                 )
             }
         } catch (e: CancellationException) {
@@ -673,32 +759,12 @@ class BlackseaRepository(val db: FirebaseFirestore) {
             .map { snapshot ->
                 val all = snapshot.toObjects(TeamNotification::class.java)
                 val filtered = all.filter { notif ->
-                    // 1. Direct notification to this specific user
-                    if (notif.recipientUserId == userId) return@filter true
-
-                    // 2. Manager-only notifications
-                    if (notif.recipientUserId == "managers") return@filter isManager
-
-                    // 3. Broadcast notifications sent to everyone
-                    if (notif.type == "broadcast" || notif.type == "announcement") return@filter true
-
-                    // 4. Room message notifications: filtered strictly by team
-                    // e.g. A user in PR will not receive notifications for software room messages,
-                    // but will receive general and PR room messages! Managers receive all room notifications.
-                    if (notif.type == "message") {
-                        if (isManager) return@filter true
-                        val rId = notif.targetRoomId.lowercase()
-                        val teamLower = userTeam.lowercase()
-                        when {
-                            rId == "general" || rId.isBlank() -> true
-                            rId == "software" -> teamLower.contains("yazılım") || teamLower.contains("software")
-                            rId == "mechanic" -> teamLower.contains("mekanik") || teamLower.contains("mechanic")
-                            rId == "pr" -> teamLower.contains("pr")
-                            else -> teamLower.contains(rId)
-                        }
-                    } else {
-                        notif.recipientUserId == "all"
-                    }
+                    shouldUserReceiveNotification(
+                        notif = notif,
+                        userId = userId,
+                        isManager = isManager,
+                        userTeam = userTeam
+                    )
                 }
                 filtered.sortedByDescending { it.createdAt?.toDate()?.time ?: 0L }
             }
@@ -713,17 +779,27 @@ class BlackseaRepository(val db: FirebaseFirestore) {
         message: String,
         senderName: String
     ) {
+        val uid = auth.currentUser?.uid ?: ""
         // Creates a broadcast notification for all team members
         createNotification(
             recipientUserId = "all",
             title = title,
             message = message,
             type = "broadcast",
-            senderName = senderName
+            senderName = senderName,
+            senderId = uid
         )
-        // Also register as a team announcement so it is visible in the activity feed
+        // Also register as a team announcement so it is visible in the activity feed (without sending a duplicate notification)
         try {
-            addAnnouncement(title = title, content = message, authorName = senderName, isPinned = false)
+            addAnnouncement(
+                title = title,
+                content = message,
+                authorName = senderName,
+                isPinned = false,
+                sendNotification = false
+            )
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.w("Repository", "Could not create team announcement: ${e.message}")
         }
@@ -736,7 +812,8 @@ class BlackseaRepository(val db: FirebaseFirestore) {
         type: String,
         targetId: String = "",
         targetRoomId: String = "",
-        senderName: String = ""
+        senderName: String = "",
+        senderId: String = auth.currentUser?.uid ?: ""
     ) {
         val docRef = db.collection("notifications").document()
         val payload = mapOf(
@@ -747,11 +824,14 @@ class BlackseaRepository(val db: FirebaseFirestore) {
             "targetId" to targetId,
             "targetRoomId" to targetRoomId,
             "senderName" to senderName,
+            "senderId" to senderId,
             "isRead" to false,
             "createdAt" to FieldValue.serverTimestamp()
         )
         try {
             docRef.set(payload).await()
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.w("Repository", "Notification creation failed: ${e.message}")
         }
@@ -957,13 +1037,20 @@ class BlackseaRepository(val db: FirebaseFirestore) {
                 "software" -> "Yazılım Odası"
                 else -> "$roomId Odası"
             }
+            val previewBody = when {
+                text.isNotBlank() -> "$senderName: ${text.take(60)}"
+                fileName.isNotBlank() -> "$senderName: $fileName paylaştı"
+                else -> "$senderName yeni bir içerik paylaştı"
+            }
             createNotification(
                 recipientUserId = "all",
                 title = "Yeni mesaj ($roomName)",
-                message = "$senderName: ${text.take(60)}",
+                message = previewBody,
                 type = "message",
+                targetId = docRef.id,
                 targetRoomId = roomId,
-                senderName = senderName
+                senderName = senderName,
+                senderId = uid
             )
         } catch (e: CancellationException) {
             throw e
@@ -1078,7 +1165,9 @@ class BlackseaRepository(val db: FirebaseFirestore) {
                 message = "$authorName yeni bir fikir ekledi: \"$title\"",
                 type = "idea",
                 targetId = docRef.id,
-                senderName = authorName
+                targetRoomId = roomId,
+                senderName = authorName,
+                senderId = uid
             )
         } catch (e: CancellationException) {
             throw e
@@ -1130,7 +1219,8 @@ class BlackseaRepository(val db: FirebaseFirestore) {
                     title = "Fikir Kabul Edildi!",
                     message = "Takım yönetimi bir fikri kabul etti.",
                     type = "idea",
-                    targetId = ideaId
+                    targetId = ideaId,
+                    senderId = auth.currentUser?.uid ?: ""
                 )
             }
         } catch (e: CancellationException) {
@@ -1201,7 +1291,8 @@ class BlackseaRepository(val db: FirebaseFirestore) {
                         message = "$authorName fikrinize yorum yaptı: \"${text.take(40)}\"",
                         type = "comment",
                         targetId = ideaId,
-                        senderName = authorName
+                        senderName = authorName,
+                        senderId = uid
                     )
                 }
             } catch (e: Exception) {
@@ -1262,7 +1353,8 @@ class BlackseaRepository(val db: FirebaseFirestore) {
         mediaDurationMs: Long = 0L,
         uploadedByName: String,
         uploadedByTeam: String = "",
-        uploadedByRoles: List<String> = emptyList()
+        uploadedByRoles: List<String> = emptyList(),
+        notifyTeam: Boolean = false
     ) {
         val uid = requireUserId()
         val docRef = db.collection("files").document()
@@ -1288,6 +1380,18 @@ class BlackseaRepository(val db: FirebaseFirestore) {
         )
         try {
             docRef.set(payload).await()
+            if (notifyTeam) {
+                createNotification(
+                    recipientUserId = "all",
+                    title = "Yeni dosya paylaşıldı",
+                    message = "$uploadedByName: $fileName",
+                    type = "file",
+                    targetId = docRef.id,
+                    targetRoomId = roomId,
+                    senderName = uploadedByName,
+                    senderId = uid
+                )
+            }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -1328,7 +1432,13 @@ class BlackseaRepository(val db: FirebaseFirestore) {
             }
     }
 
-    suspend fun addAnnouncement(title: String, content: String, authorName: String, isPinned: Boolean) {
+    suspend fun addAnnouncement(
+        title: String,
+        content: String,
+        authorName: String,
+        isPinned: Boolean,
+        sendNotification: Boolean = true
+    ) {
         val uid = requireUserId()
         val docRef = db.collection("announcements").document()
         val payload = mapOf(
@@ -1342,15 +1452,17 @@ class BlackseaRepository(val db: FirebaseFirestore) {
         try {
             docRef.set(payload).await()
 
-            // Notify all
-            createNotification(
-                recipientUserId = "all",
-                title = "Yeni duyuru",
-                message = "$authorName yeni bir duyuru yayınladı: \"$title\"",
-                type = "announcement",
-                targetId = docRef.id,
-                senderName = authorName
-            )
+            if (sendNotification) {
+                createNotification(
+                    recipientUserId = "all",
+                    title = "Yeni duyuru",
+                    message = "$authorName yeni bir duyuru yayınladı: \"$title\"",
+                    type = "announcement",
+                    targetId = docRef.id,
+                    senderName = authorName,
+                    senderId = uid
+                )
+            }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {

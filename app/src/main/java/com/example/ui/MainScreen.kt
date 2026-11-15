@@ -31,6 +31,7 @@ import androidx.compose.material.icons.filled.Campaign
 import androidx.compose.material.icons.filled.ChatBubble
 import androidx.compose.material.icons.filled.DoneAll
 import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.GroupAdd
 import androidx.compose.material.icons.filled.Home
 import android.content.Intent
 import android.net.Uri
@@ -46,6 +47,7 @@ import androidx.compose.material.icons.filled.Lightbulb
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Security
+import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -73,11 +75,13 @@ import androidx.compose.runtime.rememberCoroutineScope
 import kotlinx.coroutines.launch
 import com.example.model.TeamNotification
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.flow.flowOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -115,6 +119,8 @@ fun MainScreen(
     currentUserId: String,
     repository: BlackseaRepository,
     updateManager: com.example.update.AppUpdateManager? = null,
+    notificationNavEvent: com.example.NotificationNavEvent? = null,
+    onConsumeNotificationNav: () -> Unit = {},
     onShowUpdateDialog: (com.example.update.AppReleaseInfo) -> Unit = {},
     onSignOut: () -> Unit
 ) {
@@ -130,12 +136,41 @@ fun MainScreen(
             currentUserProfile?.roles?.contains("Yetkili Öğretmen") == true ||
             currentUserProfile?.email.equals("filim3290@gmail.com", ignoreCase = true)
 
-    // Team-targeted notifications (General + User's Team + Broadcasts + Direct)
-    val notifications by repository.observeNotifications(
-        userId = currentUserId,
-        isManager = isAdmin,
-        userTeam = currentUserProfile?.team ?: ""
-    ).collectAsState(initial = emptyList())
+    fun navigateForNotification(type: String, roomId: String) {
+        when (type.lowercase()) {
+            "message" -> {
+                selectedRoomIdForNavigation = roomId.ifBlank { "general" }
+                currentTab = NavItem.ROOMS
+            }
+            "file" -> currentTab = NavItem.FILES
+            "idea", "comment" -> currentTab = NavItem.IDEAS
+            "member_pending" -> currentTab = if (isAdmin) NavItem.ADMIN else NavItem.HOME
+            else -> currentTab = NavItem.HOME
+        }
+    }
+
+    LaunchedEffect(notificationNavEvent?.nonce, currentUserProfile) {
+        val event = notificationNavEvent ?: return@LaunchedEffect
+        if (currentUserProfile == null) return@LaunchedEffect
+        if (!event.openUpdateDialog && event.type.isNotBlank()) {
+            navigateForNotification(event.type, event.roomId)
+            onConsumeNotificationNav()
+        }
+    }
+
+    // Team-targeted notifications (General + User's Team + Broadcasts + Ideas + New Members + Updates)
+    // Wait until profile is loaded so team & manager role filtering is accurate on first subscription
+    val notifications by remember(currentUserId, isAdmin, currentUserProfile?.team, currentUserProfile != null) {
+        if (currentUserProfile == null) {
+            flowOf(emptyList())
+        } else {
+            repository.observeNotifications(
+                userId = currentUserId,
+                isManager = isAdmin,
+                userTeam = currentUserProfile?.team ?: ""
+            )
+        }
+    }.collectAsState(initial = emptyList())
     var locallyReadIds by remember { mutableStateOf(setOf<String>()) }
     val unreadNotificationsCount = remember(notifications, locallyReadIds) {
         notifications.count { notif ->
@@ -474,6 +509,10 @@ fun MainScreen(
                         repository.markNotificationAsRead(notifId, currentUserId, isShared = isShared)
                     }
                 },
+                onNotificationClick = { notif ->
+                    showNotificationsDialog = false
+                    navigateForNotification(notif.type, notif.targetRoomId)
+                },
                 onMarkAllAsRead = {
                     val allIds = notifications.map { it.id }.filter { it.isNotBlank() }.toSet()
                     val personalIds = notifications
@@ -562,6 +601,7 @@ fun TeamNotificationsDialog(
     locallyReadIds: Set<String>,
     onDismiss: () -> Unit,
     onMarkAsRead: (String) -> Unit,
+    onNotificationClick: (TeamNotification) -> Unit = {},
     onMarkAllAsRead: () -> Unit
 ) {
     val context = LocalContext.current
@@ -746,6 +786,14 @@ fun TeamNotificationsDialog(
                                 key = { index, notif -> "${notif.id.ifBlank { "notif" }}_$index" }
                             ) { _, notif ->
                                 val isRead = notif.isReadBy(currentUserId) || locallyReadIds.contains(notif.id)
+                                val (notifIcon, notifTint) = when (notif.type.lowercase()) {
+                                    "broadcast", "announcement" -> Pair(Icons.Default.Campaign, Color(0xFFF59E0B))
+                                    "update" -> Pair(Icons.Default.SystemUpdate, Color(0xFF10B981))
+                                    "idea", "comment" -> Pair(Icons.Default.Lightbulb, Color(0xFFF59E0B))
+                                    "file" -> Pair(Icons.Default.Folder, Color(0xFF8B5CF6))
+                                    "new_member", "member_pending", "member_approved" -> Pair(Icons.Default.GroupAdd, Color(0xFF10B981))
+                                    else -> Pair(Icons.Default.ChatBubble, ElectricBlue)
+                                }
                                 Card(
                                     modifier = Modifier
                                         .fillMaxWidth()
@@ -753,6 +801,7 @@ fun TeamNotificationsDialog(
                                             if (!isRead && notif.id.isNotBlank()) {
                                                 onMarkAsRead(notif.id)
                                             }
+                                            onNotificationClick(notif)
                                         },
                                     shape = RoundedCornerShape(12.dp),
                                     colors = CardDefaults.cardColors(
@@ -770,14 +819,14 @@ fun TeamNotificationsDialog(
                                     ) {
                                         Surface(
                                             shape = CircleShape,
-                                            color = if (notif.type == "broadcast") Color(0xFFF59E0B).copy(alpha = 0.2f) else ElectricBlue.copy(alpha = 0.2f),
+                                            color = notifTint.copy(alpha = 0.2f),
                                             modifier = Modifier.size(34.dp)
                                         ) {
                                             Box(contentAlignment = Alignment.Center) {
                                                 Icon(
-                                                    imageVector = if (notif.type == "broadcast") Icons.Default.Campaign else Icons.Default.ChatBubble,
+                                                    imageVector = notifIcon,
                                                     contentDescription = null,
-                                                    tint = if (notif.type == "broadcast") Color(0xFFF59E0B) else ElectricBlue,
+                                                    tint = notifTint,
                                                     modifier = Modifier.size(18.dp)
                                                 )
                                             }

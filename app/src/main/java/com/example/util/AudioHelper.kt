@@ -79,7 +79,8 @@ fun downloadFileToDevice(
                 setAllowedOverMetered(true)
                 setAllowedOverRoaming(true)
             }
-            val dm = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+            val dm = context.getSystemService(Context.DOWNLOAD_SERVICE) as? DownloadManager
+                ?: throw IllegalStateException("İndirme yöneticisi kullanılamıyor")
             dm.enqueue(request)
             Toast.makeText(context, "$safeName İndirilenler klasörüne indiriliyor...", Toast.LENGTH_LONG).show()
         } else if (url.startsWith("data:") || content.isNotBlank()) {
@@ -170,6 +171,7 @@ class AudioRecorderManager(private val context: Context) {
 
     fun startRecording(): Boolean {
         return try {
+            cancelRecording()
             val file = File(context.cacheDir, "voice_${System.currentTimeMillis()}.m4a")
             currentFile = file
 
@@ -287,8 +289,12 @@ fun VoiceNotePlayer(
             // Play / Pause Button
             IconButton(
                 onClick = {
+                    if (isLoading) return@IconButton
                     if (isPlaying) {
-                        mediaPlayer?.pause()
+                        try {
+                            mediaPlayer?.pause()
+                        } catch (_: IllegalStateException) {
+                        }
                         isPlaying = false
                     } else {
                         if (mediaPlayer == null) {
@@ -312,33 +318,50 @@ fun VoiceNotePlayer(
                                             .build()
                                     )
                                     setDataSource(context, resolvedAudioUri)
-                                    prepareAsync()
                                     setOnPreparedListener { mp ->
                                         isLoading = false
                                         totalDurationSeconds = mp.duration / 1000
-                                        mp.start()
-                                        isPlaying = true
+                                        try {
+                                            mp.start()
+                                            isPlaying = true
+                                        } catch (e: IllegalStateException) {
+                                            isPlaying = false
+                                            Log.w("VoiceNotePlayer", "MediaPlayer start failed: ${e.message}")
+                                        }
                                     }
                                     setOnCompletionListener {
                                         isPlaying = false
                                         progress = 0f
                                         currentDurationSeconds = 0
                                     }
-                                    setOnErrorListener { _, _, _ ->
+                                    setOnErrorListener { mp, _, _ ->
                                         isLoading = false
                                         isPlaying = false
+                                        try {
+                                            mp.release()
+                                        } catch (_: Exception) {
+                                        }
+                                        mediaPlayer = null
                                         Toast.makeText(context, "Ses oynatılamadı", Toast.LENGTH_SHORT).show()
                                         true
                                     }
+                                    prepareAsync()
                                 }
                                 mediaPlayer = player
                             } catch (e: Exception) {
                                 isLoading = false
+                                mediaPlayer?.release()
+                                mediaPlayer = null
                                 Toast.makeText(context, "Hata: ${e.message}", Toast.LENGTH_SHORT).show()
                             }
                         } else {
-                            mediaPlayer?.start()
-                            isPlaying = true
+                            try {
+                                mediaPlayer?.start()
+                                isPlaying = true
+                            } catch (e: IllegalStateException) {
+                                isPlaying = false
+                                Toast.makeText(context, "Ses oynatıcı henüz hazır değil", Toast.LENGTH_SHORT).show()
+                            }
                         }
                     }
                 },

@@ -92,6 +92,7 @@ import com.example.ui.theme.PhoenixAmber
 import com.example.util.AudioRecorderManager
 import com.example.util.VoiceNotePlayer
 import com.example.util.downloadFileToDevice
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
@@ -362,12 +363,24 @@ fun RoomsScreen(
                         onReply = { replyingTo = message },
                         onTogglePin = {
                             scope.launch {
-                                repository.togglePinMessage(selectedRoomId, message.id, !message.isPinned)
+                                try {
+                                    repository.togglePinMessage(selectedRoomId, message.id, !message.isPinned)
+                                } catch (ce: CancellationException) {
+                                    throw ce
+                                } catch (e: Exception) {
+                                    Toast.makeText(context, "Sabitleme başarısız: ${e.message}", Toast.LENGTH_SHORT).show()
+                                }
                             }
                         },
                         onDelete = {
                             scope.launch {
-                                repository.deleteMessage(selectedRoomId, message.id)
+                                try {
+                                    repository.deleteMessage(selectedRoomId, message.id)
+                                } catch (ce: CancellationException) {
+                                    throw ce
+                                } catch (e: Exception) {
+                                    Toast.makeText(context, "Mesaj silinemedi: ${e.message}", Toast.LENGTH_SHORT).show()
+                                }
                             }
                         },
                         onOpenFile = { projectFile ->

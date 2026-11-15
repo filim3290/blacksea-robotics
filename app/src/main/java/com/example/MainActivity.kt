@@ -1,8 +1,5 @@
 package com.example
 
-import android.app.NotificationChannel
-import android.app.NotificationManager
-import android.app.PendingIntent
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
@@ -28,6 +25,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
@@ -43,83 +41,97 @@ import androidx.core.app.NotificationManagerCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
-import com.google.firebase.firestore.snapshots
-import kotlinx.coroutines.launch
 import com.example.data.BlackseaRepository
+import com.example.model.UserRole
+import com.example.model.UserStatus
+import com.example.notifications.BackgroundNotificationWorker
+import com.example.notifications.TeamNotificationDispatcher
 import com.example.ui.MainScreen
 import com.example.ui.screens.AuthScreen
 import com.example.ui.theme.BlackseaRoboticsTheme
 import com.example.ui.theme.ElectricBlue
+import com.example.update.AppReleaseInfo
+import com.example.update.AppUpdateManager
+import com.example.update.UpdateCheckResult
 import com.google.firebase.Firebase
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.auth
+import com.google.firebase.firestore.snapshots
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+
+data class NotificationNavEvent(
+    val type: String = "",
+    val roomId: String = "",
+    val openUpdateDialog: Boolean = false,
+    val nonce: Long = System.currentTimeMillis()
+)
 
 class MainActivity : ComponentActivity() {
+    private val pendingNavEvent = mutableStateOf<NotificationNavEvent?>(null)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        createNotificationChannels()
+        TeamNotificationDispatcher.ensureNotificationChannels(this)
+        handleNotificationIntent(intent)
 
         val repository = BlackseaRepository(this)
 
         setContent {
             BlackseaRoboticsTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
-                    AppContent(repository = repository)
+                    AppContent(
+                        repository = repository,
+                        notificationNavEvent = pendingNavEvent.value,
+                        onConsumeNotificationNav = { pendingNavEvent.value = null }
+                    )
                 }
             }
         }
     }
 
-    private fun createNotificationChannels() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val notificationManager = getSystemService(NotificationManager::class.java) ?: return
-            
-            val generalChannel = NotificationChannel(
-                "bsr_team_notifications",
-                "BLACKSEA ROBOTICS Bildirimleri",
-                NotificationManager.IMPORTANCE_HIGH
-            ).apply {
-                description = "Takım mesajları, duyuruları ve onay bildirimleri"
-                enableLights(true)
-                enableVibration(true)
-            }
-            
-            val announcementsChannel = NotificationChannel(
-                "bsr_announcements",
-                "Takım Duyuruları",
-                NotificationManager.IMPORTANCE_HIGH
-            ).apply {
-                description = "Yönetici ve takım kaptanı duyuruları"
-                enableLights(true)
-                enableVibration(true)
-            }
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleNotificationIntent(intent)
+    }
 
-            val updatesChannel = NotificationChannel(
-                "bsr_updates",
-                "Uygulama Güncellemeleri",
-                NotificationManager.IMPORTANCE_HIGH
-            ).apply {
-                description = "Yeni sürüm ve APK güncelleme bildirimleri"
-                enableLights(true)
-                enableVibration(true)
-            }
-
-            notificationManager.createNotificationChannel(generalChannel)
-            notificationManager.createNotificationChannel(announcementsChannel)
-            notificationManager.createNotificationChannel(updatesChannel)
+    private fun handleNotificationIntent(intent: Intent?) {
+        if (intent == null) return
+        val notifType = intent.getStringExtra(TeamNotificationDispatcher.EXTRA_NOTIF_TYPE).orEmpty()
+        val roomId = intent.getStringExtra(TeamNotificationDispatcher.EXTRA_NOTIF_ROOM_ID).orEmpty()
+        val openUpdate = intent.getBooleanExtra(TeamNotificationDispatcher.EXTRA_OPEN_UPDATE_DIALOG, false)
+        if (notifType.isNotBlank() || openUpdate) {
+            pendingNavEvent.value = NotificationNavEvent(
+                type = notifType,
+                roomId = roomId,
+                openUpdateDialog = openUpdate,
+                nonce = System.nanoTime()
+            )
+            intent.removeExtra(TeamNotificationDispatcher.EXTRA_NOTIF_TYPE)
+            intent.removeExtra(TeamNotificationDispatcher.EXTRA_NOTIF_ROOM_ID)
+            intent.removeExtra(TeamNotificationDispatcher.EXTRA_OPEN_UPDATE_DIALOG)
         }
     }
 }
 
 @Composable
-fun AppContent(repository: BlackseaRepository) {
+fun AppContent(
+    repository: BlackseaRepository,
+    notificationNavEvent: NotificationNavEvent? = null,
+    onConsumeNotificationNav: () -> Unit = {}
+) {
     val context = LocalContext.current
     var currentUser by remember { mutableStateOf(Firebase.auth.currentUser) }
     var isAuthCompleted by remember { mutableStateOf(false) }
 
-    val updateManager = remember { com.example.update.AppUpdateManager(context) }
-    var availableUpdate by remember { mutableStateOf<com.example.update.AppReleaseInfo?>(null) }
+    val updateManager = remember { AppUpdateManager(context) }
+    val updateCheckMutex = remember { Mutex() }
+    var availableUpdate by remember { mutableStateOf<AppReleaseInfo?>(null) }
     var showNotificationRationale by remember { mutableStateOf(false) }
 
     val permissionLauncher = rememberLauncherForActivityResult(
@@ -137,41 +149,26 @@ fun AppContent(repository: BlackseaRepository) {
     val lifecycleOwner = LocalLifecycleOwner.current
     val scope = rememberCoroutineScope()
 
-    suspend fun performUpdateCheckAndNotify() {
-        val result = updateManager.checkLatestReleaseDetailed(forceRefresh = false)
-        if (result is com.example.update.UpdateCheckResult.UpdateAvailable && result.isSignatureCompatible) {
-            val update = result.release
-            availableUpdate = update
-
-            // Dispatch a local system notification ONCE for this new version
-            if (!updateManager.hasNotifiedForVersion(update.versionCode)) {
-                try {
-                    if (NotificationManagerCompat.from(context).areNotificationsEnabled()) {
-                        val tapIntent = Intent(context, MainActivity::class.java).apply {
-                            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
-                            putExtra("open_update_dialog", true)
-                        }
-                        val pendingIntent = PendingIntent.getActivity(
-                            context,
-                            1001,
-                            tapIntent,
-                            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-                        )
-                        val notifManager = context.getSystemService(NotificationManager::class.java)
-                        val builder = androidx.core.app.NotificationCompat.Builder(context, "bsr_updates")
-                            .setSmallIcon(R.mipmap.ic_launcher)
-                            .setContentTitle("🔔 Yeni Güncelleme Mevcut")
-                            .setContentText("Blacksea Robotics için yeni bir sürüm (v${update.versionName}) yayınlandı.")
-                            .setPriority(androidx.core.app.NotificationCompat.PRIORITY_HIGH)
-                            .setContentIntent(pendingIntent)
-                            .setAutoCancel(true)
-                        notifManager?.notify(1001, builder.build())
-                        updateManager.markVersionNotified(update.versionCode)
-                    }
-                } catch (e: Exception) {
-                    Log.w("MainActivity", "Failed to trigger system notification: ${e.message}")
-                }
+    suspend fun performUpdateCheckAndNotify(forceRefresh: Boolean = false) {
+        updateCheckMutex.withLock {
+            val result = updateManager.checkLatestReleaseDetailed(forceRefresh = forceRefresh)
+            if (result is UpdateCheckResult.UpdateAvailable && result.isSignatureCompatible) {
+                val update = result.release
+                availableUpdate = update
+                TeamNotificationDispatcher.dispatchUpdateNotificationIfNeeded(
+                    context = context,
+                    updateManager = updateManager,
+                    release = update
+                )
             }
+        }
+    }
+
+    // Handle notification tap for update dialog immediately
+    LaunchedEffect(notificationNavEvent?.nonce) {
+        if (notificationNavEvent?.openUpdateDialog == true) {
+            performUpdateCheckAndNotify(forceRefresh = true)
+            onConsumeNotificationNav()
         }
     }
 
@@ -199,7 +196,7 @@ fun AppContent(repository: BlackseaRepository) {
                             val vName = doc.getString("versionName") ?: "1.0.5"
                             val resolvedUrl = updateManager.normalizeDownloadUrl(doc.getString("apkDownloadUrl"), vName)
                             if (resolvedUrl.startsWith("https://") && resolvedUrl.endsWith(".apk", ignoreCase = true)) {
-                                val release = com.example.update.AppReleaseInfo(
+                                val release = AppReleaseInfo(
                                     tagName = doc.getString("tagName") ?: "v$vName",
                                     versionName = vName,
                                     versionCode = vCode,
@@ -215,20 +212,65 @@ fun AppContent(repository: BlackseaRepository) {
                                 )
                                 if (updateManager.isReleaseSignatureCompatible(release)) {
                                     availableUpdate = release
+                                    TeamNotificationDispatcher.dispatchUpdateNotificationIfNeeded(
+                                        context = context,
+                                        updateManager = updateManager,
+                                        release = release
+                                    )
                                 }
                             }
                         }
                     }
                 }
+        } catch (ce: CancellationException) {
+            throw ce
         } catch (e: Exception) {
             Log.w("MainActivity", "Live update stream error: ${e.message}")
         }
     }
 
-    // Check updates after user logs in
-    LaunchedEffect(isAuthCompleted) {
-        if (isAuthCompleted) {
+    // Check updates and schedule background notification sync after user logs in
+    LaunchedEffect(currentUser?.uid, isAuthCompleted) {
+        val activeUid = currentUser?.uid
+        if (activeUid != null && isAuthCompleted) {
+            BackgroundNotificationWorker.schedulePeriodicSync(context)
             performUpdateCheckAndNotify()
+        }
+    }
+
+    // Real-time event-driven OS notifications while app is alive (never floods backlog on startup)
+    val authenticatedUid = if (isAuthCompleted) currentUser?.uid else null
+    val activeProfile by remember(authenticatedUid) {
+        if (authenticatedUid.isNullOrBlank()) flowOf(null) else repository.observeUserProfile(authenticatedUid)
+    }.collectAsState(initial = null)
+
+    val activeIsManager = activeProfile?.let { profile ->
+        profile.isSuperAdmin ||
+            profile.role == UserRole.ADMIN.displayName ||
+            profile.roles.contains("Yönetici") ||
+            profile.roles.contains("Takım Kaptanı") ||
+            profile.roles.contains("Yetkili Öğretmen") ||
+            profile.email.equals("filim3290@gmail.com", ignoreCase = true)
+    } ?: false
+
+    LaunchedEffect(authenticatedUid, activeProfile?.status, activeIsManager, activeProfile?.team) {
+        val uid = authenticatedUid ?: return@LaunchedEffect
+        val profile = activeProfile ?: return@LaunchedEffect
+        val isApproved = UserStatus.isActive(profile.status) ||
+            profile.isSuperAdmin ||
+            profile.email.equals("filim3290@gmail.com", ignoreCase = true)
+        if (!isApproved) return@LaunchedEffect
+
+        repository.observeNotifications(
+            userId = uid,
+            isManager = activeIsManager,
+            userTeam = profile.team
+        ).collect { filteredNotifications ->
+            TeamNotificationDispatcher.processNotifications(
+                context = context,
+                userId = uid,
+                notifications = filteredNotifications
+            )
         }
     }
 
@@ -339,8 +381,11 @@ fun AppContent(repository: BlackseaRepository) {
                 currentUserId = uid,
                 repository = repository,
                 updateManager = updateManager,
+                notificationNavEvent = notificationNavEvent,
+                onConsumeNotificationNav = onConsumeNotificationNav,
                 onShowUpdateDialog = { release -> availableUpdate = release },
                 onSignOut = {
+                    BackgroundNotificationWorker.cancelPeriodicSync(context)
                     Firebase.auth.signOut()
                     currentUser = null
                     isAuthCompleted = false

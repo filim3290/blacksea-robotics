@@ -2,6 +2,7 @@ package com.example.ui.screens
 
 import android.app.Activity
 import android.content.Context
+import android.content.ContextWrapper
 import android.util.Log
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
@@ -94,11 +95,18 @@ import com.google.firebase.Firebase
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.GoogleAuthProvider
 import com.google.firebase.auth.auth
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
+
+tailrec fun Context.findActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findActivity()
+    else -> null
+}
 
 fun onGoogleSignInClicked(
     context: Context,
@@ -115,12 +123,18 @@ fun onGoogleSignInClicked(
         return
     }
 
+    val activity = context.findActivity()
+    if (activity == null) {
+        onAuthError("Oturum açma penceresi başlatılamadı")
+        return
+    }
+
     val signInOption = GetSignInWithGoogleOption.Builder(serverClientId = clientId).build()
     val request = GetCredentialRequest.Builder().addCredentialOption(signInOption).build()
 
     scope.launch {
         try {
-            val result = credentialManager.getCredential(context as Activity, request)
+            val result = credentialManager.getCredential(activity, request)
             val credential = result.credential
             if (credential is CustomCredential && credential.type == TYPE_GOOGLE_ID_TOKEN_CREDENTIAL) {
                 val googleIdToken = GoogleIdTokenCredential.createFrom(credential.data).idToken
@@ -131,6 +145,8 @@ fun onGoogleSignInClicked(
             } else {
                 onAuthError("Beklenmeyen kimlik türü")
             }
+        } catch (ce: CancellationException) {
+            throw ce
         } catch (e: GetCredentialCancellationException) {
             Log.w("Auth", "Google Sign-In flow cancelled: ${e.message}")
             onAuthCancelled()
