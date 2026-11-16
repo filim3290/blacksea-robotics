@@ -31,6 +31,7 @@ import com.google.firebase.auth.auth
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.SetOptions
+import com.google.firebase.firestore.Source
 import com.google.firebase.firestore.snapshots
 import com.google.firebase.storage.FirebaseStorage
 import kotlinx.coroutines.CancellationException
@@ -605,6 +606,20 @@ class BlackseaRepository(val db: FirebaseFirestore) {
         }
     }
 
+    suspend fun isSystemEmptyForNewUser(excludeUserId: String = ""): Boolean {
+        return try {
+            val serverSnap = try {
+                db.collection("users").limit(2).get(Source.SERVER).await()
+            } catch (_: Exception) {
+                db.collection("users").limit(2).get().await()
+            }
+            serverSnap.documents.none { it.id != excludeUserId }
+        } catch (e: Exception) {
+            logDebugWarn("Repository", "Could not verify whether users collection is empty", e)
+            false
+        }
+    }
+
     suspend fun createOrUpdateUserProfile(
         userId: String,
         firstName: String,
@@ -619,12 +634,8 @@ class BlackseaRepository(val db: FirebaseFirestore) {
         val docRef = db.collection("users").document(userId)
 
         // Check if this is the first user in the system or the configured admin email
-        val isFirstOrConfiguredAdmin = try {
-            val existingUsers = db.collection("users").limit(1).get().await()
-            existingUsers.isEmpty || email.equals("filim3290@gmail.com", ignoreCase = true)
-        } catch (e: Exception) {
-            email.equals("filim3290@gmail.com", ignoreCase = true)
-        }
+        val isFirstOrConfiguredAdmin = email.equals("filim3290@gmail.com", ignoreCase = true) ||
+            isSystemEmptyForNewUser(excludeUserId = userId)
 
         val finalRoles = if (isFirstOrConfiguredAdmin) {
             (roles + listOf("Yönetici", "Takım Kaptanı")).distinct()
@@ -875,6 +886,42 @@ class BlackseaRepository(val db: FirebaseFirestore) {
         }
     }
 
+    suspend fun deleteOwnAccount() {
+        val uid = requireUserId()
+        val path = "users/$uid"
+        try {
+            // 1. Best-effort cleanup of notifications directly addressed to this user
+            try {
+                val personalNotifs = db.collection("notifications")
+                    .whereEqualTo("recipientUserId", uid)
+                    .get()
+                    .await()
+                if (!personalNotifs.isEmpty) {
+                    val batch = db.batch()
+                    personalNotifs.documents.forEach { batch.delete(it.reference) }
+                    batch.commit().await()
+                }
+            } catch (cleanupEx: Exception) {
+                logDebugWarn("Repository", "Self notification cleanup skipped", cleanupEx)
+            }
+
+            // 2. Permanently delete Firestore user profile document
+            db.collection("users").document(uid).delete().await()
+
+            // 3. Best-effort Firebase Auth user deletion (may throw recent-login-required on old sessions)
+            try {
+                auth.currentUser?.delete()?.await()
+            } catch (authDeleteEx: Exception) {
+                logDebugWarn("Repository", "Auth account deletion skipped; proceeding with sign-out", authDeleteEx)
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.DELETE, path)
+            throw e
+        }
+    }
+
     // ==========================================
     // NOTIFICATIONS
     // ==========================================
@@ -898,7 +945,7 @@ class BlackseaRepository(val db: FirebaseFirestore) {
                         userCreatedAtMs = userCreatedAtMs
                     )
                 }
-                filtered.sortedByDescending { it.createdAt?.toDate()?.time ?: 0L }
+                filtered.sortedByDescending { it.createdAt?.toDate()?.time ?: Long.MAX_VALUE }
             }
             .catch { error ->
                 handleFirestoreError(error, OperationType.LIST, "notifications")
@@ -1109,7 +1156,7 @@ class BlackseaRepository(val db: FirebaseFirestore) {
             .snapshots()
             .map { snapshot ->
                 snapshot.toObjects(ChatMessage::class.java)
-                    .sortedBy { it.createdAt?.toDate()?.time ?: 0L }
+                    .sortedBy { it.createdAt?.toDate()?.time ?: Long.MAX_VALUE }
             }
             .catch { error ->
                 handleFirestoreError(error, OperationType.LIST, path)
@@ -1242,7 +1289,7 @@ class BlackseaRepository(val db: FirebaseFirestore) {
                 } else {
                     items
                 }
-                filtered.sortedByDescending { it.createdAt?.toDate()?.time ?: 0L }
+                filtered.sortedByDescending { it.createdAt?.toDate()?.time ?: Long.MAX_VALUE }
             }
             .catch { error ->
                 handleFirestoreError(error, OperationType.LIST, path)
@@ -1389,7 +1436,7 @@ class BlackseaRepository(val db: FirebaseFirestore) {
             .snapshots()
             .map { snapshot ->
                 snapshot.toObjects(IdeaComment::class.java)
-                    .sortedBy { it.createdAt?.toDate()?.time ?: 0L }
+                    .sortedBy { it.createdAt?.toDate()?.time ?: Long.MAX_VALUE }
             }
             .catch { error ->
                 handleFirestoreError(error, OperationType.LIST, path)
@@ -1468,7 +1515,7 @@ class BlackseaRepository(val db: FirebaseFirestore) {
                 } else {
                     items
                 }
-                filtered.sortedByDescending { it.createdAt?.toDate()?.time ?: 0L }
+                filtered.sortedByDescending { it.createdAt?.toDate()?.time ?: Long.MAX_VALUE }
             }
             .catch { error ->
                 handleFirestoreError(error, OperationType.LIST, "files")
@@ -1559,7 +1606,7 @@ class BlackseaRepository(val db: FirebaseFirestore) {
                 snapshot.toObjects(TeamAnnouncement::class.java)
                     .sortedWith(
                         compareByDescending<TeamAnnouncement> { it.isPinned }
-                            .thenByDescending { it.createdAt?.toDate()?.time ?: 0L }
+                            .thenByDescending { it.createdAt?.toDate()?.time ?: Long.MAX_VALUE }
                     )
             }
             .catch { error ->

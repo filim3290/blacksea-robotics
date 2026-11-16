@@ -38,7 +38,8 @@ object TeamNotificationDispatcher {
     const val CHANNEL_UPDATES = "bsr_updates"
     const val CHANNEL_REALTIME_SYNC = "bsr_realtime_sync"
 
-    private const val PREF_REALTIME_SYNC_ENABLED = "realtime_sync_enabled"
+    private const val PREF_REALTIME_SYNC_ENABLED = "realtime_sync_opt_in"
+    const val FOREGROUND_SYNC_NOTIFICATION_ID = 1099
 
     const val EXTRA_NOTIF_ID = "notif_id"
     const val EXTRA_NOTIF_TYPE = "notif_type"
@@ -49,13 +50,32 @@ object TeamNotificationDispatcher {
 
     fun isRealtimeSyncEnabled(context: Context): Boolean {
         val prefs = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        return prefs.getBoolean(PREF_REALTIME_SYNC_ENABLED, true)
+        return prefs.getBoolean(PREF_REALTIME_SYNC_ENABLED, false)
     }
 
     fun setRealtimeSyncEnabled(context: Context, enabled: Boolean) {
         context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .edit()
             .putBoolean(PREF_REALTIME_SYNC_ENABLED, enabled)
+            .apply()
+    }
+
+    fun cancelForegroundSyncNotification(context: Context) {
+        try {
+            val nm = context.applicationContext.getSystemService(NotificationManager::class.java)
+            nm?.cancel(FOREGROUND_SYNC_NOTIFICATION_ID)
+        } catch (_: Exception) {
+        }
+    }
+
+    fun clearUserSyncState(context: Context, userId: String) {
+        if (userId.isBlank()) return
+        context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .remove("seeded_$userId")
+            .remove("baseline_ts_$userId")
+            .remove("dispatched_list_$userId")
+            .remove("join_ts_$userId")
             .apply()
     }
 

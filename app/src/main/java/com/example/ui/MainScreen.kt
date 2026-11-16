@@ -15,13 +15,18 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.lazy.LazyColumn
@@ -125,7 +130,8 @@ fun MainScreen(
     notificationNavEvent: com.example.NotificationNavEvent? = null,
     onConsumeNotificationNav: () -> Unit = {},
     onShowUpdateDialog: (com.example.update.AppReleaseInfo) -> Unit = {},
-    onSignOut: () -> Unit
+    onSignOut: () -> Unit,
+    onAccountDeleted: () -> Unit = onSignOut
 ) {
     val context = LocalContext.current
     val ext = MaterialTheme.blackseaColors
@@ -309,7 +315,14 @@ fun MainScreen(
                     )
                 }
 
-                Box(modifier = Modifier.weight(1f).fillMaxHeight()) {
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxHeight()
+                        .statusBarsPadding()
+                        .navigationBarsPadding()
+                        .consumeWindowInsets(WindowInsets.navigationBars)
+                ) {
                     ScreenContent(
                         currentTab = currentTab,
                         repository = repository,
@@ -328,7 +341,8 @@ fun MainScreen(
                             adminInitialTab = 0
                             currentTab = NavItem.ADMIN
                         },
-                        onSignOut = onSignOut
+                        onSignOut = onSignOut,
+                        onAccountDeleted = onAccountDeleted
                     )
                 }
             }
@@ -499,7 +513,12 @@ fun MainScreen(
                     }
                 }
             ) { innerPadding ->
-                Box(modifier = Modifier.padding(innerPadding)) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(innerPadding)
+                        .consumeWindowInsets(innerPadding)
+                ) {
                     ScreenContent(
                         currentTab = currentTab,
                         repository = repository,
@@ -518,7 +537,8 @@ fun MainScreen(
                             adminInitialTab = 0
                             currentTab = NavItem.ADMIN
                         },
-                        onSignOut = onSignOut
+                        onSignOut = onSignOut,
+                        onAccountDeleted = onAccountDeleted
                     )
                 }
             }
@@ -575,7 +595,8 @@ private fun ScreenContent(
     onNavigateToIdeas: () -> Unit,
     onNavigateToFiles: () -> Unit,
     onNavigateToAdmin: () -> Unit = {},
-    onSignOut: () -> Unit
+    onSignOut: () -> Unit,
+    onAccountDeleted: () -> Unit = onSignOut
 ) {
     AnimatedContent(
         targetState = currentTab,
@@ -619,7 +640,8 @@ private fun ScreenContent(
                 updateManager = updateManager,
                 onShowUpdateDialog = onShowUpdateDialog,
                 onNavigateToAdmin = onNavigateToAdmin,
-                onSignOut = onSignOut
+                onSignOut = onSignOut,
+                onAccountDeleted = onAccountDeleted
             )
         }
     }

@@ -21,6 +21,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.DeleteForever
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Email
@@ -34,6 +35,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExposedDropdownMenuBox
@@ -86,6 +88,7 @@ fun ProfileScreen(
     onShowUpdateDialog: (com.example.update.AppReleaseInfo) -> Unit = {},
     onNavigateToAdmin: () -> Unit = {},
     onSignOut: () -> Unit,
+    onAccountDeleted: () -> Unit = onSignOut,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -94,6 +97,9 @@ fun ProfileScreen(
     val credentialManager = remember { CredentialManager.create(context) }
     var showEditDialog by remember { mutableStateOf(false) }
     var showSignOutConfirmation by remember { mutableStateOf(false) }
+    var showDeleteStep1 by remember { mutableStateOf(false) }
+    var showDeleteStep2 by remember { mutableStateOf(false) }
+    var isDeletingAccount by remember { mutableStateOf(false) }
     var realtimeNotifsEnabled by remember {
         mutableStateOf(TeamNotificationDispatcher.isRealtimeSyncEnabled(context))
     }
@@ -247,7 +253,7 @@ fun ProfileScreen(
                         color = MaterialTheme.colorScheme.onSurface
                     )
                     Text(
-                        text = "Olay gerçekleştiği anda bildirim almak için canlı bağlantıyı açık tutar",
+                        text = "Uygulama kapalıyken anında bildirim almak için isteğe bağlı canlı bağlantıyı açar",
                         fontSize = 11.sp,
                         color = ext.textSecondary,
                         lineHeight = 15.sp
@@ -615,12 +621,162 @@ fun ProfileScreen(
             )
         }
 
-        Spacer(modifier = Modifier.height(16.dp))
+        if (repository != null) {
+            TextButton(
+                onClick = { showDeleteStep1 = true },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(48.dp)
+                    .testTag("delete_own_account_button"),
+                colors = ButtonDefaults.textButtonColors(
+                    contentColor = ext.dangerText
+                )
+            ) {
+                Icon(
+                    imageVector = Icons.Default.DeleteForever,
+                    contentDescription = null,
+                    tint = ext.dangerText,
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(modifier = Modifier.width(6.dp))
+                Text(
+                    text = "Hesabımı Kalıcı Olarak Sil",
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = ext.dangerText
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
 
         Text(
             text = "BLACKSEA ROBOTICS Platformu • v${mgr.getCurrentVersionName()}",
             fontSize = 11.sp,
             color = ext.textMuted
+        )
+    }
+
+    if (showDeleteStep1) {
+        AlertDialog(
+            onDismissRequest = { showDeleteStep1 = false },
+            icon = {
+                Icon(
+                    imageVector = Icons.Default.DeleteForever,
+                    contentDescription = null,
+                    tint = ext.dangerText,
+                    modifier = Modifier.size(32.dp)
+                )
+            },
+            title = {
+                Text("Hesabınızı Silmek İstiyor musunuz?", fontWeight = FontWeight.Bold)
+            },
+            text = {
+                Text(
+                    "Hesabınız ve üyelik profiliniz sistemden silinecektir. Yanlışlıkla silmeyi önlemek için bir sonraki adımda tekrar onayınız istenecektir.",
+                    color = ext.textSecondary,
+                    fontSize = 13.sp,
+                    lineHeight = 19.sp
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showDeleteStep1 = false
+                        showDeleteStep2 = true
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = ext.dangerSolid,
+                        contentColor = Color.White
+                    ),
+                    modifier = Modifier.testTag("delete_own_account_step1_confirm")
+                ) {
+                    Text("Devam Et", fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteStep1 = false }) {
+                    Text("Vazgeç")
+                }
+            }
+        )
+    }
+
+    if (showDeleteStep2 && repository != null) {
+        AlertDialog(
+            onDismissRequest = { if (!isDeletingAccount) showDeleteStep2 = false },
+            icon = {
+                Icon(
+                    imageVector = Icons.Default.DeleteForever,
+                    contentDescription = null,
+                    tint = ext.dangerText,
+                    modifier = Modifier.size(34.dp)
+                )
+            },
+            title = {
+                Text(
+                    "Son Onay: Hesap Kalıcı Olarak Silinecek",
+                    fontWeight = FontWeight.Bold,
+                    color = ext.dangerText
+                )
+            },
+            text = {
+                Text(
+                    "Bu işlem geri alınamaz! Onayladığınızda Blacksea Robotics hesabınız kalıcı olarak silinecek ve oturumunuz kapatılacaktır. Emin misiniz?",
+                    color = ext.textSecondary,
+                    fontSize = 13.sp,
+                    lineHeight = 19.sp
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        isDeletingAccount = true
+                        scope.launch {
+                            try {
+                                repository.deleteOwnAccount()
+                                showDeleteStep2 = false
+                                Toast.makeText(context, "Hesabınız kalıcı olarak silindi.", Toast.LENGTH_LONG).show()
+                                onAccountDeleted()
+                            } catch (ce: CancellationException) {
+                                throw ce
+                            } catch (e: Exception) {
+                                Toast.makeText(
+                                    context,
+                                    sanitizeUserErrorMessage(e, "Hesap silinemedi. Lütfen tekrar deneyin."),
+                                    Toast.LENGTH_LONG
+                                ).show()
+                            } finally {
+                                isDeletingAccount = false
+                            }
+                        }
+                    },
+                    enabled = !isDeletingAccount,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = ext.dangerSolid,
+                        contentColor = Color.White
+                    ),
+                    modifier = Modifier.testTag("delete_own_account_step2_confirm")
+                ) {
+                    if (isDeletingAccount) {
+                        CircularProgressIndicator(
+                            color = Color.White,
+                            modifier = Modifier.size(18.dp),
+                            strokeWidth = 2.dp
+                        )
+                    } else {
+                        Text("Evet, Hesabımı Sil", fontWeight = FontWeight.Bold)
+                    }
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { showDeleteStep2 = false },
+                    enabled = !isDeletingAccount
+                ) {
+                    Text("İptal")
+                }
+            }
         )
     }
 

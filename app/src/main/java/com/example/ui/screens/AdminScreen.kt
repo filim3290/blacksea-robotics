@@ -16,9 +16,11 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
@@ -92,6 +94,7 @@ import com.example.util.sanitizeUserErrorMessage
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun AdminScreen(
     repository: BlackseaRepository,
@@ -221,24 +224,25 @@ fun AdminScreen(
                         key = { index, u -> "active_${u.userId.ifBlank { u.id }}_$index" }
                     ) { _, user ->
                         val protected = isProtectedUser(user)
+                        val targetUid = user.userId.ifBlank { user.id }
+                        val memberRoles = user.roles.ifEmpty { listOf(user.role) }.filter { it.isNotBlank() }.distinct()
                         Card(
                             modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(12.dp),
+                            shape = RoundedCornerShape(14.dp),
                             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
                             border = BorderStroke(1.dp, ext.cardBorder),
                             elevation = CardDefaults.cardElevation(defaultElevation = if (ext.isDark) 2.dp else 1.dp)
                         ) {
-                            Row(
+                            Column(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .padding(14.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.SpaceBetween
+                                verticalArrangement = Arrangement.spacedBy(10.dp)
                             ) {
                                 Row(
+                                    modifier = Modifier.fillMaxWidth(),
                                     verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                                    modifier = Modifier.weight(1f)
+                                    horizontalArrangement = Arrangement.spacedBy(12.dp)
                                 ) {
                                     Surface(
                                         shape = CircleShape,
@@ -260,64 +264,116 @@ fun AdminScreen(
                                             text = user.getFullName(),
                                             fontWeight = FontWeight.Bold,
                                             fontSize = 15.sp,
-                                            color = MaterialTheme.colorScheme.onSurface
+                                            color = MaterialTheme.colorScheme.onSurface,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
                                         )
                                         Text(
                                             text = "${user.email} • @${user.username.ifBlank { "bsr_uye" }}",
                                             fontSize = 11.sp,
-                                            color = ext.textMuted
+                                            color = ext.textMuted,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
                                         )
-                                        Spacer(modifier = Modifier.height(4.dp))
-                                        Row(
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                        ) {
-                                            TeamBadge(teamName = user.team)
-                                            UserRolesRow(roles = user.roles.ifEmpty { listOf(user.role) })
-                                        }
+                                    }
+
+                                    Surface(
+                                        shape = RoundedCornerShape(8.dp),
+                                        color = if (protected) ext.accentBlueContainer else ext.emeraldSolid.copy(alpha = 0.14f)
+                                    ) {
+                                        Text(
+                                            text = if (protected) "Korumalı" else "Aktif",
+                                            fontSize = 10.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = if (protected) ext.accentBlue else ext.emeraldText,
+                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                        )
                                     }
                                 }
 
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    IconButton(onClick = { memberToEdit = user }) {
+                                FlowRow(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    TeamBadge(teamName = user.team)
+                                    memberRoles.forEach { role ->
+                                        RoleBadge(role = role)
+                                    }
+                                }
+
+                                FlowRow(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
+                                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    OutlinedButton(
+                                        onClick = { memberToEdit = user },
+                                        shape = RoundedCornerShape(8.dp),
+                                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                                        modifier = Modifier.heightIn(min = 38.dp)
+                                    ) {
                                         Icon(
                                             imageVector = Icons.Default.Edit,
                                             contentDescription = "Rol ve Ekip Düzenle",
-                                            tint = ext.accentBlue
+                                            tint = ext.accentBlue,
+                                            modifier = Modifier.size(15.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(5.dp))
+                                        Text(
+                                            text = "Düzenle",
+                                            fontSize = 12.sp,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = ext.accentBlue
                                         )
                                     }
+
                                     if (!protected) {
-                                        IconButton(
+                                        OutlinedButton(
                                             onClick = { userToRevoke = user },
-                                            modifier = Modifier.testTag("revoke_user_${user.userId.ifBlank { user.id }}")
+                                            shape = RoundedCornerShape(8.dp),
+                                            border = BorderStroke(1.dp, ext.amberText.copy(alpha = 0.45f)),
+                                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                                            modifier = Modifier
+                                                .heightIn(min = 38.dp)
+                                                .testTag("revoke_user_$targetUid")
                                         ) {
                                             Icon(
                                                 imageVector = Icons.Default.Block,
                                                 contentDescription = "Erişimi Kaldır",
-                                                tint = ext.amberText
+                                                tint = ext.amberText,
+                                                modifier = Modifier.size(15.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(5.dp))
+                                            Text(
+                                                text = "Erişimi Kaldır",
+                                                fontSize = 12.sp,
+                                                fontWeight = FontWeight.SemiBold,
+                                                color = ext.amberText
                                             )
                                         }
-                                        IconButton(
+
+                                        OutlinedButton(
                                             onClick = { userToDelete = user },
-                                            modifier = Modifier.testTag("delete_user_${user.userId.ifBlank { user.id }}")
+                                            shape = RoundedCornerShape(8.dp),
+                                            border = BorderStroke(1.dp, ext.dangerText.copy(alpha = 0.45f)),
+                                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                                            modifier = Modifier
+                                                .heightIn(min = 38.dp)
+                                                .testTag("delete_user_$targetUid")
                                         ) {
                                             Icon(
                                                 imageVector = Icons.Default.Delete,
                                                 contentDescription = "Kullanıcıyı Sil",
-                                                tint = ext.dangerText
+                                                tint = ext.dangerText,
+                                                modifier = Modifier.size(15.dp)
                                             )
-                                        }
-                                    } else {
-                                        Surface(
-                                            shape = RoundedCornerShape(6.dp),
-                                            color = ext.accentBlueContainer
-                                        ) {
+                                            Spacer(modifier = Modifier.width(5.dp))
                                             Text(
-                                                text = "Korumalı",
-                                                fontSize = 10.sp,
-                                                fontWeight = FontWeight.Bold,
-                                                color = ext.accentBlue,
-                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
+                                                text = "Sil",
+                                                fontSize = 12.sp,
+                                                fontWeight = FontWeight.SemiBold,
+                                                color = ext.dangerText
                                             )
                                         }
                                     }
@@ -479,13 +535,54 @@ fun AdminScreen(
                             border = BorderStroke(1.dp, ext.cardBorder),
                             elevation = CardDefaults.cardElevation(defaultElevation = if (ext.isDark) 2.dp else 1.dp)
                         ) {
-                            Column(modifier = Modifier.padding(14.dp)) {
-                                Text(text = user.getFullName(), fontWeight = FontWeight.Bold, fontSize = 15.sp, color = MaterialTheme.colorScheme.onSurface)
-                                Text(text = "${user.email} • @${user.username}", fontSize = 12.sp, color = ext.textMuted)
-                                Spacer(modifier = Modifier.height(6.dp))
-                                TeamBadge(teamName = user.team)
-
-                                Spacer(modifier = Modifier.height(12.dp))
+                            Column(
+                                modifier = Modifier.padding(14.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = user.getFullName(),
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 15.sp,
+                                            color = MaterialTheme.colorScheme.onSurface,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                        Text(
+                                            text = "${user.email} • @${user.username.ifBlank { "bsr_uye" }}",
+                                            fontSize = 12.sp,
+                                            color = ext.textMuted,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+                                    Surface(
+                                        shape = RoundedCornerShape(8.dp),
+                                        color = PhoenixAmber.copy(alpha = 0.16f)
+                                    ) {
+                                        Text(
+                                            text = "Onay Bekliyor",
+                                            fontSize = 10.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = ext.amberText,
+                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                        )
+                                    }
+                                }
+                                FlowRow(
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    TeamBadge(teamName = user.team)
+                                    user.roles.filter { it.isNotBlank() }.distinct().forEach { role ->
+                                        RoleBadge(role = role)
+                                    }
+                                }
 
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),

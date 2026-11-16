@@ -41,11 +41,14 @@ class RealtimeNotificationService : Service() {
 
     companion object {
         private const val TAG = "RealtimeNotifService"
-        private const val FOREGROUND_NOTIFICATION_ID = 1099
+        private const val FOREGROUND_NOTIFICATION_ID = TeamNotificationDispatcher.FOREGROUND_SYNC_NOTIFICATION_ID
 
         fun startIfEligible(context: Context) {
             val appCtx = context.applicationContext
-            if (!TeamNotificationDispatcher.isRealtimeSyncEnabled(appCtx)) return
+            if (!TeamNotificationDispatcher.isRealtimeSyncEnabled(appCtx)) {
+                stop(appCtx)
+                return
+            }
             if (!TeamNotificationDispatcher.hasNotificationPermission(appCtx)) return
             if (Firebase.auth.currentUser == null) return
 
@@ -64,6 +67,7 @@ class RealtimeNotificationService : Service() {
             } catch (e: Exception) {
                 logDebugWarn(TAG, "Failed to stop RealtimeNotificationService", e)
             }
+            TeamNotificationDispatcher.cancelForegroundSyncNotification(appCtx)
         }
     }
 
@@ -154,6 +158,7 @@ class RealtimeNotificationService : Service() {
             .setContentText("Anlık takım bildirimleri aktif")
             .setPriority(NotificationCompat.PRIORITY_MIN)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
+            .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_DEFERRED)
             .setOngoing(true)
             .setSilent(true)
             .setShowWhen(false)

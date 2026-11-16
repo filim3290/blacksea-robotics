@@ -147,6 +147,7 @@ fun AppContent(
     val updateCheckMutex = remember { Mutex() }
     var availableUpdate by remember { mutableStateOf<AppReleaseInfo?>(null) }
     var showNotificationRationale by remember { mutableStateOf(false) }
+    var isSelfDeleting by remember { mutableStateOf(false) }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -167,17 +168,19 @@ fun AppContent(
     val lifecycleOwner = LocalLifecycleOwner.current
     val scope = rememberCoroutineScope()
 
-    suspend fun performUpdateCheckAndNotify(forceRefresh: Boolean = false) {
+    suspend fun performUpdateCheckAndNotify(forceRefresh: Boolean = false, notifyOs: Boolean = false) {
         updateCheckMutex.withLock {
             val result = updateManager.checkLatestReleaseDetailed(forceRefresh = forceRefresh)
             if (result is UpdateCheckResult.UpdateAvailable && result.isSignatureCompatible) {
                 val update = result.release
                 availableUpdate = update
-                TeamNotificationDispatcher.dispatchUpdateNotificationIfNeeded(
-                    context = context,
-                    updateManager = updateManager,
-                    release = update
-                )
+                if (notifyOs) {
+                    TeamNotificationDispatcher.dispatchUpdateNotificationIfNeeded(
+                        context = context,
+                        updateManager = updateManager,
+                        release = update
+                    )
+                }
             }
         }
     }
@@ -192,6 +195,9 @@ fun AppContent(
 
     // Check updates on app launch and listen to Firestore real-time updates
     LaunchedEffect(Unit) {
+        if (!TeamNotificationDispatcher.isRealtimeSyncEnabled(context)) {
+            RealtimeNotificationService.stop(context)
+        }
         val enabled = NotificationManagerCompat.from(context).areNotificationsEnabled()
         if (!enabled) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -201,13 +207,16 @@ fun AppContent(
             }
         }
 
-        performUpdateCheckAndNotify()
+        performUpdateCheckAndNotify(forceRefresh = false, notifyOs = false)
 
         // Real-time listener for Firestore app_config/latest_update
         try {
+            var isInitialConfigEmission = true
             repository.db.collection("app_config").document("latest_update")
                 .snapshots()
                 .collect { doc ->
+                    val shouldNotifyOs = !isInitialConfigEmission
+                    isInitialConfigEmission = false
                     if (doc.exists()) {
                         val vCode = doc.getLong("versionCode")?.toInt() ?: 0
                         if (vCode > updateManager.getCurrentVersionCode()) {
@@ -230,11 +239,13 @@ fun AppContent(
                                 )
                                 if (updateManager.isReleaseSignatureCompatible(release)) {
                                     availableUpdate = release
-                                    TeamNotificationDispatcher.dispatchUpdateNotificationIfNeeded(
-                                        context = context,
-                                        updateManager = updateManager,
-                                        release = release
-                                    )
+                                    if (shouldNotifyOs) {
+                                        TeamNotificationDispatcher.dispatchUpdateNotificationIfNeeded(
+                                            context = context,
+                                            updateManager = updateManager,
+                                            release = release
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -251,9 +262,10 @@ fun AppContent(
     LaunchedEffect(currentUser?.uid, isAuthCompleted) {
         val activeUid = currentUser?.uid
         if (activeUid != null && isAuthCompleted) {
+            isSelfDeleting = false
             BackgroundNotificationWorker.schedulePeriodicSync(context)
             RealtimeNotificationService.startIfEligible(context)
-            performUpdateCheckAndNotify()
+            performUpdateCheckAndNotify(forceRefresh = false, notifyOs = false)
         }
     }
 
@@ -270,13 +282,13 @@ fun AppContent(
     val activeProfile = (profileState as? UserProfileLoadState.Found)?.profile
     val activeIsManager = activeProfile?.isManagerAccount() ?: false
 
-    LaunchedEffect(authenticatedUid, profileState) {
+    LaunchedEffect(authenticatedUid, profileState, isSelfDeleting) {
         if (authenticatedUid == null) return@LaunchedEffect
         when (val state = profileState) {
             is UserProfileLoadState.Loading -> Unit
             is UserProfileLoadState.Missing -> {
                 val isFounderEmail = currentUser?.email.equals("filim3290@gmail.com", ignoreCase = true)
-                if (!isFounderEmail) {
+                if (!isFounderEmail && !isSelfDeleting) {
                     BackgroundNotificationWorker.cancelPeriodicSync(context)
                     RealtimeNotificationService.stop(context)
                     isAuthCompleted = false
@@ -335,18 +347,39 @@ fun AppContent(
         }
 
         var hasHandledInitialSnapshot = false
+        val sessionStartMs = System.currentTimeMillis()
         repository.observeNotifications(
             userId = uid,
             isManager = activeIsManager,
             userTeam = profile.team,
             userCreatedAtMs = effectiveJoinMs
         ).collect { filteredNotifications ->
-            if (!hasHandledInitialSnapshot) {
-                TeamNotificationDispatcher.syncBaselineSilently(
-                    context = context,
-                    userId = uid,
-                    notifications = filteredNotifications
-                )
+            val withinInitialHydration = !hasHandledInitialSnapshot ||
+                (System.currentTimeMillis() - sessionStartMs) < 2_500L
+            if (withinInitialHydration) {
+                val liveNewDuringHydration = filteredNotifications.filter { notif ->
+                    val ts = notif.createdAt?.toDate()?.time
+                    ts != null && ts >= sessionStartMs
+                }
+                val historicalDuringHydration = filteredNotifications.filter { notif ->
+                    val ts = notif.createdAt?.toDate()?.time
+                    ts == null || ts < sessionStartMs
+                }
+                if (historicalDuringHydration.isNotEmpty() || !hasHandledInitialSnapshot) {
+                    TeamNotificationDispatcher.syncBaselineSilently(
+                        context = context,
+                        userId = uid,
+                        notifications = historicalDuringHydration
+                    )
+                }
+                if (liveNewDuringHydration.isNotEmpty()) {
+                    TeamNotificationDispatcher.processNotifications(
+                        context = context,
+                        userId = uid,
+                        notifications = liveNewDuringHydration,
+                        userCreatedAtMs = effectiveJoinMs
+                    )
+                }
                 hasHandledInitialSnapshot = true
             } else {
                 TeamNotificationDispatcher.processNotifications(
@@ -475,6 +508,15 @@ fun AppContent(
                 onSignOut = {
                     RealtimeNotificationService.stop(context)
                     BackgroundNotificationWorker.cancelPeriodicSync(context)
+                    Firebase.auth.signOut()
+                    currentUser = null
+                    isAuthCompleted = false
+                },
+                onAccountDeleted = {
+                    isSelfDeleting = true
+                    RealtimeNotificationService.stop(context)
+                    BackgroundNotificationWorker.cancelPeriodicSync(context)
+                    TeamNotificationDispatcher.clearUserSyncState(context, uid)
                     Firebase.auth.signOut()
                     currentUser = null
                     isAuthCompleted = false

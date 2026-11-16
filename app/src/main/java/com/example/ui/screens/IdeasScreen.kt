@@ -14,6 +14,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -21,6 +23,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -107,7 +111,7 @@ import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Locale
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun IdeasScreen(
     repository: BlackseaRepository,
@@ -307,8 +311,8 @@ fun IdeasScreen(
                                 Spacer(modifier = Modifier.height(4.dp))
 
                                 // Author Real Name & Roles
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
+                                FlowRow(
+                                    verticalArrangement = Arrangement.spacedBy(4.dp),
                                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                                     modifier = Modifier.fillMaxWidth()
                                 ) {
@@ -316,7 +320,8 @@ fun IdeasScreen(
                                         text = idea.authorName,
                                         fontSize = 12.sp,
                                         fontWeight = FontWeight.Bold,
-                                        color = ext.accentBlue
+                                        color = ext.accentBlue,
+                                        modifier = Modifier.align(Alignment.CenterVertically)
                                     )
                                     if (idea.authorRoles.isNotEmpty()) {
                                         UserRolesRow(roles = idea.authorRoles.take(2))
@@ -325,7 +330,8 @@ fun IdeasScreen(
                                         Text(
                                             text = "· $dateFormatted",
                                             fontSize = 11.sp,
-                                            color = ext.textMuted
+                                            color = ext.textMuted,
+                                            modifier = Modifier.align(Alignment.CenterVertically)
                                         )
                                     }
                                 }
@@ -1016,6 +1022,8 @@ fun IdeaCommentsBottomSheet(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
+                .navigationBarsPadding()
+                .imePadding()
                 .padding(16.dp)
         ) {
             Text(

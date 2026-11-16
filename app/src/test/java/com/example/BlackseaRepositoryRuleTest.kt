@@ -261,4 +261,120 @@ class BlackseaRepositoryRuleTest : FirestoreEmulatorTestBase() {
     val deletedProfile = withTimeout(5000L) { repository.getUserProfile(memberUid) }
     assertEquals(null, deletedProfile)
   }
+
+  @Test
+  fun testFirstUserInEmptySystemBecomesAutoAdminAndCanDeleteOwnAccount() = runBlocking {
+    // Clear emulator database so users collection is guaranteed empty regardless of test order
+    val clearUrl = java.net.URL(
+      "http://$EMULATOR_HOST:$FIRESTORE_PORT/emulator/v1/projects/$PROJECT_ID/databases/$databaseId/documents"
+    )
+    val conn = (clearUrl.openConnection() as java.net.HttpURLConnection).apply {
+      requestMethod = "DELETE"
+      connectTimeout = 3000
+      readTimeout = 3000
+    }
+    assertEquals(200, conn.responseCode)
+    conn.disconnect()
+
+    val repository = BlackseaRepository(firestore)
+    val firstEmail = "first_user_${System.nanoTime()}@blacksea.test"
+    val firstUid = signInTestUser(firstEmail)
+
+    assertTrue(
+      "Empty users collection should detect first user eligibility",
+      withTimeout(5000L) { repository.isSystemEmptyForNewUser(excludeUserId = firstUid) }
+    )
+
+    val created = withTimeout(5000L) {
+      repository.createOrUpdateUserProfile(
+        userId = firstUid,
+        firstName = "İlk",
+        lastName = "Kurucu",
+        username = "ilkkurucu",
+        email = firstEmail,
+        team = "Yazılım Ekibi",
+        roles = listOf("Yazılım Üyesi"),
+        photoUrl = ""
+      )
+    }
+
+    assertEquals(UserStatus.ACTIVE.value, created.status)
+    assertTrue("First user must receive super admin privilege", created.isSuperAdmin)
+    assertTrue("First user must receive Yönetici role", created.roles.contains(UserRole.ADMIN.displayName))
+    assertTrue("First user must receive active access immediately", UserStatus.isActive(created.status))
+
+    // First user can immediately send room messages without waiting for approval
+    withTimeout(5000L) {
+      repository.sendMessage(
+        roomId = "general",
+        text = "İlk yönetici olarak sistem açıldı.",
+        senderName = "İlk Kurucu",
+        senderTeam = "Yazılım Ekibi"
+      )
+    }
+
+    // Create a personal notification targeting this user, then verify deleteOwnAccount cleans both
+    withTimeout(5000L) {
+      repository.createNotification(
+        recipientUserId = firstUid,
+        title = "Hoş Geldiniz",
+        message = "Kişisel bildirim",
+        type = "member_approved",
+        targetId = firstUid,
+        senderId = "system_admin"
+      )
+    }
+
+    withTimeout(5000L) {
+      repository.deleteOwnAccount()
+    }
+
+    // Verify user document is deleted (re-authenticate as same email because deleteOwnAccount may delete auth user)
+    val checkUid = signInTestUser(firstEmail)
+    val afterDeleteProfile = withTimeout(5000L) { repository.getUserProfile(firstUid) }
+    assertEquals(null, afterDeleteProfile)
+    assertTrue(checkUid.isNotBlank())
+  }
+
+  @Test
+  fun testLegacyUserWithoutStatusFieldCanSendAndObserveMessages() = runBlocking {
+    val legacyEmail = "legacy_${System.nanoTime()}@blacksea.test"
+    val legacyUid = signInTestUser(legacyEmail)
+    val repository = BlackseaRepository(firestore)
+
+    // Write a legacy-shaped user document without 'status' field (as older app versions did)
+    withTimeout(5000L) {
+      val legacyPayload = mapOf(
+        "userId" to legacyUid,
+        "firstName" to "Eski",
+        "lastName" to "Sürüm",
+        "username" to "eskisurum",
+        "displayName" to "Eski Sürüm",
+        "email" to legacyEmail,
+        "team" to "Mekanik Ekibi",
+        "role" to "Mekanik Üyesi",
+        "roles" to listOf("Mekanik Üyesi")
+      )
+      firestore.collection("users").document(legacyUid).set(legacyPayload).let { task ->
+        com.google.android.gms.tasks.Tasks.await(task)
+      }
+    }
+
+    val loaded = withTimeout(5000L) { repository.getUserProfile(legacyUid) }
+    assertNotNull(loaded)
+
+    withTimeout(5000L) {
+      repository.sendMessage(
+        roomId = "mechanic",
+        text = "Eski sürümden gönderilen mesaj",
+        senderName = "Eski Sürüm",
+        senderTeam = "Mekanik Ekibi"
+      )
+    }
+
+    val messages = withTimeout(5000L) {
+      repository.observeMessages("mechanic").first { list -> list.any { it.senderId == legacyUid } }
+    }
+    assertTrue("Legacy user message must be readable and writable", messages.any { it.senderId == legacyUid })
+  }
 }

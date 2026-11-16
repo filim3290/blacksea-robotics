@@ -7,6 +7,7 @@ import android.widget.Toast
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -61,6 +62,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.R
@@ -208,12 +210,13 @@ fun TeamBadge(
     Surface(
         modifier = modifier,
         shape = RoundedCornerShape(8.dp),
-        color = bgColor
+        color = bgColor,
+        border = BorderStroke(1.dp, textColor.copy(alpha = 0.22f))
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp),
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(3.dp)
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
         ) {
             Icon(
                 imageVector = icon,
@@ -224,8 +227,11 @@ fun TeamBadge(
             Text(
                 text = teamName,
                 color = textColor,
-                fontSize = 10.sp,
-                fontWeight = FontWeight.SemiBold
+                fontSize = 11.sp,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                softWrap = false,
+                overflow = TextOverflow.Ellipsis
             )
         }
     }
@@ -237,7 +243,7 @@ fun RoleBadge(
     modifier: Modifier = Modifier
 ) {
     val isDark = MaterialTheme.blackseaColors.isDark
-    val alpha = if (isDark) 0.24f else 0.14f
+    val alpha = if (isDark) 0.22f else 0.13f
     val (bgColor, textColor) = when (role) {
         "Yetkili Öğretmen" -> Pair(Color(0xFF8B5CF6).copy(alpha = alpha), if (isDark) Color(0xFFC4B5FD) else Color(0xFF6D28D9))
         "Takım Kaptanı" -> Pair(PhoenixAmber.copy(alpha = alpha), if (isDark) Color(0xFFFCD34D) else Color(0xFFB45309))
@@ -255,27 +261,31 @@ fun RoleBadge(
 
     Surface(
         modifier = modifier,
-        shape = RoundedCornerShape(6.dp),
-        color = bgColor
+        shape = RoundedCornerShape(8.dp),
+        color = bgColor,
+        border = BorderStroke(1.dp, textColor.copy(alpha = 0.22f))
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(2.dp)
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
         ) {
             if (role in listOf("Yetkili Öğretmen", "Takım Kaptanı", "Yönetici")) {
                 Icon(
                     imageVector = Icons.Default.Star,
                     contentDescription = null,
                     tint = textColor,
-                    modifier = Modifier.size(10.dp)
+                    modifier = Modifier.size(11.dp)
                 )
             }
             Text(
                 text = role,
                 color = textColor,
-                fontSize = 10.sp,
-                fontWeight = FontWeight.Bold
+                fontSize = 11.sp,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                softWrap = false,
+                overflow = TextOverflow.Ellipsis
             )
         }
     }
@@ -289,8 +299,8 @@ fun UserRolesRow(
 ) {
     FlowRow(
         modifier = modifier,
-        horizontalArrangement = Arrangement.spacedBy(4.dp),
-        verticalArrangement = Arrangement.spacedBy(3.dp)
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp)
     ) {
         roles.forEach { role ->
             RoleBadge(role = role)

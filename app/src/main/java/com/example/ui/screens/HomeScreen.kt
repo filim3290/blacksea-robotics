@@ -5,6 +5,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -59,6 +61,7 @@ import com.example.ui.theme.ElectricBlue
 import com.example.ui.theme.PhoenixAmber
 import com.example.ui.theme.blackseaColors
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun HomeScreen(
     repository: BlackseaRepository,
@@ -113,10 +116,10 @@ fun HomeScreen(
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.onSurface
                     )
-                    Spacer(modifier = Modifier.height(6.dp))
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    Spacer(modifier = Modifier.height(8.dp))
+                    FlowRow(
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         TeamBadge(teamName = currentUserProfile?.team ?: "Yazılım Ekibi")
                         UserRolesRow(roles = currentUserProfile?.roles ?: listOf(currentUserProfile?.role ?: "Üye"))

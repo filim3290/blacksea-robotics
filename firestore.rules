@@ -13,8 +13,11 @@ service cloud.firestore {
     function isActiveUser() {
       return isAuthenticated() && (
         request.auth.token.email == "filim3290@gmail.com" ||
-        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
-         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.status in ['active', 'approved'])
+        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && (
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isSuperAdmin == true ||
+          !('status' in get(/databases/$(database)/documents/users/$(request.auth.uid)).data) ||
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.status in ['active', 'approved', 'ACTIVE', 'APPROVED']
+        ))
       );
     }
 
@@ -36,8 +39,8 @@ service cloud.firestore {
     // --- USERS ---
     match /users/{userId} {
       allow read: if isAuthenticated();
-      // First user creation / onboarding
-      allow create: if isOwner(userId) && request.resource.data.userId == request.auth.uid;
+      // First user creation / onboarding (backward-compatible with older client payloads)
+      allow create: if isOwner(userId) && (!('userId' in request.resource.data) || request.resource.data.userId == request.auth.uid);
       // Active managers can update roles, status, team, and revoke access.
       // Normal users can update their profile without changing roles, role, or superAdmin.
       // Rejected, revoked, or pending users can re-apply (transitioning status to 'pending').
@@ -51,10 +54,13 @@ service cloud.firestore {
          (!('roles' in request.resource.data) || request.resource.data.roles == resource.data.roles) &&
          (!('isSuperAdmin' in request.resource.data) || request.resource.data.isSuperAdmin == resource.data.isSuperAdmin))
       );
-      allow delete: if isManager() &&
+      // Any user can permanently delete their own account; managers can delete non-self, non-founder accounts.
+      allow delete: if isOwner(userId) || (
+        isManager() &&
         isActiveUser() &&
         userId != request.auth.uid &&
-        resource.data.email != "filim3290@gmail.com";
+        resource.data.email != "filim3290@gmail.com"
+      );
     }
 
     // --- ROOMS (Open to active team members) ---
@@ -113,10 +119,10 @@ service cloud.firestore {
         request.resource.data.senderId == request.auth.uid
       );
       allow update: if isActiveUser();
-      allow delete: if isActiveUser() && (
-        resource.data.recipientUserId == request.auth.uid ||
-        isManager()
-      );
+      allow delete: if (
+        isAuthenticated() &&
+        resource.data.recipientUserId == request.auth.uid
+      ) || (isActiveUser() && isManager());
     }
 
     // --- APP CONFIG & UPDATES ---

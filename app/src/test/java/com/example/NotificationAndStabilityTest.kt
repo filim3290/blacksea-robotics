@@ -392,4 +392,24 @@ class NotificationAndStabilityTest {
         assertSame(activity, activity.findActivity())
         assertSame(activity, wrappedTwice.findActivity())
     }
+
+    @Test
+    fun `realtime sync background service defaults to disabled on fresh context and toggles cleanly`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        context.getSharedPreferences("bsr_notif_dispatch_prefs", Context.MODE_PRIVATE)
+            .edit()
+            .clear()
+            .commit()
+
+        assertFalse(
+            "Background sync foreground notification must be opt-in (false) by default",
+            TeamNotificationDispatcher.isRealtimeSyncEnabled(context)
+        )
+
+        TeamNotificationDispatcher.setRealtimeSyncEnabled(context, true)
+        assertTrue(TeamNotificationDispatcher.isRealtimeSyncEnabled(context))
+
+        TeamNotificationDispatcher.setRealtimeSyncEnabled(context, false)
+        assertFalse(TeamNotificationDispatcher.isRealtimeSyncEnabled(context))
+    }
 }

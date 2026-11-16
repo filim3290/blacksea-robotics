@@ -195,11 +195,57 @@ test("Active manager can revoke or delete non-self/non-founder users while norma
   // Normal user cannot delete another user
   await assertFails(memberDb.collection("users").doc("mgr1").delete());
 
-  // Manager cannot delete self or founder
-  await assertFails(mgrDb.collection("users").doc("mgr1").delete());
+  // Manager cannot delete founder
   await assertFails(mgrDb.collection("users").doc("founder1").delete());
 
   // Manager can revoke and delete regular member
   await assertSucceeds(mgrDb.collection("users").doc("member1").update({ status: "revoked" }));
   await assertSucceeds(mgrDb.collection("users").doc("member1").delete());
+});
+
+test("Any user can delete own account and personal notifications", async () => {
+  await testEnv.withSecurityRulesDisabled(async (ctx) => {
+    await ctx.firestore().collection("users").doc("self_u").set({
+      userId: "self_u",
+      email: "self@example.com",
+      role: "Yazılım Üyesi",
+      roles: ["Yazılım Üyesi"],
+      status: "approved",
+      isSuperAdmin: false
+    });
+    await ctx.firestore().collection("notifications").doc("self_n1").set({
+      recipientUserId: "self_u",
+      type: "member_approved",
+      title: "Onay",
+      message: "Hoş geldiniz"
+    });
+  });
+
+  const selfDb = testEnv.authenticatedContext("self_u", { email: "self@example.com" }).firestore();
+  await assertSucceeds(selfDb.collection("notifications").doc("self_n1").delete());
+  await assertSucceeds(selfDb.collection("users").doc("self_u").delete());
+});
+
+test("Legacy user document without status field can read and send messages", async () => {
+  await testEnv.withSecurityRulesDisabled(async (ctx) => {
+    await ctx.firestore().collection("users").doc("legacy_u").set({
+      userId: "legacy_u",
+      displayName: "Eski Sürüm Üye",
+      email: "legacy@example.com",
+      team: "Mekanik Ekibi",
+      role: "Mekanik Üyesi"
+    });
+  });
+
+  const legacyDb = testEnv.authenticatedContext("legacy_u", { email: "legacy@example.com" }).firestore();
+  await assertSucceeds(legacyDb.collection("rooms").doc("general").collection("messages").get());
+  await assertSucceeds(
+    legacyDb.collection("rooms").doc("general").collection("messages").doc("legacy_msg").set({
+      roomId: "general",
+      senderId: "legacy_u",
+      senderName: "Eski Sürüm Üye",
+      senderTeam: "Mekanik Ekibi",
+      text: "Eski sürümden mesaj!"
+    })
+  );
 });

@@ -19,8 +19,10 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -32,12 +34,15 @@ import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.DeleteForever
 import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.ExitToApp
 import androidx.compose.material.icons.filled.HourglassTop
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Security
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -245,6 +250,10 @@ fun AuthScreen(
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var userProfile by remember { mutableStateOf<UserProfile?>(null) }
     var checkingProfile by remember { mutableStateOf(false) }
+    var isFirstSystemAdmin by remember { mutableStateOf(false) }
+    var showDeleteStep1 by remember { mutableStateOf(false) }
+    var showDeleteStep2 by remember { mutableStateOf(false) }
+    var isDeletingAccount by remember { mutableStateOf(false) }
 
     // Real Identity Form Inputs
     var firstName by remember { mutableStateOf("") }
@@ -261,6 +270,16 @@ fun AuthScreen(
         Firebase.auth.addAuthStateListener(listener)
         onDispose {
             Firebase.auth.removeAuthStateListener(listener)
+        }
+    }
+
+    LaunchedEffect(authUser?.uid) {
+        val currentUid = authUser?.uid
+        isFirstSystemAdmin = if (currentUid == null) {
+            false
+        } else {
+            authUser?.email.equals("filim3290@gmail.com", ignoreCase = true) ||
+                repository.isSystemEmptyForNewUser(excludeUserId = currentUid)
         }
     }
 
@@ -288,7 +307,8 @@ fun AuthScreen(
                     }
                     username = (authUser?.email?.substringBefore("@") ?: "").lowercase()
                 } else {
-                    val isSuperAdmin = authUser?.email.equals("filim3290@gmail.com", ignoreCase = true)
+                    val isSuperAdmin = profile.isSuperAdmin ||
+                        authUser?.email.equals("filim3290@gmail.com", ignoreCase = true)
                     // If approved or active, enter the main app!
                     if (UserStatus.isActive(profile.status) || isSuperAdmin) {
                         onAuthSuccess()
@@ -315,6 +335,8 @@ fun AuthScreen(
             .background(
                 Brush.verticalGradient(colors = ext.authGradientColors)
             )
+            .systemBarsPadding()
+            .imePadding()
             .padding(24.dp)
             .testTag("auth_screen"),
         contentAlignment = Alignment.Center
@@ -651,6 +673,37 @@ fun AuthScreen(
                             }
                         }
 
+                        if (isFirstSystemAdmin) {
+                            Surface(
+                                shape = RoundedCornerShape(10.dp),
+                                color = ext.emeraldSolid.copy(alpha = 0.14f),
+                                border = BorderStroke(1.dp, ext.emeraldText.copy(alpha = 0.35f)),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(bottom = 12.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(10.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Security,
+                                        contentDescription = null,
+                                        tint = ext.emeraldText,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                    Text(
+                                        text = "Sistemde başka kullanıcı yok. İlk kullanıcı olarak otomatik Yönetici yetkisiyle doğrudan giriş yapacaksınız.",
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = ext.emeraldText,
+                                        lineHeight = 15.sp
+                                    )
+                                }
+                            }
+                        }
+
                         if (errorMessage != null) {
                             Spacer(modifier = Modifier.height(10.dp))
                             Text(
@@ -695,7 +748,8 @@ fun AuthScreen(
                                         )
                                         TeamNotificationDispatcher.recordUserJoinTimestampIfMissing(context, uid)
 
-                                        val isSuperAdmin = email.equals("filim3290@gmail.com", ignoreCase = true)
+                                        val isSuperAdmin = createdProfile.isSuperAdmin ||
+                                            email.equals("filim3290@gmail.com", ignoreCase = true)
                                         if (isSuperAdmin || UserStatus.isActive(createdProfile.status)) {
                                             try {
                                                 repository.ensureDefaultRoomsExist()
@@ -732,7 +786,11 @@ fun AuthScreen(
                             if (isLoading) {
                                 CircularProgressIndicator(color = Color.White, modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
                             } else {
-                                Text("Ekip Profilini Oluştur ve Başvur", fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                                Text(
+                                    text = if (isFirstSystemAdmin) "Yönetici Olarak Başlat" else "Ekip Profilini Oluştur ve Başvur",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 15.sp
+                                )
                             }
                         }
 
@@ -895,6 +953,15 @@ fun AuthScreen(
                             Spacer(modifier = Modifier.width(6.dp))
                             Text("Farklı Hesapla Giriş Yap / Çıkış")
                         }
+
+                        TextButton(
+                            onClick = { showDeleteStep1 = true },
+                            colors = ButtonDefaults.textButtonColors(contentColor = ext.dangerText)
+                        ) {
+                            Icon(imageVector = Icons.Default.DeleteForever, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Hesabımı Kalıcı Olarak Sil", fontSize = 12.sp)
+                        }
                     }
                 }
             } else if (UserStatus.isRevoked(userProfile?.status)) {
@@ -1003,6 +1070,15 @@ fun AuthScreen(
                             Spacer(modifier = Modifier.width(6.dp))
                             Text("Farklı Bir Hesapla Giriş Yap")
                         }
+
+                        TextButton(
+                            onClick = { showDeleteStep1 = true },
+                            colors = ButtonDefaults.textButtonColors(contentColor = ext.dangerText)
+                        ) {
+                            Icon(imageVector = Icons.Default.DeleteForever, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Hesabımı Kalıcı Olarak Sil", fontSize = 12.sp)
+                        }
                     }
                 }
             } else if (UserStatus.isRejected(userProfile?.status)) {
@@ -1108,6 +1184,15 @@ fun AuthScreen(
                             Spacer(modifier = Modifier.width(6.dp))
                             Text("Farklı Bir Hesapla Giriş Yap")
                         }
+
+                        TextButton(
+                            onClick = { showDeleteStep1 = true },
+                            colors = ButtonDefaults.textButtonColors(contentColor = ext.dangerText)
+                        ) {
+                            Icon(imageVector = Icons.Default.DeleteForever, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Hesabımı Kalıcı Olarak Sil", fontSize = 12.sp)
+                        }
                     }
                 }
             } else {
@@ -1117,5 +1202,128 @@ fun AuthScreen(
                 }
             }
         }
+    }
+
+    if (showDeleteStep1) {
+        AlertDialog(
+            onDismissRequest = { showDeleteStep1 = false },
+            icon = {
+                Icon(
+                    imageVector = Icons.Default.DeleteForever,
+                    contentDescription = null,
+                    tint = ext.dangerText,
+                    modifier = Modifier.size(32.dp)
+                )
+            },
+            title = {
+                Text("Hesabınızı Silmek İstiyor musunuz?", fontWeight = FontWeight.Bold)
+            },
+            text = {
+                Text(
+                    "Hesabınız ve başvuru bilgileriniz silinecektir. Yanlışlıkla silmeyi önlemek için bir sonraki adımda tekrar onayınız istenecektir.",
+                    color = ext.textSecondary,
+                    fontSize = 13.sp,
+                    lineHeight = 19.sp
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showDeleteStep1 = false
+                        showDeleteStep2 = true
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = ext.dangerSolid,
+                        contentColor = Color.White
+                    )
+                ) {
+                    Text("Devam Et", fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteStep1 = false }) {
+                    Text("Vazgeç")
+                }
+            }
+        )
+    }
+
+    if (showDeleteStep2) {
+        AlertDialog(
+            onDismissRequest = { if (!isDeletingAccount) showDeleteStep2 = false },
+            icon = {
+                Icon(
+                    imageVector = Icons.Default.DeleteForever,
+                    contentDescription = null,
+                    tint = ext.dangerText,
+                    modifier = Modifier.size(34.dp)
+                )
+            },
+            title = {
+                Text("Son Onay: Hesap Kalıcı Olarak Silinecek", fontWeight = FontWeight.Bold, color = ext.dangerText)
+            },
+            text = {
+                Text(
+                    "Bu işlem geri alınamaz! Onayladığınızda hesabınız kalıcı olarak silinecek ve giriş ekranına döndürüleceksiniz.",
+                    color = ext.textSecondary,
+                    fontSize = 13.sp,
+                    lineHeight = 19.sp
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val uid = authUser?.uid ?: return@Button
+                        isDeletingAccount = true
+                        scope.launch {
+                            try {
+                                repository.deleteOwnAccount()
+                                TeamNotificationDispatcher.clearUserSyncState(context, uid)
+                                showDeleteStep2 = false
+                                appSignOut(credentialManager, scope) {
+                                    authUser = null
+                                    userProfile = null
+                                    checkingProfile = false
+                                    Toast.makeText(context, "Hesabınız kalıcı olarak silindi.", Toast.LENGTH_LONG).show()
+                                }
+                            } catch (ce: CancellationException) {
+                                throw ce
+                            } catch (e: Exception) {
+                                Toast.makeText(
+                                    context,
+                                    sanitizeUserErrorMessage(e, "Hesap silinemedi. Lütfen tekrar deneyin."),
+                                    Toast.LENGTH_LONG
+                                ).show()
+                            } finally {
+                                isDeletingAccount = false
+                            }
+                        }
+                    },
+                    enabled = !isDeletingAccount,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = ext.dangerSolid,
+                        contentColor = Color.White
+                    )
+                ) {
+                    if (isDeletingAccount) {
+                        CircularProgressIndicator(
+                            color = Color.White,
+                            modifier = Modifier.size(18.dp),
+                            strokeWidth = 2.dp
+                        )
+                    } else {
+                        Text("Evet, Hesabımı Sil", fontWeight = FontWeight.Bold)
+                    }
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { showDeleteStep2 = false },
+                    enabled = !isDeletingAccount
+                ) {
+                    Text("İptal")
+                }
+            }
+        )
     }
 }

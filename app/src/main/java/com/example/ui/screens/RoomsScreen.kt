@@ -14,11 +14,15 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -72,6 +76,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -228,8 +233,9 @@ fun RoomsScreen(
         if (uri != null) handlePickedUri(uri)
     }
 
-    // Auto scroll to bottom when new message arrives
-    LaunchedEffect(messages.size) {
+    // Auto scroll to bottom when new message arrives or keyboard opens
+    val isKeyboardVisible = WindowInsets.ime.getBottom(LocalDensity.current) > 0
+    LaunchedEffect(messages.size, isKeyboardVisible) {
         if (messages.isNotEmpty()) {
             listState.animateScrollToItem(messages.size - 1)
         }
@@ -928,6 +934,7 @@ fun RoomsScreen(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun MessageItemBubble(
     message: ChatMessage,
@@ -951,16 +958,18 @@ fun MessageItemBubble(
         horizontalAlignment = if (isMyMessage) Alignment.End else Alignment.Start
     ) {
         // Sender header with Real Name + Roles
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
+        FlowRow(
+            verticalArrangement = Arrangement.spacedBy(4.dp),
             horizontalArrangement = Arrangement.spacedBy(6.dp),
-            modifier = Modifier.padding(bottom = 2.dp)
+            modifier = Modifier.padding(bottom = 4.dp)
         ) {
             if (!isMyMessage) {
                 Surface(
                     shape = CircleShape,
                     color = ElectricBlue.copy(alpha = 0.2f),
-                    modifier = Modifier.size(26.dp)
+                    modifier = Modifier
+                        .size(26.dp)
+                        .align(Alignment.CenterVertically)
                 ) {
                     Box(contentAlignment = Alignment.Center) {
                         Text(
@@ -975,7 +984,10 @@ fun MessageItemBubble(
                     text = message.senderName,
                     fontSize = 13.sp,
                     fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onSurface
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.align(Alignment.CenterVertically)
                 )
                 TeamBadge(teamName = message.senderTeam)
             }
