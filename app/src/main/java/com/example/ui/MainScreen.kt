@@ -202,11 +202,20 @@ fun MainScreen(
             )
         }
     }.collectAsState(initial = emptyList())
+    val visibleNotifications = remember(notifications, updateManager) {
+        notifications.filterNot { notif ->
+            updateManager?.isNotificationUpdateObsolete(
+                type = notif.type,
+                targetId = notif.targetId,
+                message = notif.message
+            ) == true
+        }
+    }
     var locallyReadIds by remember(currentUserId) { mutableStateOf(setOf<String>()) }
     var readUpdateTag by remember(currentUserId) { mutableStateOf<String?>(null) }
     val hasUnreadUpdate = availableUpdate != null && readUpdateTag != availableUpdate.tagName
-    val unreadNotificationsCount = remember(notifications, locallyReadIds, hasUnreadUpdate) {
-        notifications.count { notif ->
+    val unreadNotificationsCount = remember(visibleNotifications, locallyReadIds, hasUnreadUpdate) {
+        visibleNotifications.count { notif ->
             !notif.isReadBy(currentUserId) && !locallyReadIds.contains(notif.id)
         } + if (hasUnreadUpdate) 1 else 0
     }
@@ -549,7 +558,7 @@ fun MainScreen(
 
         if (showNotificationsDialog) {
             TeamNotificationsDialog(
-                notifications = notifications,
+                notifications = visibleNotifications,
                 currentUserId = currentUserId,
                 locallyReadIds = locallyReadIds,
                 availableUpdate = availableUpdate,
@@ -562,7 +571,7 @@ fun MainScreen(
                 onDismiss = { showNotificationsDialog = false },
                 onMarkAsRead = { notifId ->
                     locallyReadIds = locallyReadIds + notifId
-                    val target = notifications.firstOrNull { it.id == notifId }
+                    val target = visibleNotifications.firstOrNull { it.id == notifId }
                     val isShared = target != null && target.recipientUserId != currentUserId
                     scope.launch {
                         repository.markNotificationAsRead(notifId, currentUserId, isShared = isShared)
@@ -576,8 +585,8 @@ fun MainScreen(
                     if (availableUpdate != null) {
                         readUpdateTag = availableUpdate.tagName
                     }
-                    val allIds = notifications.map { it.id }.filter { it.isNotBlank() }.toSet()
-                    val personalIds = notifications
+                    val allIds = visibleNotifications.map { it.id }.filter { it.isNotBlank() }.toSet()
+                    val personalIds = visibleNotifications
                         .filter { it.recipientUserId == currentUserId && it.id.isNotBlank() }
                         .map { it.id }
                         .toSet()

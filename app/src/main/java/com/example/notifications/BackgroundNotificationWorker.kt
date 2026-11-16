@@ -153,14 +153,30 @@ class BackgroundNotificationWorker(
         // 2. Always check GitHub Releases & Firestore app_config/latest_update independently
         try {
             val releaseCheck = updateManager.checkLatestReleaseDetailed(forceRefresh = true)
-            if (releaseCheck is UpdateCheckResult.UpdateAvailable) {
-                TeamNotificationDispatcher.dispatchUpdateNotificationIfNeeded(
-                    context = applicationContext,
-                    updateManager = updateManager,
-                    release = releaseCheck.release
-                )
-            } else if (currentUser != null) {
-                checkFirestoreLatestUpdate(repository, updateManager)
+            when (releaseCheck) {
+                is UpdateCheckResult.UpdateAvailable -> {
+                    TeamNotificationDispatcher.dispatchUpdateNotificationIfNeeded(
+                        context = applicationContext,
+                        updateManager = updateManager,
+                        release = releaseCheck.release
+                    )
+                }
+                is UpdateCheckResult.UpToDate -> {
+                    TeamNotificationDispatcher.clearPendingUpdateNotification(applicationContext)
+                }
+                is UpdateCheckResult.NoReleaseFound -> {
+                    TeamNotificationDispatcher.clearPendingUpdateNotification(applicationContext)
+                    if (currentUser != null) {
+                        checkFirestoreLatestUpdate(repository, updateManager)
+                    }
+                }
+                is UpdateCheckResult.ApkAssetMissing,
+                is UpdateCheckResult.NetworkError,
+                is UpdateCheckResult.ApiError -> {
+                    if (currentUser != null) {
+                        checkFirestoreLatestUpdate(repository, updateManager)
+                    }
+                }
             }
         } catch (ce: CancellationException) {
             throw ce
@@ -180,9 +196,11 @@ class BackgroundNotificationWorker(
             val doc = repository.db.collection("app_config").document("latest_update").get().await()
             if (!doc.exists()) return
             val vCode = doc.getLong("versionCode")?.toInt() ?: 0
-            if (vCode <= updateManager.getCurrentVersionCode()) return
-
             val vName = doc.getString("versionName") ?: return
+            if (updateManager.isUpdateAlreadyInstalled(vCode, vName)) {
+                TeamNotificationDispatcher.clearPendingUpdateNotification(applicationContext)
+                return
+            }
             val resolvedUrl = updateManager.normalizeDownloadUrl(doc.getString("apkDownloadUrl"), vName)
             if (!resolvedUrl.startsWith("https://") || !resolvedUrl.endsWith(".apk", ignoreCase = true)) return
 

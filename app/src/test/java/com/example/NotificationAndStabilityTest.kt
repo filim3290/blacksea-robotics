@@ -1,11 +1,15 @@
 package com.example
 
+import android.Manifest
 import android.app.Activity
+import android.app.Application
+import android.app.NotificationManager
 import android.content.Context
 import android.content.ContextWrapper
 import androidx.test.core.app.ApplicationProvider
 import com.example.data.shouldUserReceiveNotification
 import com.example.model.TeamNotification
+import com.example.model.filterChatDisplayRoles
 import com.example.notifications.TeamNotificationDispatcher
 import com.example.ui.screens.findActivity
 import com.google.firebase.Timestamp
@@ -18,6 +22,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.Robolectric
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.Shadows
 import org.robolectric.annotation.Config
 import java.util.Date
 
@@ -232,7 +237,7 @@ class NotificationAndStabilityTest {
         assertEquals(TeamNotificationDispatcher.CHANNEL_UPDATES, TeamNotificationDispatcher.resolveChannelId("UPDATE"))
         assertEquals(TeamNotificationDispatcher.CHANNEL_ANNOUNCEMENTS, TeamNotificationDispatcher.resolveChannelId("broadcast"))
         assertEquals(TeamNotificationDispatcher.CHANNEL_ANNOUNCEMENTS, TeamNotificationDispatcher.resolveChannelId("announcement"))
-        assertEquals(TeamNotificationDispatcher.CHANNEL_TEAM, TeamNotificationDispatcher.resolveChannelId("message"))
+        assertEquals(TeamNotificationDispatcher.CHANNEL_MESSAGES_SILENT, TeamNotificationDispatcher.resolveChannelId("message"))
         assertEquals(TeamNotificationDispatcher.CHANNEL_TEAM, TeamNotificationDispatcher.resolveChannelId("file"))
         assertEquals(TeamNotificationDispatcher.CHANNEL_TEAM, TeamNotificationDispatcher.resolveChannelId("idea"))
         assertEquals(TeamNotificationDispatcher.CHANNEL_TEAM, TeamNotificationDispatcher.resolveChannelId("new_member"))
@@ -414,7 +419,141 @@ class NotificationAndStabilityTest {
         assertFalse(prefs.contains("realtime_sync_opt_in"))
         assertNull(nm.getNotificationChannel("bsr_realtime_sync"))
         assertTrue(nm.getNotificationChannel(TeamNotificationDispatcher.CHANNEL_TEAM) != null)
+        val silentChannel = nm.getNotificationChannel(TeamNotificationDispatcher.CHANNEL_MESSAGES_SILENT)
+        assertTrue(silentChannel != null)
+        assertEquals(NotificationManager.IMPORTANCE_LOW, silentChannel!!.importance)
+        assertNull(silentChannel.sound)
         assertTrue(nm.getNotificationChannel(TeamNotificationDispatcher.CHANNEL_ANNOUNCEMENTS) != null)
         assertTrue(nm.getNotificationChannel(TeamNotificationDispatcher.CHANNEL_UPDATES) != null)
+    }
+
+    @Test
+    fun `filterChatDisplayRoles shows only Kaptan and Ogretmen and hides all other roles`() {
+        assertEquals(
+            emptyList<String>(),
+            filterChatDisplayRoles(listOf("Yazılım Üyesi", "Elektronik Sorumlusu", "Yönetici", "Takım Kaptan Yardımcısı"))
+        )
+        assertEquals(
+            listOf("Kaptan"),
+            filterChatDisplayRoles(listOf("Takım Kaptanı", "Yazılım Üyesi", "Yönetici"))
+        )
+        assertEquals(
+            listOf("Öğretmen"),
+            filterChatDisplayRoles(listOf("Yetkili Öğretmen", "Danışman", "PR Sorumlusu"))
+        )
+        assertEquals(
+            listOf("Öğretmen", "Kaptan"),
+            filterChatDisplayRoles(listOf("Yetkili Öğretmen", "Takım Kaptanı", "Kaptan"))
+        )
+    }
+
+    @Test
+    fun `active chat room suppresses all OS notifications even beyond 10 messages`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val app = context.applicationContext as Application
+        Shadows.shadowOf(app).grantPermissions(Manifest.permission.POST_NOTIFICATIONS)
+        val notifManager = context.getSystemService(NotificationManager::class.java)!!
+        val shadowNm = Shadows.shadowOf(notifManager)
+        notifManager.cancelAll()
+
+        val uid = "active_user_${System.nanoTime()}"
+        try {
+            TeamNotificationDispatcher.clearUserSyncState(context, uid)
+            TeamNotificationDispatcher.syncBaselineSilently(context, uid, emptyList())
+            TeamNotificationDispatcher.setAppForeground(context, uid, true)
+            TeamNotificationDispatcher.setActiveChatRoom(context, uid, "general")
+
+            val msgs = (1..12).map { idx ->
+                TeamNotification(
+                    id = "active_msg_$idx",
+                    recipientUserId = "all",
+                    type = "message",
+                    targetRoomId = "general",
+                    senderId = "other_sender",
+                    title = "Yeni Mesaj",
+                    message = "Mesaj $idx",
+                    createdAt = Timestamp(Date(System.currentTimeMillis() + idx * 100L))
+                )
+            }
+
+            val posted = TeamNotificationDispatcher.processNotifications(context, uid, msgs)
+            assertEquals(0, posted)
+            assertEquals(0, shadowNm.size())
+            assertEquals(0, TeamNotificationDispatcher.getPendingMessageCount(context, uid, "general"))
+        } finally {
+            TeamNotificationDispatcher.setActiveChatRoom(context, uid, null)
+            TeamNotificationDispatcher.setAppForeground(false)
+            TeamNotificationDispatcher.clearUserSyncState(context, uid)
+        }
+    }
+
+    @Test
+    fun `inactive chat batches messages until 10 then fires single silent notification while ideas fire immediately`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val app = context.applicationContext as Application
+        Shadows.shadowOf(app).grantPermissions(Manifest.permission.POST_NOTIFICATIONS)
+        val notifManager = context.getSystemService(NotificationManager::class.java)!!
+        val shadowNm = Shadows.shadowOf(notifManager)
+        notifManager.cancelAll()
+
+        val uid = "batch_user_${System.nanoTime()}"
+        try {
+            TeamNotificationDispatcher.clearUserSyncState(context, uid)
+            TeamNotificationDispatcher.syncBaselineSilently(context, uid, emptyList())
+            TeamNotificationDispatcher.setAppForeground(false)
+            TeamNotificationDispatcher.setActiveChatRoom(context, uid, null)
+
+            // First 9 messages in software room -> 0 OS notifications, pending count = 9
+            val firstNine = (1..9).map { idx ->
+                TeamNotification(
+                    id = "sw_msg_$idx",
+                    recipientUserId = "all",
+                    type = "message",
+                    targetRoomId = "software",
+                    senderId = "other_sender",
+                    title = "Yazılım Odası",
+                    message = "Mesaj $idx",
+                    createdAt = Timestamp(Date(System.currentTimeMillis() + idx * 100L))
+                )
+            }
+            assertEquals(0, TeamNotificationDispatcher.processNotifications(context, uid, firstNine))
+            assertEquals(0, shadowNm.size())
+            assertEquals(9, TeamNotificationDispatcher.getPendingMessageCount(context, uid, "software"))
+
+            // 10th message triggers 1 silent notification on CHANNEL_MESSAGES_SILENT and resets counter
+            val tenth = TeamNotification(
+                id = "sw_msg_10",
+                recipientUserId = "all",
+                type = "message",
+                targetRoomId = "software",
+                senderId = "other_sender",
+                title = "Yazılım Odası",
+                message = "Mesaj 10",
+                createdAt = Timestamp(Date(System.currentTimeMillis() + 2000L))
+            )
+            assertEquals(1, TeamNotificationDispatcher.processNotifications(context, uid, firstNine + tenth))
+            assertEquals(1, shadowNm.size())
+            assertEquals(0, TeamNotificationDispatcher.getPendingMessageCount(context, uid, "software"))
+
+            val postedNotif = shadowNm.allNotifications.first()
+            assertEquals(TeamNotificationDispatcher.CHANNEL_MESSAGES_SILENT, postedNotif.channelId)
+
+            // Non-message notifications (e.g. idea) still dispatch immediately
+            val idea = TeamNotification(
+                id = "instant_idea_1",
+                recipientUserId = "all",
+                type = "idea",
+                senderId = "other_sender",
+                title = "Yeni Fikir",
+                message = "Otonom hedefleme",
+                createdAt = Timestamp(Date(System.currentTimeMillis() + 3000L))
+            )
+            assertEquals(1, TeamNotificationDispatcher.processNotifications(context, uid, listOf(idea)))
+            assertEquals(2, shadowNm.size())
+        } finally {
+            TeamNotificationDispatcher.setAppForeground(false)
+            TeamNotificationDispatcher.setActiveChatRoom(context, uid, null)
+            TeamNotificationDispatcher.clearUserSyncState(context, uid)
+        }
     }
 }

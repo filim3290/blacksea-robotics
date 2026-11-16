@@ -89,11 +89,13 @@ import com.example.model.ChatMessage
 import com.example.model.SharedProjectFile
 import com.example.model.UserProfile
 import com.example.model.canBeEditedBy
+import com.example.model.filterChatDisplayRoles
+import com.example.notifications.TeamNotificationDispatcher
 import com.example.ui.components.FileUploadProgressDialog
 import com.example.ui.components.InAppFileViewerDialog
 import com.example.ui.components.MediaThumbnailPreview
+import com.example.ui.components.RoleBadge
 import com.example.ui.components.TeamBadge
-import com.example.ui.components.UserRolesRow
 import com.example.ui.components.getFileIcon
 import com.example.ui.components.getFileIconColor
 import com.example.ui.theme.ElectricBlue
@@ -124,6 +126,13 @@ fun RoomsScreen(
     var selectedRoomId by remember { mutableStateOf(initialRoomId) }
     LaunchedEffect(initialRoomId) {
         selectedRoomId = initialRoomId
+    }
+    DisposableEffect(selectedRoomId, currentUserProfile?.userId) {
+        val activeUid = currentUserProfile?.userId.orEmpty()
+        TeamNotificationDispatcher.setActiveChatRoom(context, activeUid, selectedRoomId)
+        onDispose {
+            TeamNotificationDispatcher.setActiveChatRoom(context, activeUid, null)
+        }
     }
     val messages by repository.observeMessages(selectedRoomId).collectAsState(initial = emptyList())
 
@@ -1111,13 +1120,16 @@ fun MessageItemBubble(
             .padding(vertical = 2.dp),
         horizontalAlignment = if (isMyMessage) Alignment.End else Alignment.Start
     ) {
-        // Sender header with Real Name + Roles
-        FlowRow(
-            verticalArrangement = Arrangement.spacedBy(4.dp),
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-            modifier = Modifier.padding(bottom = 4.dp)
-        ) {
-            if (!isMyMessage) {
+        val displayRoles = remember(message.senderRoles) {
+            filterChatDisplayRoles(message.senderRoles)
+        }
+        // Sender header with Real Name + Team + Kaptan/Öğretmen badge only (never show internal/other roles)
+        if (!isMyMessage) {
+            FlowRow(
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                modifier = Modifier.padding(bottom = 4.dp)
+            ) {
                 Surface(
                     shape = CircleShape,
                     color = ElectricBlue.copy(alpha = 0.2f),
@@ -1144,11 +1156,9 @@ fun MessageItemBubble(
                     modifier = Modifier.align(Alignment.CenterVertically)
                 )
                 TeamBadge(teamName = message.senderTeam)
-            }
-
-            // Roles badges
-            if (message.senderRoles.isNotEmpty()) {
-                UserRolesRow(roles = message.senderRoles.take(2))
+                displayRoles.forEach { roleLabel ->
+                    RoleBadge(role = roleLabel)
+                }
             }
         }
 

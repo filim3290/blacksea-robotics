@@ -12,6 +12,11 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleOut
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
@@ -32,6 +37,7 @@ import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -50,6 +56,7 @@ import com.example.notifications.BackgroundNotificationWorker
 import com.example.notifications.TeamNotificationDispatcher
 import com.example.ui.MainScreen
 import com.example.ui.screens.AuthScreen
+import com.example.ui.screens.BlackseaSplashScreen
 import com.example.ui.theme.BlackseaRoboticsTheme
 import com.example.ui.theme.ElectricBlue
 import com.example.update.AppReleaseInfo
@@ -62,6 +69,7 @@ import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.auth
 import com.google.firebase.firestore.snapshots
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -141,6 +149,8 @@ fun AppContent(
     val context = LocalContext.current
     var currentUser by remember { mutableStateOf(Firebase.auth.currentUser) }
     var isAuthCompleted by remember { mutableStateOf(false) }
+    var showSplash by rememberSaveable { mutableStateOf(true) }
+    var hasPromptedNotificationPermission by rememberSaveable { mutableStateOf(false) }
 
     val updateManager = remember { AppUpdateManager(context) }
     val updateCheckMutex = remember { Mutex() }
@@ -186,8 +196,34 @@ fun AppContent(
                         release = update
                     )
                 }
-            } else if (result is UpdateCheckResult.UpToDate) {
+            } else if (result is UpdateCheckResult.UpToDate || result is UpdateCheckResult.NoReleaseFound) {
                 inAppLatestUpdate = null
+                availableUpdate = null
+                TeamNotificationDispatcher.clearPendingUpdateNotification(context)
+            }
+        }
+    }
+
+    // Dismiss animated splash smoothly without delaying background initialization
+    LaunchedEffect(Unit) {
+        if (showSplash) {
+            val splashDurationMs = if (notificationNavEvent != null) 550L else 1350L
+            delay(splashDurationMs)
+            showSplash = false
+        }
+    }
+
+    // Request notification permission only after splash exits so OS prompt never covers splash
+    LaunchedEffect(showSplash) {
+        if (!showSplash && !hasPromptedNotificationPermission) {
+            hasPromptedNotificationPermission = true
+            val enabled = NotificationManagerCompat.from(context).areNotificationsEnabled()
+            if (!enabled) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    permissionLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+                } else {
+                    showNotificationRationale = true
+                }
             }
         }
     }
@@ -208,15 +244,6 @@ fun AppContent(
     LaunchedEffect(Unit) {
         TeamNotificationDispatcher.cleanupLegacyRealtimeSyncArtifacts(context)
         BackgroundNotificationWorker.schedulePeriodicSync(context)
-        val enabled = NotificationManagerCompat.from(context).areNotificationsEnabled()
-        if (!enabled) {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                permissionLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
-            } else {
-                showNotificationRationale = true
-            }
-        }
-
         performUpdateCheckAndNotify(forceRefresh = false, notifyOs = false)
 
         // Real-time listener for Firestore app_config/latest_update
@@ -229,19 +256,20 @@ fun AppContent(
                     isInitialConfigEmission = false
                     if (doc.exists()) {
                         val vCode = doc.getLong("versionCode")?.toInt() ?: 0
-                        if (vCode > updateManager.getCurrentVersionCode()) {
-                            val vName = doc.getString("versionName") ?: "1.0.5"
-                            val resolvedUrl = updateManager.normalizeDownloadUrl(doc.getString("apkDownloadUrl"), vName)
+                        val vName = doc.getString("versionName") ?: ""
+                        if (!updateManager.isUpdateAlreadyInstalled(vCode, vName)) {
+                            val effectiveVName = vName.ifBlank { "1.0.5" }
+                            val resolvedUrl = updateManager.normalizeDownloadUrl(doc.getString("apkDownloadUrl"), effectiveVName)
                             if (resolvedUrl.startsWith("https://") && resolvedUrl.endsWith(".apk", ignoreCase = true)) {
                                 val release = AppReleaseInfo(
-                                    tagName = doc.getString("tagName") ?: "v$vName",
-                                    versionName = vName,
+                                    tagName = doc.getString("tagName") ?: "v$effectiveVName",
+                                    versionName = effectiveVName,
                                     versionCode = vCode,
                                     title = doc.getString("title") ?: "Yeni Güncelleme Mevcut",
                                     changelog = doc.getString("changelog") ?: "• Yeni medya ve dosya paylaşım deneyimi\n• Otomatik güncelleme desteği\n• Hata düzeltmeleri ve iyileştirmeler",
                                     publishedAt = doc.getString("publishedAt") ?: "Bugün",
                                     apkDownloadUrl = resolvedUrl,
-                                    apkFileName = doc.getString("apkFileName") ?: "BlackseaRobotics-v$vName.apk",
+                                    apkFileName = doc.getString("apkFileName") ?: "BlackseaRobotics-v$effectiveVName.apk",
                                     apkSize = doc.getLong("apkSize") ?: (29 * 1024 * 1024L),
                                     expectedSha256 = doc.getString("expectedSha256") ?: "",
                                     expectedCertSha256 = doc.getString("expectedCertSha256") ?: "",
@@ -258,6 +286,20 @@ fun AppContent(
                                         release = release
                                     )
                                 }
+                            }
+                        } else {
+                            inAppLatestUpdate?.let { currentBanner ->
+                                if (updateManager.isUpdateAlreadyInstalled(currentBanner.versionCode, currentBanner.versionName)) {
+                                    inAppLatestUpdate = null
+                                }
+                            }
+                            availableUpdate?.let { currentDialog ->
+                                if (updateManager.isUpdateAlreadyInstalled(currentDialog.versionCode, currentDialog.versionName)) {
+                                    availableUpdate = null
+                                }
+                            }
+                            if (inAppLatestUpdate == null) {
+                                TeamNotificationDispatcher.clearPendingUpdateNotification(context)
                             }
                         }
                     }
@@ -401,13 +443,15 @@ fun AppContent(
     }
 
     // Check updates when returning from background and schedule prompt background check on stop
-    DisposableEffect(lifecycleOwner) {
+    DisposableEffect(lifecycleOwner, currentUser?.uid) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
+                TeamNotificationDispatcher.setAppForeground(context, currentUser?.uid, true)
                 scope.launch {
                     performUpdateCheckAndNotify()
                 }
             } else if (event == Lifecycle.Event.ON_STOP) {
+                TeamNotificationDispatcher.setAppForeground(context, currentUser?.uid, false)
                 BackgroundNotificationWorker.schedulePeriodicSync(context)
                 BackgroundNotificationWorker.triggerOneTimeUpdateCheck(context)
             }
@@ -418,7 +462,7 @@ fun AppContent(
         }
     }
 
-    if (showNotificationRationale) {
+    if (!showSplash && showNotificationRationale) {
         AlertDialog(
             onDismissRequest = { showNotificationRationale = false },
             icon = {
@@ -476,13 +520,15 @@ fun AppContent(
         )
     }
 
-    // Show App Update Dialog whenever a newer version is found
-    availableUpdate?.let { release ->
-        com.example.ui.components.AppUpdateDialog(
-            releaseInfo = release,
-            updateManager = updateManager,
-            onDismiss = { availableUpdate = null }
-        )
+    // Show App Update Dialog whenever a newer version is found and splash has exited
+    if (!showSplash) {
+        availableUpdate?.let { release ->
+            com.example.ui.components.AppUpdateDialog(
+                releaseInfo = release,
+                updateManager = updateManager,
+                onDismiss = { availableUpdate = null }
+            )
+        }
     }
 
     DisposableEffect(Unit) {
@@ -498,40 +544,52 @@ fun AppContent(
         }
     }
 
-    if (currentUser == null || !isAuthCompleted) {
-        AuthScreen(
-            repository = repository,
-            onAuthSuccess = {
-                currentUser = Firebase.auth.currentUser
-                isAuthCompleted = true
-            }
-        )
-    } else {
-        val uid = currentUser!!.uid
-        key(uid) {
-            MainScreen(
-                currentUserId = uid,
+    Box(modifier = Modifier.fillMaxSize()) {
+        if (currentUser == null || !isAuthCompleted) {
+            AuthScreen(
                 repository = repository,
-                updateManager = updateManager,
-                availableUpdate = inAppLatestUpdate,
-                notificationNavEvent = notificationNavEvent,
-                onConsumeNotificationNav = onConsumeNotificationNav,
-                onShowUpdateDialog = { release -> availableUpdate = release },
-                onSignOut = {
-                    BackgroundNotificationWorker.cancelPeriodicSync(context)
-                    Firebase.auth.signOut()
-                    currentUser = null
-                    isAuthCompleted = false
-                },
-                onAccountDeleted = {
-                    isSelfDeleting = true
-                    BackgroundNotificationWorker.cancelPeriodicSync(context)
-                    TeamNotificationDispatcher.clearUserSyncState(context, uid)
-                    Firebase.auth.signOut()
-                    currentUser = null
-                    isAuthCompleted = false
+                onAuthSuccess = {
+                    currentUser = Firebase.auth.currentUser
+                    isAuthCompleted = true
                 }
             )
+        } else {
+            val uid = currentUser!!.uid
+            key(uid) {
+                MainScreen(
+                    currentUserId = uid,
+                    repository = repository,
+                    updateManager = updateManager,
+                    availableUpdate = inAppLatestUpdate,
+                    notificationNavEvent = notificationNavEvent,
+                    onConsumeNotificationNav = onConsumeNotificationNav,
+                    onShowUpdateDialog = { release -> availableUpdate = release },
+                    onSignOut = {
+                        BackgroundNotificationWorker.cancelPeriodicSync(context)
+                        Firebase.auth.signOut()
+                        currentUser = null
+                        isAuthCompleted = false
+                    },
+                    onAccountDeleted = {
+                        isSelfDeleting = true
+                        BackgroundNotificationWorker.cancelPeriodicSync(context)
+                        TeamNotificationDispatcher.clearUserSyncState(context, uid)
+                        Firebase.auth.signOut()
+                        currentUser = null
+                        isAuthCompleted = false
+                    }
+                )
+            }
+        }
+
+        AnimatedVisibility(
+            visible = showSplash,
+            exit = fadeOut(animationSpec = tween(380)) + scaleOut(
+                targetScale = 1.04f,
+                animationSpec = tween(380)
+            )
+        ) {
+            BlackseaSplashScreen()
         }
     }
 }

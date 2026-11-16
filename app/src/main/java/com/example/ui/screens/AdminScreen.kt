@@ -872,10 +872,12 @@ fun AdminScreen(
                         is com.example.update.UpdateCheckResult.UpToDate -> {
                             latestRelease = null
                             checkStatusMessage = "Uygulamanız güncel (v${res.currentVersionName})"
+                            com.example.notifications.TeamNotificationDispatcher.clearPendingUpdateNotification(context)
                         }
                         is com.example.update.UpdateCheckResult.NoReleaseFound -> {
                             latestRelease = null
                             checkStatusMessage = "Uygulamanız güncel."
+                            com.example.notifications.TeamNotificationDispatcher.clearPendingUpdateNotification(context)
                         }
                         is com.example.update.UpdateCheckResult.ApkAssetMissing,
                         is com.example.update.UpdateCheckResult.NetworkError,
@@ -953,11 +955,13 @@ fun AdminScreen(
                                                 is com.example.update.UpdateCheckResult.UpToDate -> {
                                                     latestRelease = null
                                                     checkStatusMessage = "Uygulamanız güncel (v${res.currentVersionName})"
+                                                    com.example.notifications.TeamNotificationDispatcher.clearPendingUpdateNotification(context)
                                                     Toast.makeText(context, "Uygulamanız güncel (v${res.currentVersionName})", Toast.LENGTH_SHORT).show()
                                                 }
                                                 is com.example.update.UpdateCheckResult.NoReleaseFound -> {
                                                     latestRelease = null
                                                     checkStatusMessage = "Uygulamanız güncel."
+                                                    com.example.notifications.TeamNotificationDispatcher.clearPendingUpdateNotification(context)
                                                     Toast.makeText(context, "Uygulamanız güncel.", Toast.LENGTH_SHORT).show()
                                                 }
                                                 is com.example.update.UpdateCheckResult.ApkAssetMissing,

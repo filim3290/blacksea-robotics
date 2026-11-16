@@ -62,6 +62,27 @@ object PredefinedRoles {
     }
 }
 
+/**
+ * In chat message headers, only team affiliation plus Captain ("Kaptan") or Teacher ("Öğretmen")
+ * status should be displayed; all other internal/member roles are hidden.
+ */
+fun filterChatDisplayRoles(roles: List<String>): List<String> {
+    if (roles.isEmpty()) return emptyList()
+    val result = mutableListOf<String>()
+    for (raw in roles) {
+        val lower = raw.trim().lowercase(java.util.Locale("tr", "TR"))
+        when {
+            lower.contains("öğretmen") || lower.contains("ogretmen") -> {
+                if ("Öğretmen" !in result) result.add("Öğretmen")
+            }
+            lower.contains("kaptan") && !lower.contains("yardımcı") && !lower.contains("yardimcisi") -> {
+                if ("Kaptan" !in result) result.add("Kaptan")
+            }
+        }
+    }
+    return result
+}
+
 enum class UserStatus(val value: String) {
     ACTIVE("active"),
     APPROVED("approved"), // legacy support

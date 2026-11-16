@@ -35,12 +35,17 @@ object TeamNotificationDispatcher {
     private const val CLOCK_SKEW_TOLERANCE_MS = 3 * 60_000L
 
     const val CHANNEL_TEAM = "bsr_team_notifications"
+    const val CHANNEL_MESSAGES_SILENT = "bsr_chat_messages_silent"
     const val CHANNEL_ANNOUNCEMENTS = "bsr_announcements"
     const val CHANNEL_UPDATES = "bsr_updates"
+
+    const val MESSAGE_BATCH_THRESHOLD = 10
 
     private const val LEGACY_CHANNEL_REALTIME_SYNC = "bsr_realtime_sync"
     private const val LEGACY_PREF_REALTIME_SYNC_ENABLED = "realtime_sync_opt_in"
     private const val LEGACY_FOREGROUND_SYNC_NOTIFICATION_ID = 1099
+    private const val PENDING_MSG_PREFIX = "pending_msg_count_"
+    private const val UPDATE_NOTIFICATION_ID = 1001
 
     const val EXTRA_NOTIF_ID = "notif_id"
     const val EXTRA_NOTIF_TYPE = "notif_type"
@@ -48,6 +53,71 @@ object TeamNotificationDispatcher {
     const val EXTRA_OPEN_UPDATE_DIALOG = "open_update_dialog"
 
     private val dispatchLock = Any()
+
+    @Volatile
+    private var isAppForeground: Boolean = false
+
+    @Volatile
+    private var activeChatRoomId: String? = null
+
+    fun setAppForeground(inForeground: Boolean) {
+        isAppForeground = inForeground
+    }
+
+    fun setAppForeground(context: Context, userId: String?, inForeground: Boolean) {
+        isAppForeground = inForeground
+        val currentRoom = activeChatRoomId
+        if (inForeground && !userId.isNullOrBlank() && !currentRoom.isNullOrBlank()) {
+            clearPendingMessagesForRoom(context, userId, currentRoom)
+        }
+    }
+
+    fun setActiveChatRoom(context: Context, userId: String, roomId: String?) {
+        val normalized = roomId?.trim()?.lowercase()?.takeIf { it.isNotBlank() }
+        activeChatRoomId = normalized
+        if (normalized != null && userId.isNotBlank()) {
+            clearPendingMessagesForRoom(context, userId, normalized)
+        }
+    }
+
+    fun isActivelyChattingInRoom(roomId: String): Boolean {
+        val active = activeChatRoomId ?: return false
+        return isAppForeground && active == normalizeRoomKey(roomId)
+    }
+
+    fun getPendingMessageCount(context: Context, userId: String, roomId: String): Int {
+        if (userId.isBlank()) return 0
+        val key = pendingCountKey(userId, normalizeRoomKey(roomId))
+        return context.applicationContext
+            .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getInt(key, 0)
+    }
+
+    fun clearPendingMessagesForRoom(context: Context, userId: String, roomId: String) {
+        if (userId.isBlank()) return
+        val roomKey = normalizeRoomKey(roomId)
+        val appCtx = context.applicationContext
+        synchronized(dispatchLock) {
+            appCtx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                .edit()
+                .remove(pendingCountKey(userId, roomKey))
+                .apply()
+        }
+        try {
+            appCtx.getSystemService(NotificationManager::class.java)
+                ?.cancel(roomSummaryNotificationId(roomKey))
+        } catch (_: Exception) {
+        }
+    }
+
+    fun clearPendingUpdateNotification(context: Context) {
+        try {
+            context.applicationContext
+                .getSystemService(NotificationManager::class.java)
+                ?.cancel(UPDATE_NOTIFICATION_ID)
+        } catch (_: Exception) {
+        }
+    }
 
     fun cleanupLegacyRealtimeSyncArtifacts(context: Context) {
         val appCtx = context.applicationContext
@@ -70,13 +140,15 @@ object TeamNotificationDispatcher {
 
     fun clearUserSyncState(context: Context, userId: String) {
         if (userId.isBlank()) return
-        context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .edit()
+        val prefs = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val editor = prefs.edit()
             .remove("seeded_$userId")
             .remove("baseline_ts_$userId")
             .remove("dispatched_list_$userId")
             .remove("join_ts_$userId")
-            .apply()
+        val prefix = "$PENDING_MSG_PREFIX${userId}_"
+        prefs.all.keys.filter { it.startsWith(prefix) }.forEach { editor.remove(it) }
+        editor.apply()
     }
 
     fun recordUserJoinTimestampIfMissing(
@@ -113,9 +185,21 @@ object TeamNotificationDispatcher {
                 "BLACKSEA ROBOTICS Bildirimleri",
                 NotificationManager.IMPORTANCE_HIGH
             ).apply {
-                description = "Takım mesajları, fikirler, dosyalar, yeni üyeler ve başvurular"
+                description = "Fikirler, dosyalar, yeni üyeler ve başvurular"
                 enableLights(true)
                 enableVibration(true)
+            }
+
+            val silentMessagesChannel = NotificationChannel(
+                CHANNEL_MESSAGES_SILENT,
+                "Sohbet Mesajları (Sessiz)",
+                NotificationManager.IMPORTANCE_LOW
+            ).apply {
+                description = "Aktif olmadığınız sohbet odalarında biriken mesaj bildirimleri"
+                setSound(null, null)
+                enableVibration(false)
+                enableLights(false)
+                setShowBadge(true)
             }
 
             val announcementsChannel = NotificationChannel(
@@ -139,6 +223,7 @@ object TeamNotificationDispatcher {
             }
 
             notificationManager.createNotificationChannel(generalChannel)
+            notificationManager.createNotificationChannel(silentMessagesChannel)
             notificationManager.createNotificationChannel(announcementsChannel)
             notificationManager.createNotificationChannel(updatesChannel)
             notificationManager.deleteNotificationChannel(LEGACY_CHANNEL_REALTIME_SYNC)
@@ -163,6 +248,7 @@ object TeamNotificationDispatcher {
         return when (type.lowercase()) {
             "update" -> CHANNEL_UPDATES
             "broadcast", "announcement" -> CHANNEL_ANNOUNCEMENTS
+            "message" -> CHANNEL_MESSAGES_SILENT
             else -> CHANNEL_TEAM
         }
     }
@@ -317,6 +403,37 @@ object TeamNotificationDispatcher {
             toDispatch = selection.toDispatch
         }
 
+        val updateManager = AppUpdateManager(appCtx)
+        val filteredToDispatch = toDispatch.filterNot { notif ->
+            updateManager.isNotificationUpdateObsolete(notif.type, notif.targetId, notif.message)
+        }
+        if (filteredToDispatch.isEmpty()) return 0
+
+        val (messageNotifs, nonMessageNotifs) = filteredToDispatch.partition {
+            it.type.equals("message", ignoreCase = true)
+        }
+
+        // Accumulate inactive-room chat messages & determine which rooms hit the batch threshold
+        val readyRoomSummaries = mutableListOf<Pair<String, Int>>()
+        if (messageNotifs.isNotEmpty()) {
+            synchronized(dispatchLock) {
+                val editor = prefs.edit()
+                messageNotifs.groupBy { normalizeRoomKey(it.targetRoomId) }.forEach { (roomKey, roomMsgs) ->
+                    val countKey = pendingCountKey(userId, roomKey)
+                    if (isActivelyChattingInRoom(roomKey)) {
+                        editor.remove(countKey)
+                    } else {
+                        val updatedCount = prefs.getInt(countKey, 0) + roomMsgs.size
+                        editor.putInt(countKey, updatedCount)
+                        if (updatedCount >= MESSAGE_BATCH_THRESHOLD) {
+                            readyRoomSummaries.add(roomKey to updatedCount)
+                        }
+                    }
+                }
+                editor.apply()
+            }
+        }
+
         if (!hasNotificationPermission(appCtx)) {
             return 0
         }
@@ -325,8 +442,56 @@ object TeamNotificationDispatcher {
         val notifManager = appCtx.getSystemService(NotificationManager::class.java) ?: return 0
 
         var postedCount = 0
-        // Cap burst size to avoid Android's per-app notification rate-limit dropping notifications
-        toDispatch.takeLast(5).forEach { notif ->
+
+        // 1. Dispatch silent batch notification for any inactive room that reached >= 10 messages
+        readyRoomSummaries.forEach { (roomKey, totalCount) ->
+            if (isActivelyChattingInRoom(roomKey)) {
+                clearPendingMessagesForRoom(appCtx, userId, roomKey)
+                return@forEach
+            }
+            try {
+                val summaryId = roomSummaryNotificationId(roomKey)
+                val tapIntent = Intent(appCtx, MainActivity::class.java).apply {
+                    flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                    putExtra(EXTRA_NOTIF_TYPE, "message")
+                    putExtra(EXTRA_NOTIF_ROOM_ID, roomKey)
+                    putExtra(EXTRA_OPEN_UPDATE_DIALOG, false)
+                }
+                val pendingIntent = PendingIntent.getActivity(
+                    appCtx,
+                    summaryId,
+                    tapIntent,
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                )
+                val titleText = "${roomDisplayName(roomKey)} • Devam Eden Sohbet"
+                val bodyText = "Sohbet devam ediyor: $totalCount yeni mesaj var"
+                val builder = NotificationCompat.Builder(appCtx, CHANNEL_MESSAGES_SILENT)
+                    .setSmallIcon(R.mipmap.ic_launcher)
+                    .setContentTitle(titleText)
+                    .setContentText(bodyText)
+                    .setStyle(NotificationCompat.BigTextStyle().bigText(bodyText))
+                    .setPriority(NotificationCompat.PRIORITY_LOW)
+                    .setSilent(true)
+                    .setOnlyAlertOnce(true)
+                    .setSound(null)
+                    .setDefaults(0)
+                    .setContentIntent(pendingIntent)
+                    .setAutoCancel(true)
+
+                notifManager.notify(summaryId, builder.build())
+                synchronized(dispatchLock) {
+                    prefs.edit().remove(pendingCountKey(userId, roomKey)).apply()
+                }
+                postedCount++
+            } catch (sec: SecurityException) {
+                logDebugWarn(TAG, "Missing notification permission for silent chat summary", sec)
+            } catch (e: Exception) {
+                logDebugWarn(TAG, "Failed to post silent chat summary for $roomKey", e)
+            }
+        }
+
+        // 2. Dispatch non-chat notifications immediately (capped burst size to avoid rate limiting)
+        nonMessageNotifs.takeLast(5).forEach { notif ->
             try {
                 val channelId = resolveChannelId(notif.type)
                 val stableId = (notif.id.hashCode() and 0x7FFFFFFF) + 2000
@@ -374,12 +539,7 @@ object TeamNotificationDispatcher {
         updateManager: AppUpdateManager,
         release: AppReleaseInfo
     ): Boolean {
-        val currentCode = updateManager.getCurrentVersionCode()
-        val isNewer = when {
-            release.versionCode > currentCode -> true
-            release.versionCode <= 0 -> updateManager.evaluateReleaseComparison(release) is UpdateCheckResult.UpdateAvailable
-            else -> false
-        }
+        val isNewer = updateManager.evaluateReleaseComparison(release) is UpdateCheckResult.UpdateAvailable
         if (!isNewer) return false
         if (updateManager.hasNotifiedForRelease(release.versionCode, release.tagName)) return false
 
@@ -395,7 +555,7 @@ object TeamNotificationDispatcher {
             }
             val pendingIntent = PendingIntent.getActivity(
                 appCtx,
-                1001,
+                UPDATE_NOTIFICATION_ID,
                 tapIntent,
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             )
@@ -414,7 +574,7 @@ object TeamNotificationDispatcher {
                 .setPriority(NotificationCompat.PRIORITY_HIGH)
                 .setContentIntent(pendingIntent)
                 .setAutoCancel(true)
-            notifManager.notify(1001, builder.build())
+            notifManager.notify(UPDATE_NOTIFICATION_ID, builder.build())
             updateManager.markReleaseNotified(release.versionCode, release.tagName)
             true
         } catch (sec: SecurityException) {
@@ -423,6 +583,28 @@ object TeamNotificationDispatcher {
         } catch (e: Exception) {
             logDebugWarn(TAG, "Failed to post update notification", e)
             false
+        }
+    }
+
+    private fun normalizeRoomKey(roomId: String?): String {
+        return roomId?.trim()?.lowercase()?.takeIf { it.isNotBlank() } ?: "general"
+    }
+
+    private fun pendingCountKey(userId: String, roomKey: String): String {
+        return "$PENDING_MSG_PREFIX${userId}_$roomKey"
+    }
+
+    private fun roomSummaryNotificationId(roomKey: String): Int {
+        return 3000 + (roomKey.hashCode() and 0x7FFF)
+    }
+
+    internal fun roomDisplayName(roomKey: String): String {
+        return when (normalizeRoomKey(roomKey)) {
+            "general" -> "Genel Ekip Odası"
+            "software" -> "Yazılım Ekibi"
+            "mechanic" -> "Mekanik Ekibi"
+            "pr" -> "PR Ekibi"
+            else -> "Takım Sohbeti"
         }
     }
 

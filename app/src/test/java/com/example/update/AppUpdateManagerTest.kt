@@ -361,4 +361,42 @@ class AppUpdateManagerTest {
         )
         assertFalse("Duplicate update notification for same release must be suppressed", secondDispatch)
     }
+
+    @Test
+    fun `treats same installed semver as UpToDate even when remote versionCode metadata is higher`() {
+        val mgr = AppUpdateManager(context)
+        val sameVersionDifferentCode = AppReleaseInfo(
+            tagName = "v1.1.0",
+            versionName = "1.1.0",
+            versionCode = 999,
+            title = "Blacksea Robotics v1.1.0",
+            changelog = "Bug fixes",
+            publishedAt = "2026-11-16T00:00:00Z",
+            apkDownloadUrl = "https://github.com/filim3290/blacksea-robotics/releases/download/v1.1.0/BlackseaRobotics-v1.1.0.apk",
+            apkFileName = "BlackseaRobotics-v1.1.0.apk",
+            apkSize = 21_000_000L
+        )
+
+        val result = mgr.evaluateReleaseComparison(
+            release = sameVersionDifferentCode,
+            currentCode = 14,
+            currentName = "1.1.0"
+        )
+        assertTrue(result is UpdateCheckResult.UpToDate)
+        assertFalse((result as UpdateCheckResult.UpToDate).isRemoteOlder)
+    }
+
+    @Test
+    fun `identifies already installed updates and obsolete update notifications accurately`() {
+        val mgr = AppUpdateManager(context)
+
+        assertTrue(mgr.isUpdateAlreadyInstalled(remoteVersionCode = 99, remoteVersionName = "1.1.0", currentCode = 14, currentName = "1.1.0"))
+        assertTrue(mgr.isUpdateAlreadyInstalled(remoteVersionCode = 12, remoteVersionName = "1.0.12", currentCode = 14, currentName = "1.1.0"))
+        assertFalse(mgr.isUpdateAlreadyInstalled(remoteVersionCode = 15, remoteVersionName = "1.1.1", currentCode = 14, currentName = "1.1.0"))
+
+        assertTrue(mgr.isNotificationUpdateObsolete(type = "update", targetId = "update_v1.0.12", message = "v1.0.12 yayında", currentName = "1.1.0"))
+        assertTrue(mgr.isNotificationUpdateObsolete(type = "update", targetId = "update_v1.1.0", message = "v1.1.0 yayında", currentName = "1.1.0"))
+        assertFalse(mgr.isNotificationUpdateObsolete(type = "update", targetId = "update_v1.2.0", message = "v1.2.0 yayında", currentName = "1.1.0"))
+        assertFalse(mgr.isNotificationUpdateObsolete(type = "message", targetId = "update_v1.0.12", message = "v1.0.12", currentName = "1.1.0"))
+    }
 }

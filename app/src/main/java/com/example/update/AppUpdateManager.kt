@@ -230,11 +230,39 @@ class AppUpdateManager(private val context: Context) {
         .build()
 
     fun getCurrentVersionName(): String {
-        return BuildConfig.VERSION_NAME
+        val pkgName = try {
+            val pm = context.packageManager
+            val info = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                pm.getPackageInfo(context.packageName, PackageManager.PackageInfoFlags.of(0L))
+            } else {
+                @Suppress("DEPRECATION")
+                pm.getPackageInfo(context.packageName, 0)
+            }
+            info.versionName?.trim().orEmpty()
+        } catch (_: Exception) {
+            ""
+        }
+        return if (pkgName.isNotBlank() && compareSemver(pkgName, BuildConfig.VERSION_NAME) >= 0) {
+            pkgName
+        } else {
+            BuildConfig.VERSION_NAME
+        }
     }
 
     fun getCurrentVersionCode(): Int {
-        return BuildConfig.VERSION_CODE
+        val pkgCode = try {
+            val pm = context.packageManager
+            val info = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                pm.getPackageInfo(context.packageName, PackageManager.PackageInfoFlags.of(0L))
+            } else {
+                @Suppress("DEPRECATION")
+                pm.getPackageInfo(context.packageName, 0)
+            }
+            getLongVersionCodeCompat(info).toInt()
+        } catch (_: Exception) {
+            0
+        }
+        return maxOf(BuildConfig.VERSION_CODE, pkgCode)
     }
 
     /**
@@ -330,6 +358,10 @@ class AppUpdateManager(private val context: Context) {
         }
     }
 
+    private fun hasNumericSemver(version: String): Boolean {
+        return Regex("""\d+(?:\.\d+)+""").containsMatchIn(version)
+    }
+
     private fun compareSemver(candidate: String, current: String): Int {
         val p1 = candidate.removePrefix("v").removePrefix("V").split(".").map { it.toIntOrNull() ?: 0 }
         val p2 = current.removePrefix("v").removePrefix("V").split(".").map { it.toIntOrNull() ?: 0 }
@@ -340,6 +372,33 @@ class AppUpdateManager(private val context: Context) {
             if (a != b) return a.compareTo(b)
         }
         return 0
+    }
+
+    fun isUpdateAlreadyInstalled(
+        remoteVersionCode: Int,
+        remoteVersionName: String,
+        currentCode: Int = getCurrentVersionCode(),
+        currentName: String = getCurrentVersionName()
+    ): Boolean {
+        if (hasNumericSemver(remoteVersionName) && hasNumericSemver(currentName)) {
+            if (compareSemver(remoteVersionName, currentName) <= 0) return true
+        }
+        if (remoteVersionCode > 0 && remoteVersionCode <= currentCode) return true
+        return false
+    }
+
+    fun isNotificationUpdateObsolete(
+        type: String,
+        targetId: String,
+        message: String,
+        currentName: String = getCurrentVersionName()
+    ): Boolean {
+        if (!type.equals("update", ignoreCase = true)) return false
+        val versionRegex = Regex("""v?(\d+\.\d+(?:\.\d+)*)""")
+        val extracted = versionRegex.find(targetId)?.groupValues?.getOrNull(1)
+            ?: versionRegex.find(message)?.groupValues?.getOrNull(1)
+            ?: return false
+        return hasNumericSemver(currentName) && compareSemver(extracted, currentName) <= 0
     }
 
     /**
@@ -420,6 +479,14 @@ class AppUpdateManager(private val context: Context) {
         val installedCerts = getInstalledSigningCertSha256()
         val installedFirst = installedCerts.firstOrNull().orEmpty()
         val signatureCompatible = isReleaseSignatureCompatible(release, installedCerts)
+
+        if (hasNumericSemver(release.versionName) && hasNumericSemver(currentName)) {
+            val semverCmp = compareSemver(release.versionName, currentName)
+            when {
+                semverCmp < 0 -> return UpdateCheckResult.UpToDate(currentName, currentCode, release, isRemoteOlder = true)
+                semverCmp == 0 -> return UpdateCheckResult.UpToDate(currentName, currentCode, release, isRemoteOlder = false)
+            }
+        }
 
         return if (release.versionCode > 0) {
             when {

@@ -245,8 +245,8 @@ fun RoleBadge(
     val isDark = MaterialTheme.blackseaColors.isDark
     val alpha = if (isDark) 0.22f else 0.13f
     val (bgColor, textColor) = when (role) {
-        "Yetkili Öğretmen" -> Pair(Color(0xFF8B5CF6).copy(alpha = alpha), if (isDark) Color(0xFFC4B5FD) else Color(0xFF6D28D9))
-        "Takım Kaptanı" -> Pair(PhoenixAmber.copy(alpha = alpha), if (isDark) Color(0xFFFCD34D) else Color(0xFFB45309))
+        "Yetkili Öğretmen", "Öğretmen" -> Pair(Color(0xFF8B5CF6).copy(alpha = alpha), if (isDark) Color(0xFFC4B5FD) else Color(0xFF6D28D9))
+        "Takım Kaptanı", "Kaptan" -> Pair(PhoenixAmber.copy(alpha = alpha), if (isDark) Color(0xFFFCD34D) else Color(0xFFB45309))
         "Takım Yardımcısı" -> Pair(Color(0xFFF97316).copy(alpha = alpha), if (isDark) Color(0xFFFDBA74) else Color(0xFFC2410C))
         "Yönetici" -> Pair(Color(0xFFE11D48).copy(alpha = alpha), if (isDark) Color(0xFFFDA4AF) else Color(0xFFBE123C))
         "Elektronik Sorumlusu" -> Pair(ElectricBlue.copy(alpha = alpha), if (isDark) Color(0xFF38BDF8) else Color(0xFF0369A1))
@@ -270,7 +270,7 @@ fun RoleBadge(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(4.dp)
         ) {
-            if (role in listOf("Yetkili Öğretmen", "Takım Kaptanı", "Yönetici")) {
+            if (role in listOf("Yetkili Öğretmen", "Öğretmen", "Takım Kaptanı", "Kaptan", "Yönetici")) {
                 Icon(
                     imageVector = Icons.Default.Star,
                     contentDescription = null,

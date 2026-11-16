@@ -368,6 +368,7 @@ fun ProfileScreen(
                                     is com.example.update.UpdateCheckResult.UpToDate -> {
                                         latestAvailableRelease = null
                                         updateStatusText = "Uygulamanız güncel (v${result.currentVersionName})"
+                                        com.example.notifications.TeamNotificationDispatcher.clearPendingUpdateNotification(context)
                                         Toast.makeText(
                                             context,
                                             "Uygulamanız güncel (v${result.currentVersionName})",
@@ -377,6 +378,7 @@ fun ProfileScreen(
                                     is com.example.update.UpdateCheckResult.NoReleaseFound -> {
                                         latestAvailableRelease = null
                                         updateStatusText = "Uygulamanız güncel."
+                                        com.example.notifications.TeamNotificationDispatcher.clearPendingUpdateNotification(context)
                                         Toast.makeText(
                                             context,
                                             "Uygulamanız güncel.",
