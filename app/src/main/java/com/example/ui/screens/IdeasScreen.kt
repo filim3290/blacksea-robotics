@@ -122,7 +122,6 @@ fun IdeasScreen(
     val scope = rememberCoroutineScope()
     val ext = MaterialTheme.blackseaColors
 
-    var selectedCategoryFilter by remember { mutableStateOf("Hepsi") }
     var selectedRoomFilter by remember { mutableStateOf("all") }
 
     val ideas by repository.observeIdeas(if (selectedRoomFilter == "all") null else selectedRoomFilter).collectAsState(initial = emptyList())
@@ -133,21 +132,14 @@ fun IdeasScreen(
     // Status change dialog
     var ideaToChangeStatus by remember { mutableStateOf<IdeaItem?>(null) }
 
+    // Delete confirmation state
+    var ideaToDelete by remember { mutableStateOf<IdeaItem?>(null) }
+
     // Comments Sheet State
     var activeIdeaForComments by remember { mutableStateOf<IdeaItem?>(null) }
 
     // File Preview Dialog State
     var activePreviewFile by remember { mutableStateOf<SharedProjectFile?>(null) }
-
-    val categories = listOf(
-        "Hepsi",
-        "Yeni",
-        "Değerlendiriliyor",
-        "Geliştiriliyor",
-        "Kabul Edildi",
-        "Tamamlandı",
-        "Reddedildi"
-    )
 
     val roomOptions = listOf(
         Pair("all", "Tüm Odalar"),
@@ -157,9 +149,7 @@ fun IdeasScreen(
         Pair("pr", "PR")
     )
 
-    val filteredIdeas = ideas.filter { idea ->
-        if (selectedCategoryFilter == "Hepsi") true else (idea.category == selectedCategoryFilter || (selectedCategoryFilter == "Yeni" && idea.category == "Yeni fikir"))
-    }
+    val filteredIdeas = ideas
 
     val isAdminOrLeader = currentUserProfile?.isManagerAccount() == true
 
@@ -167,51 +157,28 @@ fun IdeasScreen(
 
     Box(modifier = modifier.fillMaxSize().testTag("ideas_screen")) {
         Column(modifier = Modifier.fillMaxSize()) {
-            // Room & Category Filter Chips
+            // Room Filter Chips (only existing rooms)
             Surface(
                 modifier = Modifier.fillMaxWidth(),
                 color = MaterialTheme.colorScheme.surface,
                 shadowElevation = 2.dp
             ) {
-                Column {
-                    // Room Filter
-                    LazyRow(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 12.dp, vertical = 6.dp),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        items(roomOptions) { (id, label) ->
-                            FilterChip(
-                                selected = selectedRoomFilter == id,
-                                onClick = { selectedRoomFilter = id },
-                                label = { Text(text = label, fontSize = 11.sp) },
-                                colors = FilterChipDefaults.filterChipColors(
-                                    selectedContainerColor = ElectricBlue,
-                                    selectedLabelColor = Color.White
-                                )
+                LazyRow(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    items(roomOptions) { (id, label) ->
+                        FilterChip(
+                            selected = selectedRoomFilter == id,
+                            onClick = { selectedRoomFilter = id },
+                            label = { Text(text = label, fontSize = 12.sp) },
+                            colors = FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = ElectricBlue,
+                                selectedLabelColor = Color.White
                             )
-                        }
-                    }
-
-                    // Category Filter
-                    LazyRow(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 12.dp, vertical = 4.dp),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        items(categories) { cat ->
-                            FilterChip(
-                                selected = selectedCategoryFilter == cat,
-                                onClick = { selectedCategoryFilter = cat },
-                                label = { Text(text = cat, fontSize = 11.sp) },
-                                colors = FilterChipDefaults.filterChipColors(
-                                    selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
-                                    selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
-                                )
-                            )
-                        }
+                        )
                     }
                 }
             }
@@ -233,7 +200,7 @@ fun IdeasScreen(
                             contentAlignment = Alignment.Center
                         ) {
                             Text(
-                                text = "Bu filtrede henüz fikir bulunmuyor. Yeni bir fikir ekleyin!",
+                                text = "Bu odada henüz fikir bulunmuyor. Yeni bir fikir ekleyin!",
                                 color = ext.textMuted,
                                 fontSize = 14.sp
                             )
@@ -479,20 +446,8 @@ fun IdeasScreen(
 
                                     if (canDelete) {
                                         IconButton(
-                                            onClick = {
-                                                scope.launch {
-                                                    try {
-                                                        repository.deleteIdea(idea.id)
-                                                        Toast.makeText(context, "Fikir silindi", Toast.LENGTH_SHORT).show()
-                                                    } catch (ce: CancellationException) {
-                                                        throw ce
-                                                    } catch (e: Exception) {
-                                                        logDebugError("IdeasScreen", "Delete idea failed", e)
-                                                        Toast.makeText(context, sanitizeUserErrorMessage(e, "Fikir silinemedi."), Toast.LENGTH_SHORT).show()
-                                                    }
-                                                }
-                                            },
-                                            modifier = Modifier.size(28.dp)
+                                            onClick = { ideaToDelete = idea },
+                                            modifier = Modifier.size(32.dp)
                                         ) {
                                             Icon(
                                                 imageVector = Icons.Default.Delete,
@@ -596,6 +551,47 @@ fun IdeasScreen(
         )
     }
 
+    // Delete Idea Confirmation Dialog
+    if (ideaToDelete != null) {
+        val targetIdea = ideaToDelete!!
+        AlertDialog(
+            onDismissRequest = { ideaToDelete = null },
+            title = { Text("Fikri Sil", fontWeight = FontWeight.Bold) },
+            text = {
+                Text("\"${targetIdea.title}\" fikri kalıcı olarak silinsin mi? Emin misiniz?")
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        ideaToDelete = null
+                        scope.launch {
+                            try {
+                                repository.deleteIdea(targetIdea.id)
+                                Toast.makeText(context, "Fikir silindi", Toast.LENGTH_SHORT).show()
+                            } catch (ce: CancellationException) {
+                                throw ce
+                            } catch (e: Exception) {
+                                logDebugError("IdeasScreen", "Delete idea failed", e)
+                                Toast.makeText(context, sanitizeUserErrorMessage(e, "Fikir silinemedi."), Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = ext.dangerSolid,
+                        contentColor = Color.White
+                    )
+                ) {
+                    Text("Evet, Sil", fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { ideaToDelete = null }) {
+                    Text("Vazgeç")
+                }
+            }
+        )
+    }
+
     // Comments Sheet
     if (activeIdeaForComments != null) {
         val idea = activeIdeaForComments!!
@@ -622,10 +618,9 @@ fun CreateIdeaDialog(
 
     var title by remember { mutableStateOf("") }
     var description by remember { mutableStateOf("") }
-    var selectedCategory by remember { mutableStateOf("Yeni") }
+    val selectedCategory = "Yeni"
     var selectedRoom by remember { mutableStateOf("general") }
 
-    var categoryExpanded by remember { mutableStateOf(false) }
     var roomExpanded by remember { mutableStateOf(false) }
 
     var pickedUri by remember { mutableStateOf<Uri?>(null) }
@@ -665,15 +660,6 @@ fun CreateIdeaDialog(
     ) { uri: Uri? ->
         if (uri != null) handlePickedUri(uri)
     }
-
-    val categories = listOf(
-        "Yeni",
-        "Değerlendiriliyor",
-        "Geliştiriliyor",
-        "Kabul Edildi",
-        "Tamamlandı",
-        "Reddedildi"
-    )
 
     val rooms = listOf(
         Pair("general", "Genel Ekip Odası"),
@@ -727,38 +713,6 @@ fun CreateIdeaDialog(
                                 onClick = {
                                     selectedRoom = id
                                     roomExpanded = false
-                                }
-                            )
-                        }
-                    }
-                }
-
-                // Category Selector
-                ExposedDropdownMenuBox(
-                    expanded = categoryExpanded,
-                    onExpandedChange = { categoryExpanded = !categoryExpanded },
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    OutlinedTextField(
-                        value = selectedCategory,
-                        onValueChange = {},
-                        readOnly = true,
-                        label = { Text("Durum / Kategori") },
-                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = categoryExpanded) },
-                        modifier = Modifier.fillMaxWidth().menuAnchor(),
-                        shape = RoundedCornerShape(10.dp)
-                    )
-
-                    ExposedDropdownMenu(
-                        expanded = categoryExpanded,
-                        onDismissRequest = { categoryExpanded = false }
-                    ) {
-                        categories.forEach { cat ->
-                            DropdownMenuItem(
-                                text = { IdeaCategoryBadge(category = cat) },
-                                onClick = {
-                                    selectedCategory = cat
-                                    categoryExpanded = false
                                 }
                             )
                         }
@@ -1011,6 +965,7 @@ fun IdeaCommentsBottomSheet(
     val scope = rememberCoroutineScope()
     val comments by repository.observeIdeaComments(idea.id).collectAsState(initial = emptyList())
     var commentText by remember { mutableStateOf("") }
+    var commentToDelete by remember { mutableStateOf<com.example.model.IdeaComment?>(null) }
     val sheetState = rememberModalBottomSheetState()
     val context = LocalContext.current
     val ext = MaterialTheme.blackseaColors
@@ -1086,22 +1041,10 @@ fun IdeaCommentsBottomSheet(
 
                                 if (canDelete) {
                                     IconButton(
-                                        onClick = {
-                                            scope.launch {
-                                                try {
-                                                    repository.deleteIdeaComment(idea.id, comment.id)
-                                                    Toast.makeText(context, "Yorum silindi", Toast.LENGTH_SHORT).show()
-                                                } catch (ce: CancellationException) {
-                                                    throw ce
-                                                } catch (e: Exception) {
-                                                    logDebugError("IdeasScreen", "Delete comment failed", e)
-                                                    Toast.makeText(context, sanitizeUserErrorMessage(e, "Yorum silinemedi."), Toast.LENGTH_SHORT).show()
-                                                }
-                                            }
-                                        },
-                                        modifier = Modifier.size(24.dp)
+                                        onClick = { commentToDelete = comment },
+                                        modifier = Modifier.size(28.dp)
                                     ) {
-                                        Icon(imageVector = Icons.Default.Delete, contentDescription = "Yorumu Sil", tint = ext.dangerText, modifier = Modifier.size(14.dp))
+                                        Icon(imageVector = Icons.Default.Delete, contentDescription = "Yorumu Sil", tint = ext.dangerText, modifier = Modifier.size(16.dp))
                                     }
                                 }
                             }
@@ -1165,5 +1108,45 @@ fun IdeaCommentsBottomSheet(
                 }
             }
         }
+    }
+
+    if (commentToDelete != null) {
+        val targetComment = commentToDelete!!
+        AlertDialog(
+            onDismissRequest = { commentToDelete = null },
+            title = { Text("Yorumu Sil", fontWeight = FontWeight.Bold) },
+            text = {
+                Text("Bu yorum kalıcı olarak silinsin mi? Emin misiniz?")
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        commentToDelete = null
+                        scope.launch {
+                            try {
+                                repository.deleteIdeaComment(idea.id, targetComment.id)
+                                Toast.makeText(context, "Yorum silindi", Toast.LENGTH_SHORT).show()
+                            } catch (ce: CancellationException) {
+                                throw ce
+                            } catch (e: Exception) {
+                                logDebugError("IdeasScreen", "Delete comment failed", e)
+                                Toast.makeText(context, sanitizeUserErrorMessage(e, "Yorum silinemedi."), Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = ext.dangerSolid,
+                        contentColor = Color.White
+                    )
+                ) {
+                    Text("Evet, Sil", fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { commentToDelete = null }) {
+                    Text("Vazgeç")
+                }
+            }
+        )
     }
 }

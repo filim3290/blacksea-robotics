@@ -36,10 +36,10 @@ object TeamNotificationDispatcher {
     const val CHANNEL_TEAM = "bsr_team_notifications"
     const val CHANNEL_ANNOUNCEMENTS = "bsr_announcements"
     const val CHANNEL_UPDATES = "bsr_updates"
-    const val CHANNEL_REALTIME_SYNC = "bsr_realtime_sync"
 
-    private const val PREF_REALTIME_SYNC_ENABLED = "realtime_sync_opt_in"
-    const val FOREGROUND_SYNC_NOTIFICATION_ID = 1099
+    private const val LEGACY_CHANNEL_REALTIME_SYNC = "bsr_realtime_sync"
+    private const val LEGACY_PREF_REALTIME_SYNC_ENABLED = "realtime_sync_opt_in"
+    private const val LEGACY_FOREGROUND_SYNC_NOTIFICATION_ID = 1099
 
     const val EXTRA_NOTIF_ID = "notif_id"
     const val EXTRA_NOTIF_TYPE = "notif_type"
@@ -48,22 +48,21 @@ object TeamNotificationDispatcher {
 
     private val dispatchLock = Any()
 
-    fun isRealtimeSyncEnabled(context: Context): Boolean {
-        val prefs = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        return prefs.getBoolean(PREF_REALTIME_SYNC_ENABLED, false)
-    }
-
-    fun setRealtimeSyncEnabled(context: Context, enabled: Boolean) {
-        context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .edit()
-            .putBoolean(PREF_REALTIME_SYNC_ENABLED, enabled)
-            .apply()
-    }
-
-    fun cancelForegroundSyncNotification(context: Context) {
+    fun cleanupLegacyRealtimeSyncArtifacts(context: Context) {
+        val appCtx = context.applicationContext
         try {
-            val nm = context.applicationContext.getSystemService(NotificationManager::class.java)
-            nm?.cancel(FOREGROUND_SYNC_NOTIFICATION_ID)
+            val nm = appCtx.getSystemService(NotificationManager::class.java)
+            nm?.cancel(LEGACY_FOREGROUND_SYNC_NOTIFICATION_ID)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                nm?.deleteNotificationChannel(LEGACY_CHANNEL_REALTIME_SYNC)
+            }
+        } catch (_: Exception) {
+        }
+        try {
+            appCtx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                .edit()
+                .remove(LEGACY_PREF_REALTIME_SYNC_ENABLED)
+                .apply()
         } catch (_: Exception) {
         }
     }
@@ -138,21 +137,10 @@ object TeamNotificationDispatcher {
                 enableVibration(true)
             }
 
-            val realtimeSyncChannel = NotificationChannel(
-                CHANNEL_REALTIME_SYNC,
-                "Anlık Bildirim Bağlantısı",
-                NotificationManager.IMPORTANCE_MIN
-            ).apply {
-                description = "Uygulama kapalıyken anlık ekip bildirimlerini almak için sessiz bağlantı durumu"
-                setShowBadge(false)
-                enableLights(false)
-                enableVibration(false)
-            }
-
             notificationManager.createNotificationChannel(generalChannel)
             notificationManager.createNotificationChannel(announcementsChannel)
             notificationManager.createNotificationChannel(updatesChannel)
-            notificationManager.createNotificationChannel(realtimeSyncChannel)
+            notificationManager.deleteNotificationChannel(LEGACY_CHANNEL_REALTIME_SYNC)
         }
     }
 

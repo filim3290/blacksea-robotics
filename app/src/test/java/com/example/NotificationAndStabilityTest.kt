@@ -394,22 +394,27 @@ class NotificationAndStabilityTest {
     }
 
     @Test
-    fun `realtime sync background service defaults to disabled on fresh context and toggles cleanly`() {
+    fun `cleanupLegacyRealtimeSyncArtifacts clears legacy toggle pref and foreground sync channel`() {
         val context = ApplicationProvider.getApplicationContext<Context>()
-        context.getSharedPreferences("bsr_notif_dispatch_prefs", Context.MODE_PRIVATE)
-            .edit()
-            .clear()
-            .commit()
+        val prefs = context.getSharedPreferences("bsr_notif_dispatch_prefs", Context.MODE_PRIVATE)
+        prefs.edit().putBoolean("realtime_sync_opt_in", true).commit()
 
-        assertFalse(
-            "Background sync foreground notification must be opt-in (false) by default",
-            TeamNotificationDispatcher.isRealtimeSyncEnabled(context)
+        val nm = context.getSystemService(android.app.NotificationManager::class.java)
+        nm.createNotificationChannel(
+            android.app.NotificationChannel(
+                "bsr_realtime_sync",
+                "Legacy",
+                android.app.NotificationManager.IMPORTANCE_MIN
+            )
         )
 
-        TeamNotificationDispatcher.setRealtimeSyncEnabled(context, true)
-        assertTrue(TeamNotificationDispatcher.isRealtimeSyncEnabled(context))
+        TeamNotificationDispatcher.ensureNotificationChannels(context)
+        TeamNotificationDispatcher.cleanupLegacyRealtimeSyncArtifacts(context)
 
-        TeamNotificationDispatcher.setRealtimeSyncEnabled(context, false)
-        assertFalse(TeamNotificationDispatcher.isRealtimeSyncEnabled(context))
+        assertFalse(prefs.contains("realtime_sync_opt_in"))
+        assertNull(nm.getNotificationChannel("bsr_realtime_sync"))
+        assertTrue(nm.getNotificationChannel(TeamNotificationDispatcher.CHANNEL_TEAM) != null)
+        assertTrue(nm.getNotificationChannel(TeamNotificationDispatcher.CHANNEL_ANNOUNCEMENTS) != null)
+        assertTrue(nm.getNotificationChannel(TeamNotificationDispatcher.CHANNEL_UPDATES) != null)
     }
 }

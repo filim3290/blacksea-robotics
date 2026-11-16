@@ -5,12 +5,16 @@ import android.util.Base64
 import androidx.test.core.app.ApplicationProvider
 import com.example.data.BlackseaRepository
 import com.example.data.FileUploadResult
+import com.example.model.ChatMessage
+import com.example.model.MESSAGE_EDIT_WINDOW_MS
 import com.example.model.TeamNotification
 import com.example.model.UserStatus
+import com.example.model.canBeEditedBy
 import com.example.ui.components.formatMediaDuration
 import com.example.ui.components.resolveMediaImageModel
 import com.example.ui.components.resolvePlayableVideoUri
 import com.google.firebase.FirebaseApp
+import com.google.firebase.Timestamp
 import com.google.firebase.firestore.FirebaseFirestore
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
@@ -145,5 +149,30 @@ class MediaPreviewAndFixesTest {
         )
         assertEquals(15_000L, res.mediaDurationMs)
         assertEquals("local:/tmp/clip.mp4", res.storagePath)
+    }
+
+    @Test
+    fun `ChatMessage canBeEditedBy enforces ownership and 1 hour window`() {
+        val nowMs = 1_750_000_000_000L
+        val atNow = Timestamp(java.util.Date(nowMs))
+        val fiftyNineMinutesAgo = Timestamp(java.util.Date(nowMs - (59L * 60L * 1000L)))
+        val exactlyOneHourAgo = Timestamp(java.util.Date(nowMs - MESSAGE_EDIT_WINDOW_MS))
+        val sixtyOneMinutesAgo = Timestamp(java.util.Date(nowMs - (61L * 60L * 1000L)))
+
+        val msgNow = ChatMessage(id = "m1", senderId = "user1", createdAt = atNow)
+        val msg59m = ChatMessage(id = "m2", senderId = "user1", createdAt = fiftyNineMinutesAgo)
+        val msg60m = ChatMessage(id = "m3", senderId = "user1", createdAt = exactlyOneHourAgo)
+        val msg61m = ChatMessage(id = "m4", senderId = "user1", createdAt = sixtyOneMinutesAgo)
+        val msgPendingLocal = ChatMessage(id = "m5", senderId = "user1", createdAt = null)
+        val msgNoId = ChatMessage(id = "", senderId = "user1", createdAt = atNow)
+
+        assertTrue(msgNow.canBeEditedBy("user1", nowMs))
+        assertTrue(msg59m.canBeEditedBy("user1", nowMs))
+        assertTrue(msg60m.canBeEditedBy("user1", nowMs))
+        assertFalse(msg61m.canBeEditedBy("user1", nowMs))
+        assertTrue(msgPendingLocal.canBeEditedBy("user1", nowMs))
+        assertFalse(msgNoId.canBeEditedBy("user1", nowMs))
+        assertFalse(msgNow.canBeEditedBy("user2", nowMs))
+        assertFalse(msgNow.canBeEditedBy(null, nowMs))
     }
 }

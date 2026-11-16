@@ -249,3 +249,99 @@ test("Legacy user document without status field can read and send messages", asy
     })
   );
 });
+
+test("Message sender can edit text within 1 hour, denied after 1 hour, and non-owner cannot edit text", async () => {
+  const now = Date.now();
+  const twentyMinutesAgo = new Date(now - 20 * 60 * 1000);
+  const twoHoursAgo = new Date(now - 2 * 60 * 60 * 1000);
+
+  await testEnv.withSecurityRulesDisabled(async (ctx) => {
+    const db = ctx.firestore();
+    await db.collection("users").doc("sender_u").set({
+      userId: "sender_u",
+      email: "sender@example.com",
+      role: "Yazılım Üyesi",
+      roles: ["Yazılım Üyesi"],
+      status: "approved",
+      isSuperAdmin: false
+    });
+    await db.collection("users").doc("mgr_u").set({
+      userId: "mgr_u",
+      email: "mgr@example.com",
+      role: "Yönetici",
+      roles: ["Yönetici"],
+      status: "approved",
+      isSuperAdmin: true
+    });
+    await db.collection("rooms").doc("general").collection("messages").doc("fresh_msg").set({
+      roomId: "general",
+      senderId: "sender_u",
+      senderName: "Gönderen",
+      text: "İlk metin",
+      isPinned: false,
+      createdAt: twentyMinutesAgo,
+      updatedAt: twentyMinutesAgo
+    });
+    await db.collection("rooms").doc("general").collection("messages").doc("old_msg").set({
+      roomId: "general",
+      senderId: "sender_u",
+      senderName: "Gönderen",
+      text: "Eski metin",
+      isPinned: false,
+      createdAt: twoHoursAgo,
+      updatedAt: twoHoursAgo
+    });
+  });
+
+  const senderDb = testEnv.authenticatedContext("sender_u", { email: "sender@example.com" }).firestore();
+  const mgrDb = testEnv.authenticatedContext("mgr_u", { email: "mgr@example.com" }).firestore();
+
+  // Sender can edit within 1 hour
+  await assertSucceeds(
+    senderDb.collection("rooms").doc("general").collection("messages").doc("fresh_msg").update({
+      text: "Düzenlenmiş metin",
+      isEdited: true,
+      editedAt: new Date(now),
+      updatedAt: new Date(now)
+    })
+  );
+
+  // Blank text is rejected even within 1 hour
+  await assertFails(
+    senderDb.collection("rooms").doc("general").collection("messages").doc("fresh_msg").update({
+      text: "",
+      isEdited: true,
+      editedAt: new Date(now),
+      updatedAt: new Date(now)
+    })
+  );
+
+  // Sender cannot edit after 1 hour
+  await assertFails(
+    senderDb.collection("rooms").doc("general").collection("messages").doc("old_msg").update({
+      text: "Geç düzenleme",
+      isEdited: true,
+      editedAt: new Date(now),
+      updatedAt: new Date(now)
+    })
+  );
+
+  // Manager cannot edit another user's message text
+  await assertFails(
+    mgrDb.collection("rooms").doc("general").collection("messages").doc("fresh_msg").update({
+      text: "Yönetici değiştirdi",
+      isEdited: true,
+      editedAt: new Date(now),
+      updatedAt: new Date(now)
+    })
+  );
+
+  // Manager can still pin/unpin an old message
+  await assertSucceeds(
+    mgrDb.collection("rooms").doc("general").collection("messages").doc("old_msg").update({
+      isPinned: true,
+      updatedAt: new Date(now)
+    })
+  );
+});
+

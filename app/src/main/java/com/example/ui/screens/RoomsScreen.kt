@@ -41,6 +41,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.PushPin
@@ -68,6 +69,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -86,6 +88,7 @@ import com.example.data.BlackseaRepository
 import com.example.model.ChatMessage
 import com.example.model.SharedProjectFile
 import com.example.model.UserProfile
+import com.example.model.canBeEditedBy
 import com.example.ui.components.FileUploadProgressDialog
 import com.example.ui.components.InAppFileViewerDialog
 import com.example.ui.components.MediaThumbnailPreview
@@ -156,6 +159,21 @@ fun RoomsScreen(
     var isRecordingVoice by remember { mutableStateOf(false) }
     var recordDurationSeconds by remember { mutableIntStateOf(0) }
     var isVoiceUploading by remember { mutableStateOf(false) }
+
+    // Message Edit (1-hour window) & Delete Confirmation State
+    var currentTimeMs by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    var messageToDelete by remember { mutableStateOf<ChatMessage?>(null) }
+    var isDeletingMessage by remember { mutableStateOf(false) }
+    var messageToEdit by remember { mutableStateOf<ChatMessage?>(null) }
+    var editMessageText by remember { mutableStateOf("") }
+    var isSavingMessageEdit by remember { mutableStateOf(false) }
+
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(30_000L)
+            currentTimeMs = System.currentTimeMillis()
+        }
+    }
 
     val audioPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
@@ -365,10 +383,12 @@ fun RoomsScreen(
                     enter = fadeIn() + slideInVertically(initialOffsetY = { 20 })
                 ) {
                     val isMyMessage = message.senderId == currentUserProfile?.userId
+                    val canEditMessage = message.canBeEditedBy(currentUserProfile?.userId, currentTimeMs)
                     MessageItemBubble(
                         message = message,
                         isMyMessage = isMyMessage,
                         canManage = isMyMessage || isAdmin,
+                        canEdit = canEditMessage,
                         onReply = { replyingTo = message },
                         onTogglePin = {
                             scope.launch {
@@ -382,17 +402,12 @@ fun RoomsScreen(
                                 }
                             }
                         },
+                        onEdit = {
+                            messageToEdit = message
+                            editMessageText = message.text
+                        },
                         onDelete = {
-                            scope.launch {
-                                try {
-                                    repository.deleteMessage(selectedRoomId, message.id)
-                                } catch (ce: CancellationException) {
-                                    throw ce
-                                } catch (e: Exception) {
-                                    logDebugError("RoomsScreen", "Delete message failed", e)
-                                    Toast.makeText(context, sanitizeUserErrorMessage(e, "Mesaj silinemedi."), Toast.LENGTH_SHORT).show()
-                                }
-                            }
+                            messageToDelete = message
                         },
                         onOpenFile = { projectFile ->
                             activePreviewFile = projectFile
@@ -932,6 +947,143 @@ fun RoomsScreen(
             onDismiss = { activePreviewFile = null }
         )
     }
+
+    // Delete Message Confirmation Dialog
+    if (messageToDelete != null) {
+        val targetMsg = messageToDelete!!
+        AlertDialog(
+            onDismissRequest = { if (!isDeletingMessage) messageToDelete = null },
+            title = { Text("Mesajı Sil", fontWeight = FontWeight.Bold, color = ext.dangerText) },
+            text = {
+                Text(
+                    "Bu mesaj kalıcı olarak silinsin mi? Emin misiniz?",
+                    color = ext.textSecondary
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        isDeletingMessage = true
+                        scope.launch {
+                            try {
+                                repository.deleteMessage(selectedRoomId, targetMsg.id)
+                                messageToDelete = null
+                                Toast.makeText(context, "Mesaj silindi.", Toast.LENGTH_SHORT).show()
+                            } catch (ce: CancellationException) {
+                                throw ce
+                            } catch (e: Exception) {
+                                logDebugError("RoomsScreen", "Delete message failed", e)
+                                Toast.makeText(context, sanitizeUserErrorMessage(e, "Mesaj silinemedi."), Toast.LENGTH_SHORT).show()
+                            } finally {
+                                isDeletingMessage = false
+                            }
+                        }
+                    },
+                    enabled = !isDeletingMessage,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = ext.dangerSolid,
+                        contentColor = Color.White
+                    ),
+                    modifier = Modifier.testTag("confirm_delete_message_button")
+                ) {
+                    if (isDeletingMessage) {
+                        CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.White, strokeWidth = 2.dp)
+                    } else {
+                        Text("Evet, Sil", fontWeight = FontWeight.Bold)
+                    }
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { messageToDelete = null },
+                    enabled = !isDeletingMessage
+                ) {
+                    Text("Vazgeç")
+                }
+            }
+        )
+    }
+
+    // Edit Message Dialog (within 1 hour)
+    if (messageToEdit != null) {
+        val targetMsg = messageToEdit!!
+        AlertDialog(
+            onDismissRequest = { if (!isSavingMessageEdit) messageToEdit = null },
+            title = { Text("Mesajı Düzenle", fontWeight = FontWeight.Bold, fontSize = 17.sp) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = "Gönderdiğiniz mesajı 1 saat içinde düzenleyebilirsiniz.",
+                        fontSize = 12.sp,
+                        color = ext.textSecondary
+                    )
+                    OutlinedTextField(
+                        value = editMessageText,
+                        onValueChange = { editMessageText = it },
+                        label = { Text("Mesajınız") },
+                        minLines = 2,
+                        maxLines = 5,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("edit_message_input"),
+                        shape = RoundedCornerShape(10.dp)
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val trimmed = editMessageText.trim()
+                        if (trimmed.isBlank()) return@Button
+                        isSavingMessageEdit = true
+                        scope.launch {
+                            try {
+                                repository.editMessage(selectedRoomId, targetMsg.id, trimmed)
+                                messageToEdit = null
+                                Toast.makeText(context, "Mesaj güncellendi.", Toast.LENGTH_SHORT).show()
+                            } catch (ce: CancellationException) {
+                                throw ce
+                            } catch (e: Exception) {
+                                logDebugError("RoomsScreen", "Edit message failed", e)
+                                val msg = e.message.orEmpty()
+                                val friendly = if (
+                                    e is IllegalStateException &&
+                                    (msg.contains("1 saat") || msg.contains("kendi") || msg.contains("boş") || msg.contains("bulunamadı"))
+                                ) {
+                                    msg
+                                } else {
+                                    sanitizeUserErrorMessage(e, "Mesaj düzenlenemedi.")
+                                }
+                                Toast.makeText(context, friendly, Toast.LENGTH_LONG).show()
+                            } finally {
+                                isSavingMessageEdit = false
+                            }
+                        }
+                    },
+                    enabled = !isSavingMessageEdit && editMessageText.isNotBlank(),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = ElectricBlue,
+                        contentColor = Color.White
+                    ),
+                    modifier = Modifier.testTag("confirm_edit_message_button")
+                ) {
+                    if (isSavingMessageEdit) {
+                        CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.White, strokeWidth = 2.dp)
+                    } else {
+                        Text("Kaydet", fontWeight = FontWeight.Bold)
+                    }
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { messageToEdit = null },
+                    enabled = !isSavingMessageEdit
+                ) {
+                    Text("Vazgeç")
+                }
+            }
+        )
+    }
 }
 
 @OptIn(ExperimentalLayoutApi::class)
@@ -940,8 +1092,10 @@ fun MessageItemBubble(
     message: ChatMessage,
     isMyMessage: Boolean,
     canManage: Boolean,
+    canEdit: Boolean,
     onReply: () -> Unit,
     onTogglePin: () -> Unit,
+    onEdit: () -> Unit,
     onDelete: () -> Unit,
     onOpenFile: (SharedProjectFile) -> Unit,
     onDownloadFile: (String) -> Unit
@@ -1217,8 +1371,14 @@ fun MessageItemBubble(
                         Spacer(modifier = Modifier.width(4.dp))
                     }
 
+                    val timeDisplay = buildString {
+                        if (message.isEdited) {
+                            append("(düzenlendi) ")
+                        }
+                        append(formattedTime)
+                    }.trim()
                     Text(
-                        text = formattedTime,
+                        text = timeDisplay,
                         fontSize = 10.sp,
                         color = if (isMyMessage) Color.White.copy(alpha = 0.7f) else ext.textMuted
                     )
@@ -1233,6 +1393,19 @@ fun MessageItemBubble(
                             .size(14.dp)
                             .clickable { onReply() }
                     )
+
+                    if (canEdit) {
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Icon(
+                            imageVector = Icons.Default.Edit,
+                            contentDescription = "Mesajı Düzenle",
+                            tint = if (isMyMessage) Color.White.copy(alpha = 0.85f) else ext.accentBlue,
+                            modifier = Modifier
+                                .size(14.dp)
+                                .clickable { onEdit() }
+                                .testTag("edit_message_${message.id}")
+                        )
+                    }
 
                     if (canManage) {
                         Spacer(modifier = Modifier.width(6.dp))
@@ -1253,6 +1426,7 @@ fun MessageItemBubble(
                             modifier = Modifier
                                 .size(14.dp)
                                 .clickable { onDelete() }
+                                .testTag("delete_message_${message.id}")
                         )
                     }
                 }

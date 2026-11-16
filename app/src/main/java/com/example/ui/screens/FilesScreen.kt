@@ -30,8 +30,11 @@ import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.UploadFile
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
@@ -86,8 +89,10 @@ fun FilesScreen(
     var selectedTypeFilter by remember { mutableStateOf("Hepsi") }
     val files by repository.observeSharedFiles().collectAsState(initial = emptyList())
 
-    // File Preview Modal
+    // File Preview Modal & Delete Confirmation
     var activePreviewFile by remember { mutableStateOf<SharedProjectFile?>(null) }
+    var fileToDelete by remember { mutableStateOf<SharedProjectFile?>(null) }
+    var isDeletingFile by remember { mutableStateOf(false) }
 
     // Real File Upload State
     var pickedFileUri by remember { mutableStateOf<Uri?>(null) }
@@ -242,17 +247,7 @@ fun FilesScreen(
                             },
                             canDelete = canDelete,
                             onDelete = {
-                                scope.launch {
-                                    try {
-                                        repository.deleteSharedFile(file.id)
-                                        Toast.makeText(context, "Dosya silindi", Toast.LENGTH_SHORT).show()
-                                    } catch (ce: CancellationException) {
-                                        throw ce
-                                    } catch (e: Exception) {
-                                        logDebugError("FilesScreen", "Delete shared file failed", e)
-                                        Toast.makeText(context, sanitizeUserErrorMessage(e, "Dosya silinemedi."), Toast.LENGTH_SHORT).show()
-                                    }
-                                }
+                                fileToDelete = file
                             }
                         )
                     }
@@ -433,6 +428,62 @@ fun FilesScreen(
                 },
                 onRetry = {
                     uploadErrorMessage = null
+                }
+            )
+        }
+
+        // Delete Shared File Confirmation Dialog
+        if (fileToDelete != null) {
+            val targetFile = fileToDelete!!
+            AlertDialog(
+                onDismissRequest = { if (!isDeletingFile) fileToDelete = null },
+                title = { Text("Dosyayı Sil", fontWeight = FontWeight.Bold, color = ext.dangerText) },
+                text = {
+                    Text(
+                        "\"${targetFile.fileName}\" dosyası kalıcı olarak silinsin mi? Emin misiniz?",
+                        color = ext.textSecondary
+                    )
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            isDeletingFile = true
+                            scope.launch {
+                                try {
+                                    repository.deleteSharedFile(targetFile.id)
+                                    fileToDelete = null
+                                    Toast.makeText(context, "Dosya silindi.", Toast.LENGTH_SHORT).show()
+                                } catch (ce: CancellationException) {
+                                    throw ce
+                                } catch (e: Exception) {
+                                    logDebugError("FilesScreen", "Delete shared file failed", e)
+                                    Toast.makeText(context, sanitizeUserErrorMessage(e, "Dosya silinemedi."), Toast.LENGTH_SHORT).show()
+                                } finally {
+                                    isDeletingFile = false
+                                }
+                            }
+                        },
+                        enabled = !isDeletingFile,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = ext.dangerSolid,
+                            contentColor = Color.White
+                        ),
+                        modifier = Modifier.testTag("confirm_delete_file_button")
+                    ) {
+                        if (isDeletingFile) {
+                            CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.White, strokeWidth = 2.dp)
+                        } else {
+                            Text("Evet, Sil", fontWeight = FontWeight.Bold)
+                        }
+                    }
+                },
+                dismissButton = {
+                    TextButton(
+                        onClick = { fileToDelete = null },
+                        enabled = !isDeletingFile
+                    ) {
+                        Text("Vazgeç")
+                    }
                 }
             )
         }

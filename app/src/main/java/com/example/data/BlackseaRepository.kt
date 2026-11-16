@@ -1261,6 +1261,42 @@ class BlackseaRepository(val db: FirebaseFirestore) {
         }
     }
 
+    suspend fun editMessage(roomId: String, messageId: String, newText: String) {
+        val uid = requireUserId()
+        val trimmed = newText.trim()
+        require(trimmed.isNotBlank()) { "Mesaj metni boş olamaz." }
+        val path = "rooms/$roomId/messages/$messageId"
+        val docRef = db.collection("rooms").document(roomId).collection("messages").document(messageId)
+        try {
+            val existing = docRef.get().await()
+            if (!existing.exists()) {
+                throw IllegalStateException("Mesaj bulunamadı.")
+            }
+            val senderId = existing.getString("senderId") ?: ""
+            if (senderId != uid) {
+                throw IllegalStateException("Yalnızca kendi mesajınızı düzenleyebilirsiniz.")
+            }
+            val createdMs = existing.getTimestamp("createdAt")?.toDate()?.time
+                ?: throw IllegalStateException("Mesaj zamanı doğrulanamadı.")
+            if (System.currentTimeMillis() - createdMs > com.example.model.MESSAGE_EDIT_WINDOW_MS) {
+                throw IllegalStateException("Mesaj yalnızca gönderildikten sonraki 1 saat içinde düzenlenebilir.")
+            }
+            docRef.update(
+                mapOf(
+                    "text" to trimmed,
+                    "isEdited" to true,
+                    "editedAt" to FieldValue.serverTimestamp(),
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+            ).await()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.UPDATE, path)
+            throw e
+        }
+    }
+
     suspend fun deleteMessage(roomId: String, messageId: String) {
         val path = "rooms/$roomId/messages/$messageId"
         val docRef = db.collection("rooms").document(roomId).collection("messages").document(messageId)

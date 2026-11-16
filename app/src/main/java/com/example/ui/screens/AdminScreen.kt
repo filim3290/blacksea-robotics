@@ -80,6 +80,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.BlackseaRepository
 import com.example.model.PredefinedRoles
+import com.example.model.TeamAnnouncement
 import com.example.model.TeamType
 import com.example.model.UserProfile
 import com.example.model.UserStatus
@@ -141,6 +142,7 @@ fun AdminScreen(
     var memberToEdit by remember { mutableStateOf<UserProfile?>(null) }
     var userToRevoke by remember { mutableStateOf<UserProfile?>(null) }
     var userToDelete by remember { mutableStateOf<UserProfile?>(null) }
+    var announcementToDelete by remember { mutableStateOf<TeamAnnouncement?>(null) }
     var isPerformingUserAction by remember { mutableStateOf(false) }
     var showNewAnnouncementDialog by remember { mutableStateOf(false) }
     var showBroadcastUpdateDialog by remember { mutableStateOf(false) }
@@ -837,20 +839,9 @@ fun AdminScreen(
                                     ) {
                                         Text(text = announcement.title, fontWeight = FontWeight.Bold, fontSize = 15.sp, color = MaterialTheme.colorScheme.onSurface)
                                         IconButton(
-                                            onClick = {
-                                                scope.launch {
-                                                    try {
-                                                        repository.deleteAnnouncement(announcement.id)
-                                                        Toast.makeText(context, "Duyuru silindi", Toast.LENGTH_SHORT).show()
-                                                    } catch (ce: CancellationException) {
-                                                        throw ce
-                                                    } catch (e: Exception) {
-                                                        Toast.makeText(context, sanitizeUserErrorMessage(e), Toast.LENGTH_SHORT).show()
-                                                    }
-                                                }
-                                            }
+                                            onClick = { announcementToDelete = announcement }
                                         ) {
-                                            Icon(imageVector = Icons.Default.Delete, contentDescription = "Sil", tint = ext.dangerText)
+                                            Icon(imageVector = Icons.Default.Delete, contentDescription = "Duyuruyu Sil", tint = ext.dangerText)
                                         }
                                     }
                                     Spacer(modifier = Modifier.height(4.dp))
@@ -1348,6 +1339,61 @@ fun AdminScreen(
             },
             dismissButton = {
                 TextButton(onClick = { userToDelete = null }, enabled = !isPerformingUserAction) {
+                    Text("Vazgeç")
+                }
+            }
+        )
+    }
+
+    // Delete Announcement Confirmation Dialog
+    if (announcementToDelete != null) {
+        val targetAnnouncement = announcementToDelete!!
+        AlertDialog(
+            onDismissRequest = { if (!isPerformingUserAction) announcementToDelete = null },
+            title = { Text("Duyuruyu Sil", fontWeight = FontWeight.Bold, color = ext.dangerText) },
+            text = {
+                Text(
+                    "\"${targetAnnouncement.title}\" duyurusu kalıcı olarak silinsin mi? Emin misiniz?",
+                    color = ext.textSecondary
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        isPerformingUserAction = true
+                        scope.launch {
+                            try {
+                                repository.deleteAnnouncement(targetAnnouncement.id)
+                                announcementToDelete = null
+                                Toast.makeText(context, "Duyuru silindi.", Toast.LENGTH_SHORT).show()
+                            } catch (ce: CancellationException) {
+                                throw ce
+                            } catch (e: Exception) {
+                                Toast.makeText(context, sanitizeUserErrorMessage(e), Toast.LENGTH_SHORT).show()
+                            } finally {
+                                isPerformingUserAction = false
+                            }
+                        }
+                    },
+                    enabled = !isPerformingUserAction,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = ext.dangerSolid,
+                        contentColor = Color.White
+                    ),
+                    modifier = Modifier.testTag("confirm_delete_announcement_button")
+                ) {
+                    if (isPerformingUserAction) {
+                        CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.White, strokeWidth = 2.dp)
+                    } else {
+                        Text("Evet, Sil", fontWeight = FontWeight.Bold)
+                    }
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { announcementToDelete = null },
+                    enabled = !isPerformingUserAction
+                ) {
                     Text("Vazgeç")
                 }
             }

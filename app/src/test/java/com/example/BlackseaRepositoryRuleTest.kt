@@ -377,4 +377,113 @@ class BlackseaRepositoryRuleTest : FirestoreEmulatorTestBase() {
     }
     assertTrue("Legacy user message must be readable and writable", messages.any { it.senderId == legacyUid })
   }
+
+  @Test
+  fun testEditMessageWithinOneHourAndRejectExpiredOrNonOwner() = runBlocking {
+    val senderEmail = "editor_${System.nanoTime()}@blacksea.test"
+    val senderUid = signInTestUser(senderEmail)
+    val repository = BlackseaRepository(firestore)
+
+    // Ensure sender is active/approved
+    withTimeout(5000L) {
+      val senderPayload = mapOf(
+        "userId" to senderUid,
+        "firstName" to "Mesaj",
+        "lastName" to "Yazarı",
+        "username" to "mesajyazari",
+        "displayName" to "Mesaj Yazarı",
+        "email" to senderEmail,
+        "team" to "Yazılım Ekibi",
+        "role" to "Yazılım Üyesi",
+        "roles" to listOf("Yazılım Üyesi"),
+        "status" to UserStatus.APPROVED.value
+      )
+      com.google.android.gms.tasks.Tasks.await(
+        firestore.collection("users").document(senderUid).set(senderPayload)
+      )
+    }
+
+    // 1. Fresh message can be edited by its sender
+    withTimeout(5000L) {
+      repository.sendMessage(
+        roomId = "general",
+        text = "Yanlış yazılmış mesaj",
+        senderName = "Mesaj Yazarı",
+        senderTeam = "Yazılım Ekibi"
+      )
+    }
+    val freshMsg = withTimeout(5000L) {
+      repository.observeMessages("general").first { list -> list.any { it.senderId == senderUid && it.text == "Yanlış yazılmış mesaj" } }
+    }.last { it.senderId == senderUid && it.text == "Yanlış yazılmış mesaj" }
+
+    withTimeout(5000L) {
+      repository.editMessage("general", freshMsg.id, "Düzeltilmiş mesaj")
+    }
+    val updatedMessages = withTimeout(5000L) {
+      repository.observeMessages("general").first { list -> list.any { it.id == freshMsg.id && it.text == "Düzeltilmiş mesaj" } }
+    }
+    val editedMsg = updatedMessages.first { it.id == freshMsg.id }
+    assertTrue("Edited flag must be set", editedMsg.isEdited)
+    assertEquals("Düzeltilmiş mesaj", editedMsg.text)
+
+    // 2. Old (> 1 hour) message cannot be edited
+    val oldDate = java.util.Date(System.currentTimeMillis() - 75L * 60L * 1000L)
+    val oldMsgRef = firestore.collection("rooms").document("general").collection("messages").document()
+    withTimeout(5000L) {
+      com.google.android.gms.tasks.Tasks.await(
+        oldMsgRef.set(
+          mapOf(
+            "id" to oldMsgRef.id,
+            "roomId" to "general",
+            "senderId" to senderUid,
+            "senderName" to "Mesaj Yazarı",
+            "senderTeam" to "Yazılım Ekibi",
+            "text" to "Çok eski mesaj",
+            "createdAt" to com.google.firebase.Timestamp(oldDate),
+            "updatedAt" to com.google.firebase.Timestamp(oldDate)
+          )
+        )
+      )
+    }
+
+    try {
+      withTimeout(5000L) {
+        repository.editMessage("general", oldMsgRef.id, "Süre aşımı denemesi")
+      }
+      fail("Editing a message older than 1 hour must fail")
+    } catch (e: Exception) {
+      assertTrue(
+        "Should fail with 1-hour restriction or permission denied, got: ${e.message}",
+        e is IllegalStateException || e.unwrapFirestoreException()?.code == FirebaseFirestoreException.Code.PERMISSION_DENIED
+      )
+    }
+
+    // 3. Another user cannot edit sender's fresh message
+    val otherEmail = "other_${System.nanoTime()}@blacksea.test"
+    val otherUid = signInTestUser(otherEmail)
+    withTimeout(5000L) {
+      com.google.android.gms.tasks.Tasks.await(
+        firestore.collection("users").document(otherUid).set(
+          mapOf(
+            "userId" to otherUid,
+            "email" to otherEmail,
+            "status" to UserStatus.APPROVED.value,
+            "role" to "Yazılım Üyesi",
+            "roles" to listOf("Yazılım Üyesi")
+          )
+        )
+      )
+    }
+    try {
+      withTimeout(5000L) {
+        repository.editMessage("general", freshMsg.id, "Başkasının mesajını değiştir")
+      }
+      fail("Non-owner must not be allowed to edit someone else's message")
+    } catch (e: Exception) {
+      assertTrue(
+        "Expected ownership error or permission denied, got: ${e.message}",
+        e is IllegalStateException || e.unwrapFirestoreException()?.code == FirebaseFirestoreException.Code.PERMISSION_DENIED
+      )
+    }
+  }
 }

@@ -34,7 +34,7 @@ abstract class FirestoreEmulatorTestBase {
   open fun setUpFirebase() {
     val isEmulatorReachable = try {
       java.net.Socket().use { socket ->
-        socket.connect(java.net.InetSocketAddress(EMULATOR_HOST, FIRESTORE_PORT), 250)
+        socket.connect(java.net.InetSocketAddress(EMULATOR_HOST, FIRESTORE_PORT), 1000)
         true
       }
     } catch (_: Exception) {

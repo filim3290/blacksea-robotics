@@ -47,7 +47,6 @@ import com.example.data.BlackseaRepository
 import com.example.data.UserProfileLoadState
 import com.example.model.UserStatus
 import com.example.notifications.BackgroundNotificationWorker
-import com.example.notifications.RealtimeNotificationService
 import com.example.notifications.TeamNotificationDispatcher
 import com.example.ui.MainScreen
 import com.example.ui.screens.AuthScreen
@@ -155,7 +154,7 @@ fun AppContent(
         logDebug("Notifications", "POST_NOTIFICATIONS granted: $isGranted")
         if (isGranted) {
             if (isAuthCompleted) {
-                RealtimeNotificationService.startIfEligible(context)
+                BackgroundNotificationWorker.schedulePeriodicSync(context)
             }
         } else {
             val enabled = NotificationManagerCompat.from(context).areNotificationsEnabled()
@@ -195,9 +194,7 @@ fun AppContent(
 
     // Check updates on app launch and listen to Firestore real-time updates
     LaunchedEffect(Unit) {
-        if (!TeamNotificationDispatcher.isRealtimeSyncEnabled(context)) {
-            RealtimeNotificationService.stop(context)
-        }
+        TeamNotificationDispatcher.cleanupLegacyRealtimeSyncArtifacts(context)
         val enabled = NotificationManagerCompat.from(context).areNotificationsEnabled()
         if (!enabled) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -264,7 +261,6 @@ fun AppContent(
         if (activeUid != null && isAuthCompleted) {
             isSelfDeleting = false
             BackgroundNotificationWorker.schedulePeriodicSync(context)
-            RealtimeNotificationService.startIfEligible(context)
             performUpdateCheckAndNotify(forceRefresh = false, notifyOs = false)
         }
     }
@@ -290,7 +286,6 @@ fun AppContent(
                 val isFounderEmail = currentUser?.email.equals("filim3290@gmail.com", ignoreCase = true)
                 if (!isFounderEmail && !isSelfDeleting) {
                     BackgroundNotificationWorker.cancelPeriodicSync(context)
-                    RealtimeNotificationService.stop(context)
                     isAuthCompleted = false
                     Toast.makeText(
                         context,
@@ -307,7 +302,6 @@ fun AppContent(
                 val isApproved = UserStatus.isActive(profile.status) || isFounder
                 if (!isApproved) {
                     BackgroundNotificationWorker.cancelPeriodicSync(context)
-                    RealtimeNotificationService.stop(context)
                     isAuthCompleted = false
                     if (UserStatus.isRevoked(profile.status)) {
                         Toast.makeText(
@@ -317,7 +311,7 @@ fun AppContent(
                         ).show()
                     }
                 } else {
-                    RealtimeNotificationService.startIfEligible(context)
+                    BackgroundNotificationWorker.schedulePeriodicSync(context)
                     try {
                         repository.ensureDefaultRoomsExist()
                     } catch (_: Exception) {
@@ -398,6 +392,10 @@ fun AppContent(
             if (event == Lifecycle.Event.ON_RESUME) {
                 scope.launch {
                     performUpdateCheckAndNotify()
+                }
+            } else if (event == Lifecycle.Event.ON_STOP) {
+                if (Firebase.auth.currentUser != null && isAuthCompleted) {
+                    BackgroundNotificationWorker.schedulePeriodicSync(context)
                 }
             }
         }
@@ -506,7 +504,6 @@ fun AppContent(
                 onConsumeNotificationNav = onConsumeNotificationNav,
                 onShowUpdateDialog = { release -> availableUpdate = release },
                 onSignOut = {
-                    RealtimeNotificationService.stop(context)
                     BackgroundNotificationWorker.cancelPeriodicSync(context)
                     Firebase.auth.signOut()
                     currentUser = null
@@ -514,7 +511,6 @@ fun AppContent(
                 },
                 onAccountDeleted = {
                     isSelfDeleting = true
-                    RealtimeNotificationService.stop(context)
                     BackgroundNotificationWorker.cancelPeriodicSync(context)
                     TeamNotificationDispatcher.clearUserSyncState(context, uid)
                     Firebase.auth.signOut()

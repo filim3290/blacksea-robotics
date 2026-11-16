@@ -3,6 +3,7 @@ package com.example.model
 import com.google.firebase.Timestamp
 import com.google.firebase.firestore.DocumentId
 import com.google.firebase.firestore.IgnoreExtraProperties
+import com.google.firebase.firestore.PropertyName
 import com.google.firebase.firestore.ServerTimestamp
 
 enum class TeamType(val displayName: String, val description: String) {
@@ -154,6 +155,8 @@ data class ChatRoom(
     @ServerTimestamp val updatedAt: Timestamp? = null
 )
 
+const val MESSAGE_EDIT_WINDOW_MS = 60L * 60L * 1000L // 1 saat
+
 @IgnoreExtraProperties
 data class ChatMessage(
     @DocumentId val id: String = "",
@@ -171,13 +174,23 @@ data class ChatMessage(
     val thumbnailUrl: String = "",
     val storagePath: String = "",
     val mediaDurationMs: Long = 0L,
-    val isPinned: Boolean = false,
+    @get:PropertyName("isPinned") @field:PropertyName("isPinned") val isPinned: Boolean = false,
+    @get:PropertyName("isEdited") @field:PropertyName("isEdited") val isEdited: Boolean = false,
+    val editedAt: Timestamp? = null,
     val replyToId: String = "",
     val replyToSender: String = "",
     val replyToText: String = "",
     @ServerTimestamp val createdAt: Timestamp? = null,
     @ServerTimestamp val updatedAt: Timestamp? = null
 )
+
+fun ChatMessage.canBeEditedBy(userId: String?, nowMs: Long = System.currentTimeMillis()): Boolean {
+    if (userId.isNullOrBlank() || senderId != userId) return false
+    if (id.isBlank()) return false
+    val sentAtMs = createdAt?.toDate()?.time ?: return true
+    val elapsed = nowMs - sentAtMs
+    return elapsed <= MESSAGE_EDIT_WINDOW_MS && elapsed >= -300_000L
+}
 
 @IgnoreExtraProperties
 data class IdeaItem(

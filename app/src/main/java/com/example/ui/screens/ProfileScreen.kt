@@ -27,7 +27,6 @@ import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.ExitToApp
 import androidx.compose.material.icons.filled.Info
-import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.School
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material3.AlertDialog
@@ -45,7 +44,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -68,8 +66,6 @@ import com.example.data.BlackseaRepository
 import com.example.model.PredefinedRoles
 import com.example.model.TeamType
 import com.example.model.UserProfile
-import com.example.notifications.RealtimeNotificationService
-import com.example.notifications.TeamNotificationDispatcher
 import com.example.ui.components.BlackseaLogo
 import com.example.ui.components.RoleBadge
 import com.example.ui.components.TeamBadge
@@ -100,9 +96,6 @@ fun ProfileScreen(
     var showDeleteStep1 by remember { mutableStateOf(false) }
     var showDeleteStep2 by remember { mutableStateOf(false) }
     var isDeletingAccount by remember { mutableStateOf(false) }
-    var realtimeNotifsEnabled by remember {
-        mutableStateOf(TeamNotificationDispatcher.isRealtimeSyncEnabled(context))
-    }
 
     val isAdmin = currentUserProfile?.isManagerAccount() == true
 
@@ -213,70 +206,6 @@ fun ProfileScreen(
                         Text("Yönetici Paneline Git", fontSize = 13.sp, fontWeight = FontWeight.Bold)
                     }
                 }
-            }
-        }
-
-        // Notification Preferences Card
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(16.dp),
-            border = BorderStroke(1.dp, ext.cardBorder),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-            elevation = CardDefaults.cardElevation(defaultElevation = if (ext.isDark) 2.dp else 1.dp)
-        ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(16.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                Surface(
-                    shape = CircleShape,
-                    color = ext.accentBlueContainer,
-                    modifier = Modifier.size(40.dp)
-                ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Icon(
-                            imageVector = Icons.Default.Notifications,
-                            contentDescription = null,
-                            tint = ext.accentBlue,
-                            modifier = Modifier.size(20.dp)
-                        )
-                    }
-                }
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = "Anlık Arka Plan Bildirimleri",
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
-                    Text(
-                        text = "Uygulama kapalıyken anında bildirim almak için isteğe bağlı canlı bağlantıyı açar",
-                        fontSize = 11.sp,
-                        color = ext.textSecondary,
-                        lineHeight = 15.sp
-                    )
-                }
-                Switch(
-                    checked = realtimeNotifsEnabled,
-                    onCheckedChange = { enabled ->
-                        realtimeNotifsEnabled = enabled
-                        TeamNotificationDispatcher.setRealtimeSyncEnabled(context, enabled)
-                        if (enabled) {
-                            if (TeamNotificationDispatcher.hasNotificationPermission(context)) {
-                                RealtimeNotificationService.startIfEligible(context)
-                                Toast.makeText(context, "Anlık bildirim bağlantısı açıldı.", Toast.LENGTH_SHORT).show()
-                            } else {
-                                Toast.makeText(context, "Lütfen cihaz ayarlarından bildirim iznini açın.", Toast.LENGTH_LONG).show()
-                            }
-                        } else {
-                            RealtimeNotificationService.stop(context)
-                            Toast.makeText(context, "Arka plan canlı bağlantısı durduruldu.", Toast.LENGTH_SHORT).show()
-                        }
-                    }
-                )
             }
         }
 

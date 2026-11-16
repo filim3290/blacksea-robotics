@@ -73,7 +73,18 @@ service cloud.firestore {
       match /messages/{messageId} {
         allow read: if isActiveUser();
         allow create: if isActiveUser() && request.resource.data.senderId == request.auth.uid;
-        allow update: if isActiveUser() && (request.resource.data.senderId == request.auth.uid || isManager());
+        allow update: if isActiveUser() && (
+          (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isPinned', 'updatedAt']) &&
+            (resource.data.senderId == request.auth.uid || isManager())) ||
+          (resource.data.senderId == request.auth.uid &&
+            request.resource.data.senderId == resource.data.senderId &&
+            request.resource.data.createdAt == resource.data.createdAt &&
+            resource.data.createdAt != null &&
+            request.time <= resource.data.createdAt + duration.value(1, 'h') &&
+            request.resource.data.diff(resource.data).affectedKeys().hasOnly(['text', 'isEdited', 'editedAt', 'updatedAt']) &&
+            request.resource.data.text is string &&
+            request.resource.data.text.size() > 0)
+        );
         allow delete: if isActiveUser() && (resource.data.senderId == request.auth.uid || isManager());
       }
     }
