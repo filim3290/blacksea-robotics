@@ -16,6 +16,7 @@ import com.example.R
 import com.example.model.TeamNotification
 import com.example.update.AppReleaseInfo
 import com.example.update.AppUpdateManager
+import com.example.update.UpdateCheckResult
 import com.example.util.logDebugWarn
 import org.json.JSONArray
 
@@ -365,17 +366,22 @@ object TeamNotificationDispatcher {
     }
 
     /**
-     * Dispatches an OS notification for a compatible newer app release if we have not yet notified
-     * for [AppReleaseInfo.versionCode].
+     * Dispatches an OS notification for a newer app release if we have not yet notified
+     * for [AppReleaseInfo.versionCode] or [AppReleaseInfo.tagName].
      */
     fun dispatchUpdateNotificationIfNeeded(
         context: Context,
         updateManager: AppUpdateManager,
         release: AppReleaseInfo
     ): Boolean {
-        if (release.versionCode <= updateManager.getCurrentVersionCode()) return false
-        if (!updateManager.isReleaseSignatureCompatible(release)) return false
-        if (updateManager.hasNotifiedForVersion(release.versionCode)) return false
+        val currentCode = updateManager.getCurrentVersionCode()
+        val isNewer = when {
+            release.versionCode > currentCode -> true
+            release.versionCode <= 0 -> updateManager.evaluateReleaseComparison(release) is UpdateCheckResult.UpdateAvailable
+            else -> false
+        }
+        if (!isNewer) return false
+        if (updateManager.hasNotifiedForRelease(release.versionCode, release.tagName)) return false
 
         val appCtx = context.applicationContext
         if (!hasNotificationPermission(appCtx)) return false
@@ -394,7 +400,12 @@ object TeamNotificationDispatcher {
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             )
             val notifManager = appCtx.getSystemService(NotificationManager::class.java) ?: return false
-            val contentText = "Blacksea Robotics için yeni bir sürüm (v${release.versionName}) yayınlandı."
+            val isCompatible = updateManager.isReleaseSignatureCompatible(release)
+            val contentText = if (isCompatible) {
+                "Blacksea Robotics için yeni bir sürüm (v${release.versionName}) yayınlandı."
+            } else {
+                "Blacksea Robotics için yeni bir sürüm (v${release.versionName}) yayınlandı. Tarayıcıdan indirebilirsiniz."
+            }
             val builder = NotificationCompat.Builder(appCtx, CHANNEL_UPDATES)
                 .setSmallIcon(R.mipmap.ic_launcher)
                 .setContentTitle("🔔 Yeni Güncelleme Mevcut")
@@ -404,7 +415,7 @@ object TeamNotificationDispatcher {
                 .setContentIntent(pendingIntent)
                 .setAutoCancel(true)
             notifManager.notify(1001, builder.build())
-            updateManager.markVersionNotified(release.versionCode)
+            updateManager.markReleaseNotified(release.versionCode, release.tagName)
             true
         } catch (sec: SecurityException) {
             logDebugWarn(TAG, "Missing notification permission for update", sec)

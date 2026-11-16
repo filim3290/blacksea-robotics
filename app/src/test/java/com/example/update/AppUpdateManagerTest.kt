@@ -1,17 +1,23 @@
 package com.example.update
 
+import android.Manifest
+import android.app.Application
+import android.app.NotificationManager
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import com.example.BuildConfig
+import com.example.notifications.TeamNotificationDispatcher
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.Shadows
 import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
@@ -244,5 +250,115 @@ class AppUpdateManagerTest {
 
         assertTrue(mgr.isReleaseSignatureCompatible(parsed, matchingInstalled))
         assertFalse(mgr.isReleaseSignatureCompatible(parsed, differentInstalled))
+    }
+
+    @Test
+    fun `evaluates 12-rollover semver progression correctly`() {
+        val mgr = AppUpdateManager(context)
+        fun releaseFor(tag: String) = AppReleaseInfo(
+            tagName = tag,
+            versionName = tag.removePrefix("v"),
+            versionCode = 0,
+            title = "Blacksea Robotics $tag",
+            changelog = "Improvements",
+            publishedAt = "",
+            apkDownloadUrl = "https://github.com/filim3290/blacksea-robotics/releases/download/$tag/BlackseaRobotics-$tag.apk",
+            apkFileName = "BlackseaRobotics-$tag.apk",
+            apkSize = 20_000_000L
+        )
+
+        val v110 = mgr.evaluateReleaseComparison(releaseFor("v1.1.0"), currentCode = 13, currentName = "1.0.12")
+        assertTrue("v1.1.0 should be newer than v1.0.12", v110 is UpdateCheckResult.UpdateAvailable)
+
+        val v111 = mgr.evaluateReleaseComparison(releaseFor("v1.1.1"), currentCode = 14, currentName = "1.1.0")
+        assertTrue("v1.1.1 should be newer than v1.1.0", v111 is UpdateCheckResult.UpdateAvailable)
+
+        val v120 = mgr.evaluateReleaseComparison(releaseFor("v1.2.0"), currentCode = 26, currentName = "1.1.12")
+        assertTrue("v1.2.0 should be newer than v1.1.12", v120 is UpdateCheckResult.UpdateAvailable)
+
+        val older = mgr.evaluateReleaseComparison(releaseFor("v1.0.12"), currentCode = 14, currentName = "1.1.0")
+        assertTrue("v1.0.12 should be marked older than v1.1.0", older is UpdateCheckResult.UpToDate && older.isRemoteOlder)
+    }
+
+    @Test
+    fun `parses release redirect location headers cleanly`() {
+        val mgr = AppUpdateManager(context)
+
+        assertEquals(
+            "v1.1.0",
+            mgr.parseReleaseRedirectTag("https://github.com/filim3290/blacksea-robotics/releases/tag/v1.1.0")
+        )
+        assertEquals(
+            "v1.0.12",
+            mgr.parseReleaseRedirectTag("/filim3290/blacksea-robotics/releases/tag/v1.0.12?utm_source=test")
+        )
+        assertNull(mgr.parseReleaseRedirectTag("https://github.com/filim3290/blacksea-robotics/releases/latest"))
+        assertNull(mgr.parseReleaseRedirectTag(null))
+        assertNull(mgr.parseReleaseRedirectTag(""))
+    }
+
+    @Test
+    fun `identifies rate limit and transient HTTP codes for fallback`() {
+        val mgr = AppUpdateManager(context)
+
+        assertTrue(mgr.isRateLimitedOrTransientFailure(403))
+        assertTrue(mgr.isRateLimitedOrTransientFailure(429))
+        assertTrue(mgr.isRateLimitedOrTransientFailure(500))
+        assertTrue(mgr.isRateLimitedOrTransientFailure(503))
+        assertFalse(mgr.isRateLimitedOrTransientFailure(200))
+        assertFalse(mgr.isRateLimitedOrTransientFailure(404))
+    }
+
+    @Test
+    fun `deduplicates release notifications by both versionCode and tagName`() {
+        val mgr = AppUpdateManager(context)
+
+        assertFalse(mgr.hasNotifiedForRelease(0, "v1.1.0"))
+        mgr.markReleaseNotified(0, "v1.1.0")
+
+        // Same tag, even if later resolved with explicit versionCode, must not double-notify
+        assertTrue(mgr.hasNotifiedForRelease(0, "v1.1.0"))
+        assertTrue(mgr.hasNotifiedForRelease(14, "v1.1.0"))
+
+        // Next release (v1.1.1 / versionCode 15) should not be blocked
+        assertFalse(mgr.hasNotifiedForRelease(15, "v1.1.1"))
+    }
+
+    @Test
+    fun `dispatches update OS notification even when cert differs and avoids duplicates`() {
+        val app = context.applicationContext as Application
+        Shadows.shadowOf(app).grantPermissions(Manifest.permission.POST_NOTIFICATIONS)
+        val mgr = AppUpdateManager(context)
+        val notifManager = context.getSystemService(NotificationManager::class.java)!!
+        val shadowNm = Shadows.shadowOf(notifManager)
+        notifManager.cancelAll()
+
+        val incompatibleNewRelease = AppReleaseInfo(
+            tagName = "v9.9.9",
+            versionName = "9.9.9",
+            versionCode = BuildConfig.VERSION_CODE + 50,
+            title = "Blacksea Robotics v9.9.9",
+            changelog = "Major release",
+            publishedAt = "2026-11-16T00:00:00Z",
+            apkDownloadUrl = "https://github.com/filim3290/blacksea-robotics/releases/download/v9.9.9/BlackseaRobotics-v9.9.9.apk",
+            apkFileName = "BlackseaRobotics-v9.9.9.apk",
+            apkSize = 21_000_000L,
+            expectedCertSha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+        )
+
+        val firstDispatch = TeamNotificationDispatcher.dispatchUpdateNotificationIfNeeded(
+            context = context,
+            updateManager = mgr,
+            release = incompatibleNewRelease
+        )
+        assertTrue("First update notification must dispatch", firstDispatch)
+        assertEquals(1, shadowNm.size())
+
+        val secondDispatch = TeamNotificationDispatcher.dispatchUpdateNotificationIfNeeded(
+            context = context,
+            updateManager = mgr,
+            release = incompatibleNewRelease
+        )
+        assertFalse("Duplicate update notification for same release must be suppressed", secondDispatch)
     }
 }

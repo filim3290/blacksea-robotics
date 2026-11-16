@@ -216,22 +216,45 @@ jobs:
           python3 - <<'PY'
           import json, os, re, urllib.request
 
+          def parse_semver_tuple(ver_str: str):
+              m = re.match(r'^\s*[vV]?(\d+)\.(\d+)\.(\d+)', str(ver_str or ""))
+              if m:
+                  return (int(m.group(1)), int(m.group(2)), int(m.group(3)))
+              parts = [int(p) for p in str(ver_str or "").lstrip("vV").split(".") if p.isdigit()]
+              while len(parts) < 3:
+                  parts.append(0)
+              return (parts[0], parts[1], parts[2])
+
+          def step_version(ver_tuple):
+              maj, min_v, pat = ver_tuple
+              if pat >= 12:
+                  pat = 0
+                  min_v += 1
+                  if min_v > 12:
+                      min_v = 0
+                      maj += 1
+              else:
+                  pat += 1
+              return (maj, min_v, pat)
+
           with open("app/build.gradle.kts", "r", encoding="utf-8") as f:
               gradle_text = f.read()
 
           m_code = re.search(r'versionCode\s*=.*?(\d+)\s*$', gradle_text, re.MULTILINE)
           m_name = re.search(r'versionName\s*=.*?"([^"]+)"\s*$', gradle_text, re.MULTILINE)
-          base_code = int(m_code.group(1)) if m_code else 6
-          base_name = m_name.group(1) if m_name else "1.0.5"
+          base_code = int(m_code.group(1)) if m_code else 13
+          base_name = m_name.group(1) if m_name else "1.0.12"
+          base_semver = parse_semver_tuple(base_name)
 
           repo = os.environ.get("GITHUB_REPOSITORY", "")
           token = os.environ.get("GITHUB_TOKEN", "")
           max_released_code = 0
+          max_released_semver = None
           existing_tags = set()
 
           if repo:
               try:
-                  req = urllib.request.Request(f"https://api.github.com/repos/{repo}/releases?per_page=30")
+                  req = urllib.request.Request(f"https://api.github.com/repos/{repo}/releases?per_page=100")
                   req.add_header("Accept", "application/vnd.github.v3+json")
                   req.add_header("User-Agent", "BSR-CI-Versioning")
                   if token:
@@ -242,6 +265,9 @@ jobs:
                           tag = str(rel.get("tag_name", "")).strip()
                           if tag:
                               existing_tags.add(tag)
+                              tag_semver = parse_semver_tuple(tag)
+                              if max_released_semver is None or tag_semver > max_released_semver:
+                                  max_released_semver = tag_semver
                           body = str(rel.get("body", ""))
                           for match in re.findall(r'versionCode[\s)*`]*[:=][\s*`]*(\d+)', body, re.IGNORECASE):
                               max_released_code = max(max_released_code, int(match))
@@ -256,14 +282,13 @@ jobs:
               final_tag = ref_name
               final_name = ref_name.lstrip("vV")
           else:
-              parts = [int(p) for p in base_name.split(".") if p.isdigit()]
-              while len(parts) < 3:
-                  parts.append(0)
-              candidate_name = f"{parts[0]}.{parts[1]}.{parts[2]}"
-              while f"v{candidate_name}" in existing_tags:
-                  parts[2] += 1
-                  candidate_name = f"{parts[0]}.{parts[1]}.{parts[2]}"
-              final_name = candidate_name
+              if max_released_semver is not None:
+                  candidate = max(base_semver, step_version(max_released_semver))
+              else:
+                  candidate = base_semver
+              while f"v{candidate[0]}.{candidate[1]}.{candidate[2]}" in existing_tags:
+                  candidate = step_version(candidate)
+              final_name = f"{candidate[0]}.{candidate[1]}.{candidate[2]}"
               final_tag = f"v{final_name}"
 
           env_path = os.environ.get("GITHUB_ENV")
@@ -273,7 +298,7 @@ jobs:
                   ef.write(f"CI_VERSION_NAME={final_name}\n")
                   ef.write(f"CI_RELEASE_TAG={final_tag}\n")
 
-          print(f"Computed Release Version -> versionName={final_name}, versionCode={next_code}, tag={final_tag} (max_released_code={max_released_code})")
+          print(f"Computed Release Version -> versionName={final_name}, versionCode={next_code}, tag={final_tag} (max_released_code={max_released_code}, max_released_semver={max_released_semver})")
           PY
 
       - name: Grant Execute Permission to Gradle

@@ -145,6 +145,7 @@ fun AppContent(
     val updateManager = remember { AppUpdateManager(context) }
     val updateCheckMutex = remember { Mutex() }
     var availableUpdate by remember { mutableStateOf<AppReleaseInfo?>(null) }
+    var inAppLatestUpdate by remember { mutableStateOf<AppReleaseInfo?>(null) }
     var showNotificationRationale by remember { mutableStateOf(false) }
     var isSelfDeleting by remember { mutableStateOf(false) }
 
@@ -153,9 +154,7 @@ fun AppContent(
     ) { isGranted ->
         logDebug("Notifications", "POST_NOTIFICATIONS granted: $isGranted")
         if (isGranted) {
-            if (isAuthCompleted) {
-                BackgroundNotificationWorker.schedulePeriodicSync(context)
-            }
+            BackgroundNotificationWorker.schedulePeriodicSync(context)
         } else {
             val enabled = NotificationManagerCompat.from(context).areNotificationsEnabled()
             if (!enabled) {
@@ -167,12 +166,19 @@ fun AppContent(
     val lifecycleOwner = LocalLifecycleOwner.current
     val scope = rememberCoroutineScope()
 
-    suspend fun performUpdateCheckAndNotify(forceRefresh: Boolean = false, notifyOs: Boolean = false) {
+    suspend fun performUpdateCheckAndNotify(
+        forceRefresh: Boolean = false,
+        notifyOs: Boolean = false,
+        openDialogRegardlessOfSignature: Boolean = false
+    ) {
         updateCheckMutex.withLock {
             val result = updateManager.checkLatestReleaseDetailed(forceRefresh = forceRefresh)
-            if (result is UpdateCheckResult.UpdateAvailable && result.isSignatureCompatible) {
+            if (result is UpdateCheckResult.UpdateAvailable) {
                 val update = result.release
-                availableUpdate = update
+                inAppLatestUpdate = update
+                if (result.isSignatureCompatible || openDialogRegardlessOfSignature) {
+                    availableUpdate = update
+                }
                 if (notifyOs) {
                     TeamNotificationDispatcher.dispatchUpdateNotificationIfNeeded(
                         context = context,
@@ -180,6 +186,8 @@ fun AppContent(
                         release = update
                     )
                 }
+            } else if (result is UpdateCheckResult.UpToDate) {
+                inAppLatestUpdate = null
             }
         }
     }
@@ -187,7 +195,11 @@ fun AppContent(
     // Handle notification tap for update dialog immediately
     LaunchedEffect(notificationNavEvent?.nonce) {
         if (notificationNavEvent?.openUpdateDialog == true) {
-            performUpdateCheckAndNotify(forceRefresh = true)
+            performUpdateCheckAndNotify(
+                forceRefresh = true,
+                notifyOs = false,
+                openDialogRegardlessOfSignature = true
+            )
             onConsumeNotificationNav()
         }
     }
@@ -195,6 +207,7 @@ fun AppContent(
     // Check updates on app launch and listen to Firestore real-time updates
     LaunchedEffect(Unit) {
         TeamNotificationDispatcher.cleanupLegacyRealtimeSyncArtifacts(context)
+        BackgroundNotificationWorker.schedulePeriodicSync(context)
         val enabled = NotificationManagerCompat.from(context).areNotificationsEnabled()
         if (!enabled) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -234,15 +247,16 @@ fun AppContent(
                                     expectedCertSha256 = doc.getString("expectedCertSha256") ?: "",
                                     isForceUpdate = doc.getBoolean("isForceUpdate") ?: false
                                 )
+                                inAppLatestUpdate = release
                                 if (updateManager.isReleaseSignatureCompatible(release)) {
                                     availableUpdate = release
-                                    if (shouldNotifyOs) {
-                                        TeamNotificationDispatcher.dispatchUpdateNotificationIfNeeded(
-                                            context = context,
-                                            updateManager = updateManager,
-                                            release = release
-                                        )
-                                    }
+                                }
+                                if (shouldNotifyOs) {
+                                    TeamNotificationDispatcher.dispatchUpdateNotificationIfNeeded(
+                                        context = context,
+                                        updateManager = updateManager,
+                                        release = release
+                                    )
                                 }
                             }
                         }
@@ -386,7 +400,7 @@ fun AppContent(
         }
     }
 
-    // Check updates when returning from background (uses 15-min cache)
+    // Check updates when returning from background and schedule prompt background check on stop
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
@@ -394,9 +408,8 @@ fun AppContent(
                     performUpdateCheckAndNotify()
                 }
             } else if (event == Lifecycle.Event.ON_STOP) {
-                if (Firebase.auth.currentUser != null && isAuthCompleted) {
-                    BackgroundNotificationWorker.schedulePeriodicSync(context)
-                }
+                BackgroundNotificationWorker.schedulePeriodicSync(context)
+                BackgroundNotificationWorker.triggerOneTimeUpdateCheck(context)
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -500,6 +513,7 @@ fun AppContent(
                 currentUserId = uid,
                 repository = repository,
                 updateManager = updateManager,
+                availableUpdate = inAppLatestUpdate,
                 notificationNavEvent = notificationNavEvent,
                 onConsumeNotificationNav = onConsumeNotificationNav,
                 onShowUpdateDialog = { release -> availableUpdate = release },

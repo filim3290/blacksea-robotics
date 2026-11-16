@@ -104,6 +104,7 @@ class AppUpdateManager(private val context: Context) {
                 .putString("github_repo", DEFAULT_GITHUB_REPO)
                 .putInt("repo_migration_version", REPO_MIGRATION_VERSION)
                 .remove("cached_release_json")
+                .remove("cached_release_etag")
                 .remove("last_check_timestamp")
                 .apply()
         }
@@ -129,6 +130,7 @@ class AppUpdateManager(private val context: Context) {
             prefs.edit()
                 .putString("github_owner", value.trim().ifBlank { DEFAULT_GITHUB_OWNER })
                 .remove("cached_release_json")
+                .remove("cached_release_etag")
                 .remove("last_check_timestamp")
                 .apply()
         }
@@ -142,6 +144,7 @@ class AppUpdateManager(private val context: Context) {
             prefs.edit()
                 .putString("github_repo", value.trim().ifBlank { DEFAULT_GITHUB_REPO })
                 .remove("cached_release_json")
+                .remove("cached_release_etag")
                 .remove("last_check_timestamp")
                 .apply()
         }
@@ -152,6 +155,7 @@ class AppUpdateManager(private val context: Context) {
             .putString("github_repo", DEFAULT_GITHUB_REPO)
             .putInt("repo_migration_version", REPO_MIGRATION_VERSION)
             .remove("cached_release_json")
+            .remove("cached_release_etag")
             .remove("last_check_timestamp")
             .apply()
     }
@@ -171,6 +175,43 @@ class AppUpdateManager(private val context: Context) {
 
     fun markVersionNotified(versionCode: Int) {
         prefs.edit().putInt("last_notified_version", versionCode).apply()
+    }
+
+    fun hasNotifiedForRelease(versionCode: Int, tagName: String): Boolean {
+        if (versionCode > 0 && prefs.getInt("last_notified_version", 0) >= versionCode) {
+            return true
+        }
+        val normalizedTag = tagName.trim().lowercase()
+        if (normalizedTag.isNotBlank()) {
+            val notifiedTags = prefs.getString("notified_tags_csv", "")
+                .orEmpty()
+                .split(",")
+                .map { it.trim().lowercase() }
+                .filter { it.isNotBlank() }
+                .toSet()
+            if (normalizedTag in notifiedTags) return true
+        }
+        return false
+    }
+
+    fun markReleaseNotified(versionCode: Int, tagName: String) {
+        val editor = prefs.edit()
+        if (versionCode > 0) {
+            val currentMax = prefs.getInt("last_notified_version", 0)
+            editor.putInt("last_notified_version", maxOf(currentMax, versionCode))
+        }
+        val normalizedTag = tagName.trim().lowercase()
+        if (normalizedTag.isNotBlank()) {
+            val updated = (prefs.getString("notified_tags_csv", "")
+                .orEmpty()
+                .split(",")
+                .map { it.trim().lowercase() }
+                .filter { it.isNotBlank() } + normalizedTag)
+                .distinct()
+                .takeLast(30)
+            editor.putString("notified_tags_csv", updated.joinToString(","))
+        }
+        editor.apply()
     }
 
     fun hasInstalledVersion(versionCode: Int): Boolean {
@@ -406,19 +447,122 @@ class AppUpdateManager(private val context: Context) {
 
     internal fun parseReleaseJson(json: JSONObject): AppReleaseInfo? = parseRelease(json)
 
+    internal fun isRateLimitedOrTransientFailure(code: Int): Boolean {
+        return code == 403 || code == 429 || code >= 500
+    }
+
+    internal fun parseReleaseRedirectTag(locationHeader: String?): String? {
+        if (locationHeader.isNullOrBlank()) return null
+        val marker = "/releases/tag/"
+        val idx = locationHeader.indexOf(marker, ignoreCase = true)
+        if (idx < 0) return null
+        val rawTag = locationHeader
+            .substring(idx + marker.length)
+            .substringBefore("?")
+            .substringBefore("#")
+            .trim()
+            .trimEnd('/')
+        if (rawTag.isBlank() || rawTag.equals("latest", ignoreCase = true)) return null
+        return rawTag
+    }
+
+    private fun fetchLatestReleaseFromWebFallback(currentName: String): AppReleaseInfo? {
+        return try {
+            val noRedirectClient = httpClient.newBuilder()
+                .followRedirects(false)
+                .followSslRedirects(false)
+                .build()
+            val latestWebUrl = "https://github.com/$githubOwner/$githubRepo/releases/latest"
+            val req = Request.Builder()
+                .url(latestWebUrl)
+                .header("User-Agent", "BlackseaRobotics-AndroidApp/$currentName")
+                .build()
+
+            var resolvedTag: String? = null
+            noRedirectClient.newCall(req).execute().use { response ->
+                resolvedTag = parseReleaseRedirectTag(response.header("Location"))
+                if (resolvedTag == null && response.isSuccessful) {
+                    val html = response.body?.string().orEmpty()
+                    val match = Regex("""/releases/tag/(v?\d+(?:\.\d+)+)""").find(html)
+                    resolvedTag = match?.groupValues?.getOrNull(1)
+                }
+            }
+
+            val tag = resolvedTag ?: return null
+            val cleanVersion = tag.removePrefix("v").removePrefix("V")
+            var parsedVersionCode = 0
+            var parsedSha256 = ""
+            var parsedCertSha256 = ""
+            var apkFileName = "BlackseaRobotics-$tag.apk"
+            var apkDownloadUrl = "https://github.com/$githubOwner/$githubRepo/releases/download/$tag/$apkFileName"
+
+            try {
+                val tagPageReq = Request.Builder()
+                    .url("https://github.com/$githubOwner/$githubRepo/releases/tag/$tag")
+                    .header("User-Agent", "BlackseaRobotics-AndroidApp/$currentName")
+                    .build()
+                httpClient.newCall(tagPageReq).execute().use { tagResp ->
+                    if (tagResp.isSuccessful) {
+                        val pageHtml = tagResp.body?.string().orEmpty()
+                        Regex("""(?i)versionCode[\s)*`:=]+(\d+)""").find(pageHtml)?.let {
+                            parsedVersionCode = it.groupValues[1].toIntOrNull() ?: 0
+                        }
+                        Regex("""(?i)sha256\s*[:=]\s*`?([a-fA-F0-9]{64})`?""").find(pageHtml)?.let {
+                            parsedSha256 = it.groupValues[1].lowercase()
+                        }
+                        Regex("""(?i)certSha256\s*[:=]\s*`?([a-fA-F0-9]{64})`?""").find(pageHtml)?.let {
+                            parsedCertSha256 = it.groupValues[1].lowercase()
+                        }
+                        Regex("""/$githubOwner/$githubRepo/releases/download/[^"'\s<>]+/([^"'\s<>]+\.apk)""", RegexOption.IGNORE_CASE)
+                            .find(pageHtml)
+                            ?.let { assetMatch ->
+                                val relPath = assetMatch.value
+                                val file = assetMatch.groupValues[1]
+                                if (!file.contains("unsigned", ignoreCase = true)) {
+                                    apkFileName = file
+                                    apkDownloadUrl = "https://github.com$relPath"
+                                }
+                            }
+                    }
+                }
+            } catch (e: Exception) {
+                logDebugWarn(TAG, "Web fallback tag page inspection skipped for $tag", e)
+            }
+
+            AppReleaseInfo(
+                tagName = tag,
+                versionName = cleanVersion,
+                versionCode = parsedVersionCode,
+                title = "Blacksea Robotics $tag",
+                changelog = "Yeni özellikler ve iyileştirmeler.",
+                publishedAt = "",
+                apkDownloadUrl = apkDownloadUrl,
+                apkFileName = apkFileName,
+                apkSize = 0L,
+                expectedSha256 = parsedSha256,
+                expectedCertSha256 = parsedCertSha256,
+                isForceUpdate = false
+            )
+        } catch (e: Exception) {
+            logDebugWarn(TAG, "Web fallback release lookup failed", e)
+            null
+        }
+    }
+
     /**
-     * Checks GitHub Releases API (and Firestore config fallback) with rich, explicit status reporting.
+     * Checks GitHub Releases API (with ETag + web redirect fallback) with explicit status reporting.
      */
     suspend fun checkLatestReleaseDetailed(forceRefresh: Boolean = false): UpdateCheckResult = withContext(Dispatchers.IO) {
         val currentCode = getCurrentVersionCode()
         val currentName = getCurrentVersionName()
 
-        // 1. Check 15-minute cache if not forcing a fresh check
+        // 1. Check short 2-minute cache if not forcing a fresh check
         val now = System.currentTimeMillis()
         val lastCheckTime = prefs.getLong("last_check_timestamp", 0L)
         val cachedReleaseJson = prefs.getString("cached_release_json", null)
+        val cachedEtag = prefs.getString("cached_release_etag", null)
 
-        if (!forceRefresh && cachedReleaseJson != null && (now - lastCheckTime) < TimeUnit.MINUTES.toMillis(15)) {
+        if (!forceRefresh && cachedReleaseJson != null && (now - lastCheckTime) < TimeUnit.MINUTES.toMillis(2)) {
             try {
                 val parsed = parseRelease(JSONObject(cachedReleaseJson))
                 if (parsed != null) {
@@ -432,7 +576,7 @@ class AppUpdateManager(private val context: Context) {
             }
         }
 
-        // 2. Query GitHub Releases API (/releases/latest)
+        // 2. Query GitHub Releases API (/releases/latest) with ETag support (304 saves API quota)
         val latestUrl = "https://api.github.com/repos/$githubOwner/$githubRepo/releases/latest"
         try {
             val reqBuilder = Request.Builder()
@@ -440,7 +584,24 @@ class AppUpdateManager(private val context: Context) {
                 .header("Accept", "application/vnd.github.v3+json")
                 .header("User-Agent", "BlackseaRobotics-AndroidApp/$currentName")
 
+            if (!cachedReleaseJson.isNullOrBlank() && !cachedEtag.isNullOrBlank()) {
+                reqBuilder.header("If-None-Match", cachedEtag)
+            }
+
             httpClient.newCall(reqBuilder.build()).execute().use { response ->
+                if (response.code == 304 && !cachedReleaseJson.isNullOrBlank()) {
+                    try {
+                        val cachedObj = JSONObject(cachedReleaseJson)
+                        val parsedCached = parseRelease(cachedObj)
+                        if (parsedCached != null) {
+                            prefs.edit().putLong("last_check_timestamp", now).apply()
+                            return@withContext evaluateReleaseComparison(parsedCached, currentCode, currentName)
+                        }
+                    } catch (e: Exception) {
+                        logDebugWarn(TAG, "Failed to parse cached release after 304", e)
+                    }
+                }
+
                 if (response.isSuccessful) {
                     val bodyString = response.body?.string().orEmpty()
                     if (bodyString.isBlank()) {
@@ -450,15 +611,25 @@ class AppUpdateManager(private val context: Context) {
                     val isDraft = jsonObject.optBoolean("draft", false)
                     val isPrerelease = jsonObject.optBoolean("prerelease", false)
                     if (!isDraft && !isPrerelease) {
-                        prefs.edit()
+                        val responseEtag = response.header("ETag").orEmpty()
+                        val editor = prefs.edit()
                             .putLong("last_check_timestamp", now)
                             .putString("cached_release_json", bodyString)
-                            .apply()
+                        if (responseEtag.isNotBlank()) {
+                            editor.putString("cached_release_etag", responseEtag)
+                        }
+                        editor.apply()
 
                         val parsed = parseRelease(jsonObject)
                             ?: return@withContext UpdateCheckResult.NoReleaseFound
                         return@withContext evaluateReleaseComparison(parsed, currentCode, currentName)
                     }
+                } else if (isRateLimitedOrTransientFailure(response.code)) {
+                    logDebugWarn(TAG, "GitHub API returned HTTP ${response.code}; trying web redirect fallback")
+                    fetchLatestReleaseFromWebFallback(currentName)?.let { webRelease ->
+                        return@withContext evaluateReleaseComparison(webRelease, currentCode, currentName)
+                    }
+                    return@withContext UpdateCheckResult.ApiError(response.code, AppMessages.UPDATE_CHECK_ERROR)
                 } else if (response.code != 404) {
                     logDebugError(TAG, "Release check server error: HTTP ${response.code}")
                     return@withContext UpdateCheckResult.ApiError(response.code, AppMessages.UPDATE_CHECK_ERROR)
@@ -476,6 +647,11 @@ class AppUpdateManager(private val context: Context) {
             httpClient.newCall(listReq).execute().use { listResponse ->
                 if (!listResponse.isSuccessful) {
                     logDebugError(TAG, "Release list error: HTTP ${listResponse.code}")
+                    if (isRateLimitedOrTransientFailure(listResponse.code)) {
+                        fetchLatestReleaseFromWebFallback(currentName)?.let { webRelease ->
+                            return@withContext evaluateReleaseComparison(webRelease, currentCode, currentName)
+                        }
+                    }
                     return@withContext UpdateCheckResult.ApiError(
                         listResponse.code,
                         AppMessages.UPDATE_CHECK_ERROR
@@ -491,7 +667,10 @@ class AppUpdateManager(private val context: Context) {
                     val obj = arr.optJSONObject(i) ?: continue
                     if (obj.optBoolean("draft", false) || obj.optBoolean("prerelease", false)) continue
                     val rel = parseRelease(obj) ?: continue
-                    if (bestParsed == null || rel.versionCode > bestParsed.versionCode) {
+                    val isNewerCandidate = bestParsed == null ||
+                        rel.versionCode > bestParsed.versionCode ||
+                        (rel.versionCode == bestParsed.versionCode && compareSemver(rel.versionName, bestParsed.versionName) > 0)
+                    if (isNewerCandidate) {
                         bestPublished = obj
                         bestParsed = rel
                     }
@@ -504,6 +683,7 @@ class AppUpdateManager(private val context: Context) {
                 prefs.edit()
                     .putLong("last_check_timestamp", now)
                     .putString("cached_release_json", bestPublished.toString())
+                    .remove("cached_release_etag")
                     .apply()
 
                 return@withContext evaluateReleaseComparison(bestParsed, currentCode, currentName)

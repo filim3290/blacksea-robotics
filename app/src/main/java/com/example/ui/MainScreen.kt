@@ -127,6 +127,7 @@ fun MainScreen(
     currentUserId: String,
     repository: BlackseaRepository,
     updateManager: com.example.update.AppUpdateManager? = null,
+    availableUpdate: com.example.update.AppReleaseInfo? = null,
     notificationNavEvent: com.example.NotificationNavEvent? = null,
     onConsumeNotificationNav: () -> Unit = {},
     onShowUpdateDialog: (com.example.update.AppReleaseInfo) -> Unit = {},
@@ -202,10 +203,12 @@ fun MainScreen(
         }
     }.collectAsState(initial = emptyList())
     var locallyReadIds by remember(currentUserId) { mutableStateOf(setOf<String>()) }
-    val unreadNotificationsCount = remember(notifications, locallyReadIds) {
+    var readUpdateTag by remember(currentUserId) { mutableStateOf<String?>(null) }
+    val hasUnreadUpdate = availableUpdate != null && readUpdateTag != availableUpdate.tagName
+    val unreadNotificationsCount = remember(notifications, locallyReadIds, hasUnreadUpdate) {
         notifications.count { notif ->
             !notif.isReadBy(currentUserId) && !locallyReadIds.contains(notif.id)
-        }
+        } + if (hasUnreadUpdate) 1 else 0
     }
     var showNotificationsDialog by remember { mutableStateOf(false) }
 
@@ -549,6 +552,13 @@ fun MainScreen(
                 notifications = notifications,
                 currentUserId = currentUserId,
                 locallyReadIds = locallyReadIds,
+                availableUpdate = availableUpdate,
+                isUpdateRead = !hasUnreadUpdate,
+                onUpdateClick = { release ->
+                    readUpdateTag = release.tagName
+                    showNotificationsDialog = false
+                    onShowUpdateDialog(release)
+                },
                 onDismiss = { showNotificationsDialog = false },
                 onMarkAsRead = { notifId ->
                     locallyReadIds = locallyReadIds + notifId
@@ -563,6 +573,9 @@ fun MainScreen(
                     navigateForNotification(notif.type, notif.targetRoomId)
                 },
                 onMarkAllAsRead = {
+                    if (availableUpdate != null) {
+                        readUpdateTag = availableUpdate.tagName
+                    }
                     val allIds = notifications.map { it.id }.filter { it.isNotBlank() }.toSet()
                     val personalIds = notifications
                         .filter { it.recipientUserId == currentUserId && it.id.isNotBlank() }
@@ -652,6 +665,9 @@ fun TeamNotificationsDialog(
     notifications: List<TeamNotification>,
     currentUserId: String,
     locallyReadIds: Set<String>,
+    availableUpdate: com.example.update.AppReleaseInfo? = null,
+    isUpdateRead: Boolean = false,
+    onUpdateClick: (com.example.update.AppReleaseInfo) -> Unit = {},
     onDismiss: () -> Unit,
     onMarkAsRead: (String) -> Unit,
     onNotificationClick: (TeamNotification) -> Unit = {},
@@ -663,10 +679,10 @@ fun TeamNotificationsDialog(
         NotificationManagerCompat.from(context).areNotificationsEnabled()
     }
 
-    val unreadCount = remember(notifications, locallyReadIds) {
+    val unreadCount = remember(notifications, locallyReadIds, availableUpdate, isUpdateRead) {
         notifications.count { notif ->
             !notif.isReadBy(currentUserId) && !locallyReadIds.contains(notif.id)
-        }
+        } + if (availableUpdate != null && !isUpdateRead) 1 else 0
     }
 
     Dialog(
@@ -812,7 +828,7 @@ fun TeamNotificationsDialog(
                         .weight(1f)
                         .fillMaxWidth()
                 ) {
-                    if (notifications.isEmpty()) {
+                    if (notifications.isEmpty() && availableUpdate == null) {
                         Box(
                             modifier = Modifier.fillMaxSize(),
                             contentAlignment = Alignment.Center
@@ -837,6 +853,76 @@ fun TeamNotificationsDialog(
                             modifier = Modifier.fillMaxSize(),
                             verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
+                            if (availableUpdate != null) {
+                                item(key = "app_update_${availableUpdate.tagName}") {
+                                    Card(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clickable { onUpdateClick(availableUpdate) }
+                                            .testTag("notification_update_card"),
+                                        shape = RoundedCornerShape(12.dp),
+                                        border = BorderStroke(
+                                            1.dp,
+                                            if (isUpdateRead) ext.cardBorder else ext.emeraldText.copy(alpha = 0.5f)
+                                        ),
+                                        colors = CardDefaults.cardColors(
+                                            containerColor = if (isUpdateRead) {
+                                                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = if (ext.isDark) 0.5f else 0.65f)
+                                            } else {
+                                                ext.emeraldSolid.copy(alpha = if (ext.isDark) 0.2f else 0.12f)
+                                            }
+                                        )
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(12.dp),
+                                            verticalAlignment = Alignment.Top,
+                                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                        ) {
+                                            Surface(
+                                                shape = CircleShape,
+                                                color = ext.emeraldText.copy(alpha = 0.16f),
+                                                modifier = Modifier.size(34.dp)
+                                            ) {
+                                                Box(contentAlignment = Alignment.Center) {
+                                                    Icon(
+                                                        imageVector = Icons.Default.SystemUpdate,
+                                                        contentDescription = "Yeni Güncelleme",
+                                                        tint = ext.emeraldText,
+                                                        modifier = Modifier.size(18.dp)
+                                                    )
+                                                }
+                                            }
+                                            Column(modifier = Modifier.weight(1f)) {
+                                                Row(
+                                                    modifier = Modifier.fillMaxWidth(),
+                                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                                    verticalAlignment = Alignment.CenterVertically
+                                                ) {
+                                                    Text(
+                                                        text = "Yeni Güncelleme Mevcut: v${availableUpdate.versionName}",
+                                                        fontSize = 13.sp,
+                                                        fontWeight = FontWeight.Bold,
+                                                        color = MaterialTheme.colorScheme.onSurface
+                                                    )
+                                                    if (!isUpdateRead) {
+                                                        Surface(
+                                                            shape = CircleShape,
+                                                            color = ext.emeraldText,
+                                                            modifier = Modifier.size(8.dp)
+                                                        ) {}
+                                                    }
+                                                }
+                                                Spacer(modifier = Modifier.height(2.dp))
+                                                Text(
+                                                    text = "Sürümü incelemek ve güncellemek için dokunun.",
+                                                    fontSize = 12.sp,
+                                                    color = ext.textSecondary
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                             itemsIndexed(
                                 items = notifications,
                                 key = { index, notif -> "${notif.id.ifBlank { "notif" }}_$index" }
