@@ -204,14 +204,7 @@ fun AppContent(
         }
     }
 
-    // Dismiss animated splash smoothly without delaying background initialization
-    LaunchedEffect(Unit) {
-        if (showSplash) {
-            val splashDurationMs = if (notificationNavEvent != null) 550L else 1350L
-            delay(splashDurationMs)
-            showSplash = false
-        }
-    }
+    // Splash completion is driven directly by BlackseaSplashScreen once all 5 scenes finish (~3.22s + 0.28s fade)
 
     // Request notification permission only after splash exits so OS prompt never covers splash
     LaunchedEffect(showSplash) {
@@ -584,12 +577,11 @@ fun AppContent(
 
         AnimatedVisibility(
             visible = showSplash,
-            exit = fadeOut(animationSpec = tween(380)) + scaleOut(
-                targetScale = 1.04f,
-                animationSpec = tween(380)
-            )
+            exit = fadeOut(animationSpec = tween(280))
         ) {
-            BlackseaSplashScreen()
+            BlackseaSplashScreen(
+                onAnimationFinished = { showSplash = false }
+            )
         }
     }
 }
