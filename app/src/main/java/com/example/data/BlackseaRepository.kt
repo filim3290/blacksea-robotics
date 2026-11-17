@@ -21,6 +21,8 @@ import com.example.model.IdeaItem
 import com.example.model.IdeaStatus
 import com.example.model.PredefinedRoles
 import com.example.model.SharedProjectFile
+import com.example.model.SupportTicket
+import com.example.model.SupportTicketStatus
 import com.example.model.TeamActivity
 import com.example.model.TeamAnnouncement
 import com.example.model.TeamNotification
@@ -37,6 +39,7 @@ import com.google.firebase.storage.FirebaseStorage
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.catch
@@ -100,44 +103,48 @@ fun shouldUserReceiveNotification(
         }
     }
 
-    // 4. Manager-only notifications (e.g. member_pending)
-    if (notif.recipientUserId == "managers") {
-        return isManager
-    }
-
-    return when (notif.type.lowercase()) {
-        // App version update notifications
-        "update" -> true
-
-        // Manager custom broadcasts & announcements
-        "broadcast", "announcement" -> true
-
-        // New idea or idea status update
-        "idea" -> true
-
-        // New team member joined notification (do not alert the joining member themselves)
-        "new_member" -> userId.isBlank() || notif.targetId != userId
-
-        // Chat room messages & shared files: own team or general team only (managers see all rooms)
-        "message", "file" -> {
-            if (isManager) {
-                true
-            } else {
-                val rId = notif.targetRoomId.lowercase()
-                val teamLower = userTeam.lowercase()
-                when {
-                    rId == "general" || rId.isBlank() -> true
-                    rId == "software" -> teamLower.contains("yazılım") || teamLower.contains("yazilim") || teamLower.contains("software")
-                    rId == "mechanic" -> teamLower.contains("mekanik") || teamLower.contains("mechanic")
-                    rId == "pr" -> teamLower.contains("pr")
-                    else -> teamLower.contains(rId)
-                }
-            }
+        // Manager-only notifications (e.g. member_pending, support_ticket)
+        if (notif.recipientUserId == "managers") {
+            return isManager
         }
 
-        else -> notif.recipientUserId == "all"
+        return when (notif.type.lowercase()) {
+            // App version update notifications
+            "update" -> true
+
+            // Manager custom broadcasts & announcements
+            "broadcast", "announcement" -> true
+
+            // New idea or idea status update
+            "idea" -> true
+
+            // New team member joined notification (do not alert the joining member themselves)
+            "new_member" -> userId.isBlank() || notif.targetId != userId
+
+            // Support tickets are for managers; support replies are direct to userId (handled above)
+            "support_ticket" -> isManager
+            "support_reply" -> userId.isNotBlank() && notif.recipientUserId == userId
+
+            // Chat room messages & shared files: own team, management team, or general team only (managers see all rooms)
+            "message", "file" -> {
+                val teamLower = userTeam.lowercase()
+                if (isManager || teamLower.contains("yönetim") || teamLower.contains("yonetim")) {
+                    true
+                } else {
+                    val rId = notif.targetRoomId.lowercase()
+                    when {
+                        rId == "general" || rId.isBlank() -> true
+                        rId == "software" -> teamLower.contains("yazılım") || teamLower.contains("yazilim") || teamLower.contains("software")
+                        rId == "mechanic" -> teamLower.contains("mekanik") || teamLower.contains("mechanic")
+                        rId == "pr" -> teamLower.contains("pr")
+                        else -> teamLower.contains(rId)
+                    }
+                }
+            }
+
+            else -> notif.recipientUserId == "all"
+        }
     }
-}
 
 class BlackseaRepository(val db: FirebaseFirestore) {
 
@@ -1040,8 +1047,15 @@ class BlackseaRepository(val db: FirebaseFirestore) {
             docRef.set(payload).await()
         } catch (e: CancellationException) {
             throw e
-        } catch (e: Exception) {
-            logDebugWarn("Repository", "Notification creation failed", e)
+        } catch (firstErr: Exception) {
+            try {
+                delay(300L)
+                docRef.set(payload).await()
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (retryErr: Exception) {
+                logDebugWarn("Repository", "Notification creation failed after retry", retryErr)
+            }
         }
     }
 
@@ -1818,4 +1832,165 @@ class BlackseaRepository(val db: FirebaseFirestore) {
             activities
         }
     }
+
+    // ==========================================
+    // SUPPORT & HELP CENTER TICKETS
+    // ==========================================
+
+    fun observeMySupportTickets(userId: String): Flow<List<SupportTicket>> {
+        val cleanUid = userId.trim()
+        if (cleanUid.isBlank()) return flowOf(emptyList())
+        return db.collection("support_tickets")
+            .whereEqualTo("userId", cleanUid)
+            .snapshots()
+            .map { snapshot ->
+                snapshot.toObjects(SupportTicket::class.java)
+                    .sortedByDescending { it.createdAt?.toDate()?.time ?: Long.MAX_VALUE }
+            }
+            .catch { error ->
+                handleFirestoreError(error, OperationType.LIST, "support_tickets")
+                emit(emptyList())
+            }
+    }
+
+    fun observeAllSupportTickets(): Flow<List<SupportTicket>> {
+        return db.collection("support_tickets")
+            .snapshots()
+            .map { snapshot ->
+                snapshot.toObjects(SupportTicket::class.java)
+                    .sortedWith(
+                        compareBy<SupportTicket> {
+                            when (SupportTicketStatus.normalize(it.status)) {
+                                SupportTicketStatus.OPEN -> 0
+                                SupportTicketStatus.IN_PROGRESS -> 1
+                                else -> 2
+                            }
+                        }.thenByDescending { it.createdAt?.toDate()?.time ?: Long.MAX_VALUE }
+                    )
+            }
+            .catch { error ->
+                handleFirestoreError(error, OperationType.LIST, "support_tickets")
+                emit(emptyList())
+            }
+    }
+
+    suspend fun submitSupportTicket(
+        category: String,
+        subject: String,
+        description: String,
+        userName: String,
+        userEmail: String,
+        userTeam: String,
+        appVersion: String,
+        deviceInfo: String
+    ): Result<String> {
+        val cleanSubject = subject.trim().take(120)
+        val cleanDesc = description.trim().take(2000)
+        val cleanCategory = category.trim().ifBlank { "Uygulama Hatası" }.take(60)
+        if (cleanSubject.length < 3) {
+            return Result.failure(IllegalArgumentException("Konu başlığı en az 3 karakter olmalıdır."))
+        }
+        if (cleanDesc.length < 10) {
+            return Result.failure(IllegalArgumentException("Sorun açıklaması en az 10 karakter olmalıdır."))
+        }
+
+        val uid = try {
+            requireUserId()
+        } catch (e: Exception) {
+            return Result.failure(e)
+        }
+
+        val docRef = db.collection("support_tickets").document()
+        val cleanName = userName.trim().ifBlank { "Takım Üyesi" }.take(100)
+        val payload = mapOf(
+            "userId" to uid,
+            "userName" to cleanName,
+            "userEmail" to userEmail.trim().take(150),
+            "userTeam" to userTeam.trim().ifBlank { "Genel Ekip" }.take(80),
+            "category" to cleanCategory,
+            "subject" to cleanSubject,
+            "description" to cleanDesc,
+            "appVersion" to appVersion.trim().take(40),
+            "deviceInfo" to deviceInfo.trim().take(120),
+            "status" to SupportTicketStatus.OPEN,
+            "adminReply" to "",
+            "repliedByName" to "",
+            "createdAt" to FieldValue.serverTimestamp(),
+            "updatedAt" to FieldValue.serverTimestamp()
+        )
+        return try {
+            docRef.set(payload).await()
+            createNotification(
+                recipientUserId = "managers",
+                title = "Yeni Destek Talebi ($cleanCategory)",
+                message = "$cleanName: $cleanSubject",
+                type = "support_ticket",
+                targetId = docRef.id,
+                targetRoomId = cleanCategory,
+                senderName = cleanName,
+                senderId = uid
+            )
+            Result.success(docRef.id)
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.CREATE, "support_tickets/${docRef.id}")
+            Result.failure(e)
+        }
+    }
+
+    suspend fun replyAndUpdateSupportTicket(
+        ticketId: String,
+        status: String,
+        adminReply: String,
+        repliedByName: String,
+        targetUserId: String
+    ): Result<Unit> {
+        val cleanId = ticketId.trim()
+        if (cleanId.isBlank()) {
+            return Result.failure(IllegalArgumentException("Destek talebi bulunamadı."))
+        }
+        val uid = try {
+            requireUserId()
+        } catch (e: Exception) {
+            return Result.failure(e)
+        }
+        val normalizedStatus = SupportTicketStatus.normalize(status)
+        val cleanReply = adminReply.trim().take(2000)
+        val cleanReplier = repliedByName.trim().ifBlank { "Yönetici" }.take(100)
+
+        val updates = mapOf(
+            "status" to normalizedStatus,
+            "adminReply" to cleanReply,
+            "repliedByName" to cleanReplier,
+            "updatedAt" to FieldValue.serverTimestamp()
+        )
+        return try {
+            db.collection("support_tickets").document(cleanId).update(updates).await()
+            if (targetUserId.isNotBlank() && targetUserId != uid) {
+                val statusLabel = SupportTicketStatus.displayName(normalizedStatus)
+                val body = if (cleanReply.isNotBlank()) {
+                    "Durum: $statusLabel • ${cleanReply.take(80)}"
+                } else {
+                    "Destek talebinizin durumu '$statusLabel' olarak güncellendi."
+                }
+                createNotification(
+                    recipientUserId = targetUserId,
+                    title = "Destek Talebiniz Güncellendi",
+                    message = body,
+                    type = "support_reply",
+                    targetId = cleanId,
+                    senderName = cleanReplier,
+                    senderId = uid
+                )
+            }
+            Result.success(Unit)
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.UPDATE, "support_tickets/$cleanId")
+            Result.failure(e)
+        }
+    }
 }
+

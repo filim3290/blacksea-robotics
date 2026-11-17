@@ -151,6 +151,7 @@ class BackgroundNotificationWorker(
                         notifications = filtered,
                         userCreatedAtMs = joinMs
                     )
+                    RealtimeNotificationService.startIfEnabled(applicationContext)
                 }
             } catch (ce: CancellationException) {
                 throw ce

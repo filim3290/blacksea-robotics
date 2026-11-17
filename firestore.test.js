@@ -345,3 +345,125 @@ test("Message sender can edit text within 1 hour, denied after 1 hour, and non-o
   );
 });
 
+test("Support tickets: owner creates and lists own, managers update reply/status, cross-user access denied", async () => {
+  const created = new Date(Date.now() - 5000);
+  await testEnv.withSecurityRulesDisabled(async (ctx) => {
+    const db = ctx.firestore();
+    await db.collection("users").doc("member_a").set({
+      userId: "member_a",
+      email: "a@example.com",
+      role: "Yazılım Üyesi",
+      roles: ["Yazılım Üyesi"],
+      status: "approved",
+      isSuperAdmin: false
+    });
+    await db.collection("users").doc("member_b").set({
+      userId: "member_b",
+      email: "b@example.com",
+      role: "Mekanik Üyesi",
+      roles: ["Mekanik Üyesi"],
+      status: "approved",
+      isSuperAdmin: false
+    });
+    await db.collection("users").doc("mgr_s").set({
+      userId: "mgr_s",
+      email: "mgrs@example.com",
+      role: "Yönetici",
+      roles: ["Yönetici"],
+      status: "approved",
+      isSuperAdmin: true
+    });
+  });
+
+  const memberADb = testEnv.authenticatedContext("member_a", { email: "a@example.com" }).firestore();
+  const memberBDb = testEnv.authenticatedContext("member_b", { email: "b@example.com" }).firestore();
+  const mgrDb = testEnv.authenticatedContext("mgr_s", { email: "mgrs@example.com" }).firestore();
+
+  // Member A creates valid support ticket matching Kotlin repository payload
+  await assertSucceeds(
+    memberADb.collection("support_tickets").doc("ticket_1").set({
+      userId: "member_a",
+      userName: "Ahmet Yılmaz",
+      userEmail: "a@example.com",
+      userTeam: "Yazılım Ekibi",
+      category: "Bildirim Sorunu",
+      subject: "Arka plan bildirimi gecikiyor",
+      description: "Uygulama arka plandayken yeni sohbet mesajları geç düşüyor.",
+      appVersion: "1.0.12 (13)",
+      deviceInfo: "Android 14 (SDK 34)",
+      status: "open",
+      adminReply: "",
+      repliedByName: "",
+      createdAt: created,
+      updatedAt: created
+    })
+  );
+
+  // Reject spoofed adminReply/status or unexpected ghost field on create
+  await assertFails(
+    memberADb.collection("support_tickets").doc("ticket_bad_status").set({
+      userId: "member_a",
+      userName: "Ahmet Yılmaz",
+      userEmail: "a@example.com",
+      userTeam: "Yazılım Ekibi",
+      category: "Bildirim Sorunu",
+      subject: "Test konu",
+      description: "En az on karakterlik açıklama metni.",
+      appVersion: "1.0.12 (13)",
+      deviceInfo: "Android 14 (SDK 34)",
+      status: "resolved",
+      adminReply: "Sahte yanıt",
+      repliedByName: "",
+      createdAt: created,
+      updatedAt: created
+    })
+  );
+  await assertFails(
+    memberADb.collection("support_tickets").doc("ticket_ghost").set({
+      userId: "member_a",
+      userName: "Ahmet Yılmaz",
+      userEmail: "a@example.com",
+      userTeam: "Yazılım Ekibi",
+      category: "Bildirim Sorunu",
+      subject: "Test konu",
+      description: "En az on karakterlik açıklama metni.",
+      appVersion: "1.0.12 (13)",
+      deviceInfo: "Android 14 (SDK 34)",
+      status: "open",
+      adminReply: "",
+      repliedByName: "",
+      isPriority: true,
+      createdAt: created,
+      updatedAt: created
+    })
+  );
+
+  // Member A can query own tickets; Member B cannot read or list Member A's tickets
+  await assertSucceeds(memberADb.collection("support_tickets").where("userId", "==", "member_a").get());
+  await assertFails(memberBDb.collection("support_tickets").doc("ticket_1").get());
+  await assertFails(memberBDb.collection("support_tickets").get());
+  await assertFails(memberBDb.collection("support_tickets").where("userId", "==", "member_a").get());
+
+  // Non-manager cannot update status/reply
+  await assertFails(
+    memberADb.collection("support_tickets").doc("ticket_1").update({
+      status: "resolved",
+      adminReply: "Kendim çözdüm",
+      repliedByName: "Ahmet",
+      updatedAt: new Date(Date.now() - 1000)
+    })
+  );
+
+  // Manager can list all tickets and update status/adminReply
+  await assertSucceeds(mgrDb.collection("support_tickets").get());
+  await assertSucceeds(
+    mgrDb.collection("support_tickets").doc("ticket_1").update({
+      status: "resolved",
+      adminReply: "Arka plan servisi güncellendi, pil kısıtlamasını kapatabilirsiniz.",
+      repliedByName: "Yönetici",
+      updatedAt: new Date(Date.now() - 1000)
+    })
+  );
+});
+
+

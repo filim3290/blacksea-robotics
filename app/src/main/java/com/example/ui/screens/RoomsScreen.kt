@@ -158,8 +158,8 @@ fun RoomsScreen(
     LaunchedEffect(initialRoomId) {
         selectedRoomId = initialRoomId
     }
-    DisposableEffect(selectedRoomId, currentUserProfile?.userId) {
-        val activeUid = currentUserProfile?.userId.orEmpty()
+    DisposableEffect(selectedRoomId, currentUserProfile?.userId, currentUserProfile?.id) {
+        val activeUid = currentUserProfile?.userId?.ifBlank { currentUserProfile.id }.orEmpty()
         TeamNotificationDispatcher.setActiveChatRoom(context, activeUid, selectedRoomId)
         onDispose {
             TeamNotificationDispatcher.setActiveChatRoom(context, activeUid, null)

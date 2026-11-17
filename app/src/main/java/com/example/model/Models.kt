@@ -342,3 +342,116 @@ data class TeamActivity(
     val type: String = "idea", // "idea", "file", "announcement", "chat"
     val timeAgo: String = ""
 )
+
+object SupportTicketStatus {
+    const val OPEN = "open"
+    const val IN_PROGRESS = "in_progress"
+    const val RESOLVED = "resolved"
+
+    val ALL = listOf(OPEN, IN_PROGRESS, RESOLVED)
+
+    fun normalize(raw: String?): String {
+        val clean = raw?.trim()?.lowercase()
+        return if (clean in ALL) clean!! else OPEN
+    }
+
+    fun displayName(status: String?): String {
+        return when (normalize(status)) {
+            IN_PROGRESS -> "İnceleniyor"
+            RESOLVED -> "Çözüldü"
+            else -> "Açık"
+        }
+    }
+}
+
+object SupportCategories {
+    val ALL = listOf(
+        "Bildirim Sorunu",
+        "Uygulama Hatası",
+        "Güncelleme",
+        "Hesap & Rol",
+        "Öneri / Diğer"
+    )
+}
+
+@IgnoreExtraProperties
+data class SupportTicket(
+    @DocumentId val id: String = "",
+    val userId: String = "",
+    val userName: String = "",
+    val userEmail: String = "",
+    val userTeam: String = "",
+    val category: String = "Uygulama Hatası",
+    val subject: String = "",
+    val description: String = "",
+    val appVersion: String = "",
+    val deviceInfo: String = "",
+    val status: String = SupportTicketStatus.OPEN,
+    val adminReply: String = "",
+    val repliedByName: String = "",
+    @ServerTimestamp val createdAt: Timestamp? = null,
+    @ServerTimestamp val updatedAt: Timestamp? = null
+)
+
+data class SupportFaqItem(
+    val id: String,
+    val category: String,
+    val question: String,
+    val answer: String
+)
+
+object SupportFaqData {
+    val CATEGORIES = listOf("Tümü", "Bildirimler", "Sohbet", "Güncelleme", "Hesap", "Dosyalar")
+
+    val ITEMS = listOf(
+        SupportFaqItem(
+            id = "faq_bg_notif",
+            category = "Bildirimler",
+            question = "Mesaj veya duyuru bildirimleri neden gecikiyor veya gelmiyor?",
+            answer = "Uygulama, mesajları ve duyuruları anlık iletmek için sürekli arka plan bağlantı servisini kullanır. Bildirimlerin kesintisiz gelmesi için Profil sekmesindeki 'Anlık Arka Plan Bildirimleri' anahtarının açık olduğundan, Android bildirim izninin verildiğinden ve cihaz pil ayarlarında BLACKSEA ROBOTICS için 'Kısıtlanmamış' pil kullanımının seçili olduğundan emin olun."
+        ),
+        SupportFaqItem(
+            id = "faq_active_room",
+            category = "Bildirimler",
+            question = "Sohbet odasının içindeyken neden yeni mesaj bildirimi gelmiyor?",
+            answer = "Dikkat dağılmasını önlemek için o anda açık olan ve görüntülediğiniz sohbet odasından gelen mesajlar için bildirim sesi/penceresi bastırılır. Diğer odalardan gelen mesajlar, uygulamayı arka plana aldığınızda veya başka bir ekranda olduğunuzda anında bildirim olarak düşer."
+        ),
+        SupportFaqItem(
+            id = "faq_chat_gestures",
+            category = "Sohbet",
+            question = "Mesaja nasıl yanıt veririm, düzenlerim, sabitlerim veya silerim?",
+            answer = "Herhangi bir mesaj balonunu sağa doğru kaydırarak o mesaja hızlıca yanıt verebilirsiniz. Mesajların üzerine basılı tutarak çoklu seçim modunu açabilir; üst çubuktan seçilen mesajları kopyalayabilir, kendi mesajlarınızı (ve yöneticiler için tüm mesajları) topluca silebilir, tekil mesajlarda sağ üstteki (⋮) menüsünden sabitleme ve 1 saat içinde düzenleme yapabilirsiniz."
+        ),
+        SupportFaqItem(
+            id = "faq_updates",
+            category = "Güncelleme",
+            question = "Yeni sürüm yayınlandığında uygulamayı nasıl güncellerim?",
+            answer = "GitHub üzerinde yeni bir sürüm yayınlandığında bildirim alırsınız. Profil > 'Uygulama & Güncellemeler' bölümünden de istediğiniz zaman 'Güncellemeleri Kontrol Et' butonuna basarak en son sürümü indirip kurabilirsiniz. Kurulum sırasında Android'in 'Bilinmeyen uygulamalara izin ver' onayını vermeniz gerekebilir."
+        ),
+        SupportFaqItem(
+            id = "faq_profile_roles",
+            category = "Hesap",
+            question = "Ekibimi, adımı veya yetki/rolümü nasıl değiştirebilirim?",
+            answer = "Ad, soyad, kullanıcı adı ve ekip bilgilerinizi Profil ekranındaki 'Profili ve Ekibi Düzenle' butonundan güncelleyebilirsiniz. Takım Kaptanı, Yetkili Öğretmen veya Yönetici gibi yetki rolleri yalnızca mevcut yöneticiler tarafından Yönetici Paneli üzerinden atanabilir."
+        ),
+        SupportFaqItem(
+            id = "faq_files_media",
+            category = "Dosyalar",
+            question = "Hangi dosya türlerini yükleyebilirim ve boyut sınırı nedir?",
+            answer = "Fotoğraf, video, ses kaydı, PDF, kod dosyaları (.py, .kt, .cpp vb.) ve CAD dosyalarını (.step, .stl vb.) 100 MB sınırına kadar paylaşabilirsiniz. Medya ve kod dosyaları doğrudan uygulama içinde önizlenebilir."
+        ),
+        SupportFaqItem(
+            id = "faq_approval",
+            category = "Hesap",
+            question = "Yeni kayıt oldum, onay sürecim ne kadar sürer?",
+            answer = "Kaydınızı tamamladığınızda yöneticilere ve takım kaptanlarına otomatik onay bildirimi gider. Yönetici onayladığında bildirim alırsınız ve tüm takım alanlarına erişiminiz anında açılır."
+        ),
+        SupportFaqItem(
+            id = "faq_account_delete",
+            category = "Hesap",
+            question = "Hesabımı silersem ne olur?",
+            answer = "Profil sayfasının en altındaki 'Hesabımı Kalıcı Olarak Sil' seçeneği ile iki aşamalı onay vererek profilinizi ve kişisel bildirim kayıtlarınızı kalıcı olarak silebilirsiniz. Bu işlem geri alınamaz."
+        )
+    )
+}
+

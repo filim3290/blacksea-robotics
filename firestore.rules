@@ -141,5 +141,65 @@ service cloud.firestore {
       allow read: if isAuthenticated();
       allow write: if isManager() && isActiveUser();
     }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidSupportTicket(data) {
+      return data.userId is string && data.userId.size() > 0 && data.userId.size() <= 128 &&
+        data.userName is string && data.userName.size() > 0 && data.userName.size() <= 100 &&
+        data.userEmail is string && data.userEmail.size() <= 150 &&
+        data.userTeam is string && data.userTeam.size() > 0 && data.userTeam.size() <= 80 &&
+        data.category is string && data.category.size() > 0 && data.category.size() <= 60 &&
+        data.subject is string && data.subject.size() >= 3 && data.subject.size() <= 120 &&
+        data.description is string && data.description.size() >= 10 && data.description.size() <= 2000 &&
+        data.appVersion is string && data.appVersion.size() <= 40 &&
+        data.deviceInfo is string && data.deviceInfo.size() <= 120 &&
+        data.status in ['open', 'in_progress', 'resolved'] &&
+        data.adminReply is string && data.adminReply.size() <= 2000 &&
+        data.repliedByName is string && data.repliedByName.size() <= 100 &&
+        data.createdAt is timestamp && data.createdAt <= request.time &&
+        data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    // --- SUPPORT TICKETS ---
+    match /support_tickets/{ticketId} {
+      allow get: if isAuthenticated() && isValidId(ticketId) && (
+        resource.data.userId == request.auth.uid || (isManager() && isActiveUser())
+      );
+      allow list: if isAuthenticated() && (
+        resource.data.userId == request.auth.uid || (isManager() && isActiveUser())
+      );
+      allow create: if isAuthenticated() &&
+        isValidId(ticketId) &&
+        request.resource.data.keys().hasAll([
+          'userId', 'userName', 'userEmail', 'userTeam', 'category',
+          'subject', 'description', 'appVersion', 'deviceInfo',
+          'status', 'adminReply', 'repliedByName', 'createdAt', 'updatedAt'
+        ]) &&
+        request.resource.data.keys().hasOnly([
+          'userId', 'userName', 'userEmail', 'userTeam', 'category',
+          'subject', 'description', 'appVersion', 'deviceInfo',
+          'status', 'adminReply', 'repliedByName', 'createdAt', 'updatedAt'
+        ]) &&
+        isValidSupportTicket(request.resource.data) &&
+        request.resource.data.userId == request.auth.uid &&
+        request.resource.data.status == 'open' &&
+        request.resource.data.adminReply == '' &&
+        request.resource.data.repliedByName == '';
+      allow update: if isManager() &&
+        isActiveUser() &&
+        isValidId(ticketId) &&
+        isValidSupportTicket(request.resource.data) &&
+        request.resource.data.userId == resource.data.userId &&
+        request.resource.data.createdAt == resource.data.createdAt &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'status', 'adminReply', 'repliedByName', 'updatedAt'
+        ]);
+      allow delete: if isAuthenticated() && isValidId(ticketId) && (
+        resource.data.userId == request.auth.uid || (isManager() && isActiveUser())
+      );
+    }
   }
 }

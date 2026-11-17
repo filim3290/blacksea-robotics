@@ -53,6 +53,7 @@ import com.example.data.BlackseaRepository
 import com.example.data.UserProfileLoadState
 import com.example.model.UserStatus
 import com.example.notifications.BackgroundNotificationWorker
+import com.example.notifications.RealtimeNotificationService
 import com.example.notifications.TeamNotificationDispatcher
 import com.example.ui.MainScreen
 import com.example.ui.screens.AuthScreen
@@ -167,6 +168,7 @@ fun AppContent(
             permissionGrantCount++
             BackgroundNotificationWorker.schedulePeriodicSync(context)
             BackgroundNotificationWorker.triggerImmediateSync(context)
+            RealtimeNotificationService.startIfEnabled(context)
         } else {
             val enabled = NotificationManagerCompat.from(context).areNotificationsEnabled()
             if (!enabled) {
@@ -337,6 +339,7 @@ fun AppContent(
                 val isFounderEmail = currentUser?.email.equals("filim3290@gmail.com", ignoreCase = true)
                 if (!isFounderEmail && !isSelfDeleting) {
                     BackgroundNotificationWorker.cancelPeriodicSync(context)
+                    RealtimeNotificationService.stop(context)
                     isAuthCompleted = false
                     Toast.makeText(
                         context,
@@ -353,6 +356,7 @@ fun AppContent(
                 val isApproved = UserStatus.isActive(profile.status) || isFounder
                 if (!isApproved) {
                     BackgroundNotificationWorker.cancelPeriodicSync(context)
+                    RealtimeNotificationService.stop(context)
                     isAuthCompleted = false
                     if (UserStatus.isRevoked(profile.status)) {
                         Toast.makeText(
@@ -363,6 +367,7 @@ fun AppContent(
                     }
                 } else {
                     BackgroundNotificationWorker.schedulePeriodicSync(context)
+                    RealtimeNotificationService.startIfEnabled(context)
                     try {
                         repository.ensureDefaultRoomsExist()
                     } catch (_: Exception) {
@@ -427,11 +432,13 @@ fun AppContent(
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
                 TeamNotificationDispatcher.setAppForeground(context, currentUser?.uid, true)
+                RealtimeNotificationService.startIfEnabled(context)
                 scope.launch {
                     performUpdateCheckAndNotify(forceRefresh = true, notifyOs = true)
                 }
             } else if (event == Lifecycle.Event.ON_STOP) {
                 TeamNotificationDispatcher.setAppForeground(context, currentUser?.uid, false)
+                RealtimeNotificationService.startIfEnabled(context)
                 BackgroundNotificationWorker.schedulePeriodicSync(context)
                 BackgroundNotificationWorker.triggerOneTimeUpdateCheck(context, delaySeconds = 5L)
             }
@@ -546,6 +553,7 @@ fun AppContent(
                     onShowUpdateDialog = { release -> availableUpdate = release },
                     onSignOut = {
                         BackgroundNotificationWorker.cancelPeriodicSync(context)
+                        RealtimeNotificationService.stop(context)
                         Firebase.auth.signOut()
                         currentUser = null
                         isAuthCompleted = false
@@ -553,6 +561,7 @@ fun AppContent(
                     onAccountDeleted = {
                         isSelfDeleting = true
                         BackgroundNotificationWorker.cancelPeriodicSync(context)
+                        RealtimeNotificationService.stop(context)
                         TeamNotificationDispatcher.clearUserSyncState(context, uid)
                         Firebase.auth.signOut()
                         currentUser = null

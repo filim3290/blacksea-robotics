@@ -3,4 +3,8 @@
     <string name="splash_subtitle">Ünye Fen Lisesi Robotik Takımı</string>
     <string name="splash_motto">ONE TEAM. ONE VISION. ONE ROBOT.</string>
     <string name="splash_loading_label">Takım alanı hazırlanıyor…</string>
+    <string name="bg_service_channel_name">Arka Plan Bildirim Servisi</string>
+    <string name="bg_service_channel_desc">Uygulama kapalıyken veya arka plandayken mesaj ve takım bildirimlerini anında iletir</string>
+    <string name="bg_service_notif_title">BLACKSEA ROBOTICS Arka Plan Bağlantısı</string>
+    <string name="bg_service_notif_text">Takım mesajları ve duyurular anlık olarak dinleniyor</string>
 </resources>

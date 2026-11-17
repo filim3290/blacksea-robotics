@@ -54,6 +54,7 @@ import androidx.compose.material.icons.filled.Lightbulb
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Security
+import androidx.compose.material.icons.filled.SupportAgent
 import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Button
@@ -160,6 +161,15 @@ fun MainScreen(
                     currentTab = NavItem.HOME
                 }
             }
+            "support_ticket" -> {
+                if (isAdmin) {
+                    adminInitialTab = 5
+                    currentTab = NavItem.ADMIN
+                } else {
+                    currentTab = NavItem.PROFILE
+                }
+            }
+            "support_reply" -> currentTab = NavItem.PROFILE
             else -> currentTab = NavItem.HOME
         }
     }
@@ -943,6 +953,7 @@ fun TeamNotificationsDialog(
                                     "idea", "comment" -> Pair(Icons.Default.Lightbulb, ext.amberText)
                                     "file" -> Pair(Icons.Default.Folder, if (ext.isDark) Color(0xFFA78BFA) else Color(0xFF6D28D9))
                                     "new_member", "member_pending", "member_approved" -> Pair(Icons.Default.GroupAdd, ext.emeraldText)
+                                    "support_ticket", "support_reply" -> Pair(Icons.Default.SupportAgent, ext.accentBlue)
                                     "access_revoked" -> Pair(Icons.Default.Block, ext.dangerText)
                                     else -> Pair(Icons.Default.ChatBubble, ext.accentBlue)
                                 }

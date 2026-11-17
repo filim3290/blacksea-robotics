@@ -80,10 +80,12 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.BlackseaRepository
 import com.example.model.PredefinedRoles
+import com.example.model.SupportTicketStatus
 import com.example.model.TeamAnnouncement
 import com.example.model.TeamType
 import com.example.model.UserProfile
 import com.example.model.UserStatus
+import com.example.ui.components.AdminSupportTab
 import com.example.ui.components.RoleBadge
 import com.example.ui.components.TeamBadge
 import com.example.ui.components.UserRolesRow
@@ -111,6 +113,10 @@ fun AdminScreen(
 
     val allUsers by repository.observeAllUsers().collectAsState(initial = emptyList())
     val announcements by repository.observeAnnouncements().collectAsState(initial = emptyList())
+    val supportTickets by repository.observeAllSupportTickets().collectAsState(initial = emptyList())
+    val openSupportCount = remember(supportTickets) {
+        supportTickets.count { SupportTicketStatus.normalize(it.status) != SupportTicketStatus.RESOLVED }
+    }
 
     val pendingUsers = allUsers.filter { UserStatus.isPending(it.status) }
     val approvedUsers = allUsers.filter { UserStatus.isActive(it.status) }
@@ -123,9 +129,9 @@ fun AdminScreen(
             user.email.equals("filim3290@gmail.com", ignoreCase = true)
     }
 
-    var selectedTabIndex by remember { mutableIntStateOf(initialTabIndex.coerceIn(0, 4)) }
+    var selectedTabIndex by remember { mutableIntStateOf(initialTabIndex.coerceIn(0, 5)) }
     val tabs = remember {
-        listOf("Kullanıcılar", "Onaylar", "Bildirim Gönder", "Duyurular", "Uygulama Güncellemesi")
+        listOf("Kullanıcılar", "Onaylar", "Bildirim Gönder", "Duyurular", "Uygulama Güncellemesi", "Destek")
     }
     LaunchedEffect(initialTabIndex) {
         if (initialTabIndex in tabs.indices) {
@@ -199,6 +205,7 @@ fun AdminScreen(
                         val count = when (index) {
                             0 -> " (${approvedUsers.size})"
                             1 -> if (pendingUsers.isNotEmpty()) " (${pendingUsers.size})" else ""
+                            5 -> if (openSupportCount > 0) " ($openSupportCount)" else ""
                             else -> ""
                         }
                         Text(
@@ -1075,6 +1082,14 @@ fun AdminScreen(
                         }
                     }
                 }
+            }
+
+            5 -> {
+                AdminSupportTab(
+                    tickets = supportTickets,
+                    repository = repository,
+                    currentUserProfile = currentUserProfile
+                )
             }
         }
     }

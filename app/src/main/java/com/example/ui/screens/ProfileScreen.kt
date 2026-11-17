@@ -453,6 +453,14 @@ fun ProfileScreen(
             }
         }
 
+        com.example.ui.components.BackgroundNotificationControlCard()
+
+        com.example.ui.components.HelpAndSupportCenterCard(
+            currentUserProfile = currentUserProfile,
+            repository = repository,
+            updateManager = mgr
+        )
+
         // Release History Dialog
         if (showHistoryDialog) {
             AlertDialog(

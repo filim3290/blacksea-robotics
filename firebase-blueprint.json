@@ -117,6 +117,28 @@
         "createdAt": { "type": "string", "format": "date-time" }
       },
       "required": ["authorId", "authorName", "title", "content", "isPinned", "createdAt"]
+    },
+    "SupportTicket": {
+      "title": "SupportTicket",
+      "description": "Member help & support ticket routed to team managers",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "userName": { "type": "string" },
+        "userEmail": { "type": "string" },
+        "userTeam": { "type": "string" },
+        "category": { "type": "string" },
+        "subject": { "type": "string" },
+        "description": { "type": "string" },
+        "appVersion": { "type": "string" },
+        "deviceInfo": { "type": "string" },
+        "status": { "type": "string", "enum": ["open", "in_progress", "resolved"] },
+        "adminReply": { "type": "string" },
+        "repliedByName": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "userName", "userEmail", "userTeam", "category", "subject", "description", "appVersion", "deviceInfo", "status", "adminReply", "repliedByName", "createdAt", "updatedAt"]
     }
   },
   "firestore": {
@@ -147,6 +169,10 @@
     "/announcements/{announcementId}": {
       "schema": "Announcement",
       "description": "Team announcements collection"
+    },
+    "/support_tickets/{ticketId}": {
+      "schema": "SupportTicket",
+      "description": "Member help & support tickets collection"
     }
   }
 }

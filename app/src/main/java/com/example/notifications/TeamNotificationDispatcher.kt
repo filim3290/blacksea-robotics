@@ -39,12 +39,14 @@ object TeamNotificationDispatcher {
     const val CHANNEL_MESSAGES_SILENT = CHANNEL_MESSAGES
     const val CHANNEL_ANNOUNCEMENTS = "bsr_announcements"
     const val CHANNEL_UPDATES = "bsr_updates"
+    const val CHANNEL_BACKGROUND_SERVICE = "bsr_background_listener_v1"
 
     private const val LEGACY_CHANNEL_REALTIME_SYNC = "bsr_realtime_sync"
     private const val LEGACY_CHANNEL_MESSAGES_SILENT = "bsr_chat_messages_silent"
     private const val LEGACY_CHANNEL_MESSAGES_V2 = "bsr_chat_messages_v2"
     private const val LEGACY_PREF_REALTIME_SYNC_ENABLED = "realtime_sync_opt_in"
     private const val LEGACY_FOREGROUND_SYNC_NOTIFICATION_ID = 1099
+    const val BACKGROUND_SERVICE_NOTIFICATION_ID = 1098
     private const val PENDING_MSG_PREFIX = "pending_msg_count_"
     private const val UPDATE_NOTIFICATION_ID = 1001
 
@@ -222,14 +224,52 @@ object TeamNotificationDispatcher {
                 enableVibration(true)
             }
 
+            val backgroundServiceChannel = NotificationChannel(
+                CHANNEL_BACKGROUND_SERVICE,
+                context.getString(R.string.bg_service_channel_name),
+                NotificationManager.IMPORTANCE_MIN
+            ).apply {
+                description = context.getString(R.string.bg_service_channel_desc)
+                enableLights(false)
+                enableVibration(false)
+                setShowBadge(false)
+                setSound(null, null)
+            }
+
             notificationManager.createNotificationChannel(generalChannel)
             notificationManager.createNotificationChannel(messagesChannel)
             notificationManager.createNotificationChannel(announcementsChannel)
             notificationManager.createNotificationChannel(updatesChannel)
+            notificationManager.createNotificationChannel(backgroundServiceChannel)
             notificationManager.deleteNotificationChannel(LEGACY_CHANNEL_REALTIME_SYNC)
             notificationManager.deleteNotificationChannel(LEGACY_CHANNEL_MESSAGES_SILENT)
             notificationManager.deleteNotificationChannel(LEGACY_CHANNEL_MESSAGES_V2)
         }
+    }
+
+    fun buildRealtimeServiceNotification(context: Context): android.app.Notification {
+        val appCtx = context.applicationContext
+        ensureNotificationChannels(appCtx)
+        val openIntent = Intent(appCtx, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+        val pendingIntent = PendingIntent.getActivity(
+            appCtx,
+            BACKGROUND_SERVICE_NOTIFICATION_ID,
+            openIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        return NotificationCompat.Builder(appCtx, CHANNEL_BACKGROUND_SERVICE)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setContentTitle(appCtx.getString(R.string.bg_service_notif_title))
+            .setContentText(appCtx.getString(R.string.bg_service_notif_text))
+            .setPriority(NotificationCompat.PRIORITY_MIN)
+            .setOngoing(true)
+            .setSilent(true)
+            .setShowWhen(false)
+            .setCategory(NotificationCompat.CATEGORY_SERVICE)
+            .setContentIntent(pendingIntent)
+            .build()
     }
 
     fun hasNotificationPermission(context: Context): Boolean {
@@ -277,11 +317,15 @@ object TeamNotificationDispatcher {
                 shouldSeedBaseline = true,
                 seedIds = validItems.map { it.id }.takeLast(MAX_STORED_IDS),
                 toDispatch = emptyList(),
-                newBaselineTimestampMs = if (maxCreatedMs > 0L) maxCreatedMs else nowMs
+                newBaselineTimestampMs = maxCreatedMs
             )
         }
 
-        val minAllowedTimestampMs = (baselineTimestampMs - CLOCK_SKEW_TOLERANCE_MS).coerceAtLeast(0L)
+        val minAllowedTimestampMs = if (baselineTimestampMs > 0L) {
+            (baselineTimestampMs - CLOCK_SKEW_TOLERANCE_MS).coerceAtLeast(0L)
+        } else {
+            0L
+        }
         val effectiveJoinFloorMs = if (userCreatedAtMs > 0L) (userCreatedAtMs - 5_000L).coerceAtLeast(0L) else 0L
         val candidates = validItems.filter { notif ->
             val alreadyDispatched = dispatchedIds.contains(notif.id)
@@ -290,7 +334,7 @@ object TeamNotificationDispatcher {
                 ((notif.senderId.isNotBlank() && notif.senderId == userId) ||
                     (notif.type.equals("new_member", ignoreCase = true) && notif.targetId == userId))
             val createdMs = notif.createdAt?.toDate()?.time
-            val withinTimeWindow = createdMs == null || createdMs >= minAllowedTimestampMs
+            val withinTimeWindow = minAllowedTimestampMs == 0L || createdMs == null || createdMs >= minAllowedTimestampMs
             val afterUserJoined = notif.recipientUserId == userId ||
                 effectiveJoinFloorMs == 0L ||
                 createdMs == null ||
@@ -299,11 +343,14 @@ object TeamNotificationDispatcher {
             !alreadyDispatched && !alreadyRead && !isOwnAction && withinTimeWindow && afterUserJoined
         }.sortedBy { it.createdAt?.toDate()?.time ?: nowMs }
 
+        val maxObservedCreatedMs = validItems.mapNotNull { it.createdAt?.toDate()?.time }.maxOrNull() ?: 0L
+        val advancedBaselineMs = maxOf(baselineTimestampMs, maxObservedCreatedMs)
+
         return DispatchSelection(
             shouldSeedBaseline = false,
             seedIds = emptyList(),
             toDispatch = candidates,
-            newBaselineTimestampMs = baselineTimestampMs
+            newBaselineTimestampMs = advancedBaselineMs
         )
     }
 
@@ -315,7 +362,7 @@ object TeamNotificationDispatcher {
         context: Context,
         userId: String,
         notifications: List<TeamNotification>,
-        nowMs: Long = System.currentTimeMillis()
+        @Suppress("UNUSED_PARAMETER") nowMs: Long = System.currentTimeMillis()
     ) {
         if (userId.isBlank()) return
         val appCtx = context.applicationContext
@@ -329,8 +376,7 @@ object TeamNotificationDispatcher {
             val existingBaseline = prefs.getLong(baselineTsKey, 0L)
             val storedList = readStoredIdList(prefs.getString(idsKey, null))
             val maxCreatedMs = validItems.mapNotNull { it.createdAt?.toDate()?.time }.maxOrNull() ?: 0L
-            val candidateBaseline = if (maxCreatedMs > 0L) maxCreatedMs else nowMs
-            val newBaseline = maxOf(existingBaseline, candidateBaseline)
+            val newBaseline = maxOf(existingBaseline, maxCreatedMs)
             val mergedIds = (storedList + validItems.map { it.id })
                 .distinct()
                 .takeLast(MAX_STORED_IDS)
@@ -363,7 +409,6 @@ object TeamNotificationDispatcher {
         val baselineTsKey = "baseline_ts_$userId"
         val idsKey = "dispatched_list_$userId"
 
-        val candidateSelection: List<TeamNotification>
         synchronized(dispatchLock) {
             val hasSeeded = prefs.getBoolean(seededKey, false)
             if (!hasSeeded && notifications.isEmpty()) {
@@ -391,52 +436,55 @@ object TeamNotificationDispatcher {
                 return 0
             }
 
-            if (selection.toDispatch.isEmpty()) {
+            if (selection.newBaselineTimestampMs > baselineTs) {
+                prefs.edit().putLong(baselineTsKey, selection.newBaselineTimestampMs).apply()
+            }
+
+            val candidateSelection = selection.toDispatch
+            if (candidateSelection.isEmpty()) {
                 return 0
             }
-            candidateSelection = selection.toDispatch
-        }
 
-        val updateManager = AppUpdateManager(appCtx)
-        val (obsoleteUpdates, activeToDispatch) = candidateSelection.partition { notif ->
-            updateManager.isNotificationUpdateObsolete(notif.type, notif.targetId, notif.message)
-        }
-
-        if (obsoleteUpdates.isNotEmpty()) {
-            markIdsAsDispatched(prefs, idsKey, obsoleteUpdates.map { it.id })
-        }
-        if (activeToDispatch.isEmpty()) return 0
-
-        val (messageNotifs, nonMessageNotifs) = activeToDispatch.partition {
-            it.type.equals("message", ignoreCase = true)
-        }
-
-        // Suppress chat messages for the exact room the user is currently viewing in foreground
-        val (activeRoomMsgs, inactiveRoomMsgs) = messageNotifs.partition {
-            isActivelyChattingInRoom(normalizeRoomKey(it.targetRoomId))
-        }
-        if (activeRoomMsgs.isNotEmpty()) {
-            markIdsAsDispatched(prefs, idsKey, activeRoomMsgs.map { it.id })
-            activeRoomMsgs.map { normalizeRoomKey(it.targetRoomId) }.distinct().forEach { roomKey ->
-                clearPendingMessagesForRoom(appCtx, userId, roomKey)
+            val updateManager = AppUpdateManager(appCtx)
+            val (obsoleteUpdates, activeToDispatch) = candidateSelection.partition { notif ->
+                updateManager.isNotificationUpdateObsolete(notif.type, notif.targetId, notif.message)
             }
-        }
 
-        if (inactiveRoomMsgs.isEmpty() && nonMessageNotifs.isEmpty()) {
-            return 0
-        }
+            if (obsoleteUpdates.isNotEmpty()) {
+                markIdsAsDispatched(prefs, idsKey, obsoleteUpdates.map { it.id })
+            }
+            if (activeToDispatch.isEmpty()) return 0
 
-        // Never mark unseen notifications as dispatched when OS permission is missing;
-        // once the user grants notification permission, they will dispatch cleanly.
-        if (!hasNotificationPermission(appCtx)) {
-            return 0
-        }
+            val (messageNotifs, nonMessageNotifs) = activeToDispatch.partition {
+                it.type.equals("message", ignoreCase = true)
+            }
 
-        ensureNotificationChannels(appCtx)
-        val notifManager = appCtx.getSystemService(NotificationManager::class.java) ?: return 0
+            // Suppress chat messages for the exact room the user is currently viewing in foreground
+            val (activeRoomMsgs, inactiveRoomMsgs) = messageNotifs.partition {
+                isActivelyChattingInRoom(normalizeRoomKey(it.targetRoomId))
+            }
+            if (activeRoomMsgs.isNotEmpty()) {
+                markIdsAsDispatched(prefs, idsKey, activeRoomMsgs.map { it.id })
+                activeRoomMsgs.map { normalizeRoomKey(it.targetRoomId) }.distinct().forEach { roomKey ->
+                    clearPendingMessagesForRoom(appCtx, userId, roomKey)
+                }
+            }
 
-        var postedCount = 0
-        val dispatchedIdsToRecord = mutableListOf<String>()
+            if (inactiveRoomMsgs.isEmpty() && nonMessageNotifs.isEmpty()) {
+                return 0
+            }
+
+            // Never mark unseen notifications as dispatched when OS permission is missing;
+            // once the user grants notification permission, they will dispatch cleanly.
+            if (!hasNotificationPermission(appCtx)) {
+                return 0
+            }
+
+            ensureNotificationChannels(appCtx)
+            val notifManager = appCtx.getSystemService(NotificationManager::class.java) ?: return 0
+
+            var postedCount = 0
+            val dispatchedIdsToRecord = mutableListOf<String>()
 
         // 1. Dispatch chat notifications immediately per room for inactive rooms
         if (inactiveRoomMsgs.isNotEmpty()) {
@@ -540,10 +588,11 @@ object TeamNotificationDispatcher {
             }
         }
 
-        if (dispatchedIdsToRecord.isNotEmpty()) {
-            markIdsAsDispatched(prefs, idsKey, dispatchedIdsToRecord)
+            if (dispatchedIdsToRecord.isNotEmpty()) {
+                markIdsAsDispatched(prefs, idsKey, dispatchedIdsToRecord)
+            }
+            return postedCount
         }
-        return postedCount
     }
 
     private fun markIdsAsDispatched(

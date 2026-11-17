@@ -8,8 +8,11 @@ import android.content.Context
 import android.content.ContextWrapper
 import androidx.test.core.app.ApplicationProvider
 import com.example.data.shouldUserReceiveNotification
+import com.example.model.SupportFaqData
+import com.example.model.SupportTicketStatus
 import com.example.model.TeamNotification
 import com.example.model.filterChatDisplayRoles
+import com.example.notifications.RealtimeNotificationService
 import com.example.notifications.TeamNotificationDispatcher
 import com.example.ui.screens.findActivity
 import com.google.firebase.Timestamp
@@ -654,5 +657,99 @@ class NotificationAndStabilityTest {
             TeamNotificationDispatcher.setActiveChatRoom(context, uid, null)
             TeamNotificationDispatcher.clearUserSyncState(context, uid)
         }
+    }
+
+    @Test
+    fun `empty baseline seeding uses 0L so ahead device clock never drops first real messages`() {
+        val serverNow = 1_700_000_000_000L
+        val skewedDeviceNow = serverNow + 24 * 60 * 60_000L // device clock 24 hours ahead!
+        val emptyFirstRun = TeamNotificationDispatcher.selectNotificationsToDispatch(
+            notifications = emptyList(),
+            userId = "me",
+            hasSeededBaseline = false,
+            baselineTimestampMs = 0L,
+            dispatchedIds = emptySet(),
+            nowMs = skewedDeviceNow
+        )
+
+        assertTrue(emptyFirstRun.shouldSeedBaseline)
+        assertEquals(0L, emptyFirstRun.newBaselineTimestampMs)
+
+        val incomingMsg = TeamNotification(
+            id = "first_real_msg",
+            recipientUserId = "all",
+            type = "message",
+            targetRoomId = "general",
+            senderId = "teammate_1",
+            createdAt = Timestamp(Date(serverNow))
+        )
+        val secondRun = TeamNotificationDispatcher.selectNotificationsToDispatch(
+            notifications = listOf(incomingMsg),
+            userId = "me",
+            hasSeededBaseline = true,
+            baselineTimestampMs = emptyFirstRun.newBaselineTimestampMs,
+            dispatchedIds = emptySet(),
+            nowMs = skewedDeviceNow + 5_000L
+        )
+        assertEquals(listOf("first_real_msg"), secondRun.toDispatch.map { it.id })
+        assertEquals(serverNow, secondRun.newBaselineTimestampMs)
+    }
+
+    @Test
+    fun `background service channel is silent low importance and continuous sync defaults enabled`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        TeamNotificationDispatcher.ensureNotificationChannels(context)
+        val nm = context.getSystemService(NotificationManager::class.java)!!
+        val bgChannel = nm.getNotificationChannel(TeamNotificationDispatcher.CHANNEL_BACKGROUND_SERVICE)
+        assertTrue(bgChannel != null)
+        assertEquals(NotificationManager.IMPORTANCE_MIN, bgChannel!!.importance)
+        assertFalse(bgChannel.canShowBadge())
+
+        assertTrue(RealtimeNotificationService.isContinuousSyncEnabled(context))
+        val notif = TeamNotificationDispatcher.buildRealtimeServiceNotification(context)
+        assertEquals(TeamNotificationDispatcher.CHANNEL_BACKGROUND_SERVICE, notif.channelId)
+    }
+
+    @Test
+    fun `shouldUserReceiveNotification routes support tickets to managers and support replies to requester`() {
+        val ticketNotif = TeamNotification(
+            id = "sup_t1",
+            recipientUserId = "managers",
+            type = "support_ticket",
+            senderId = "member_1",
+            title = "Yeni Destek Talebi"
+        )
+        assertTrue(shouldUserReceiveNotification(ticketNotif, "mgr_1", isManager = true, userTeam = "Genel Yönetim"))
+        assertFalse(shouldUserReceiveNotification(ticketNotif, "member_2", isManager = false, userTeam = "Yazılım Ekibi"))
+        assertFalse(shouldUserReceiveNotification(ticketNotif, "member_1", isManager = true, userTeam = "Yazılım Ekibi"))
+
+        val replyNotif = TeamNotification(
+            id = "sup_r1",
+            recipientUserId = "member_1",
+            type = "support_reply",
+            senderId = "mgr_1",
+            title = "Destek Talebiniz Güncellendi"
+        )
+        assertTrue(shouldUserReceiveNotification(replyNotif, "member_1", isManager = false, userTeam = "Yazılım Ekibi"))
+        assertFalse(shouldUserReceiveNotification(replyNotif, "member_2", isManager = false, userTeam = "Yazılım Ekibi"))
+
+        val mechMsg = TeamNotification(
+            id = "msg_mech_1",
+            recipientUserId = "all",
+            type = "message",
+            targetRoomId = "mechanic",
+            senderId = "mech_sender"
+        )
+        assertTrue(shouldUserReceiveNotification(mechMsg, "mgmt_u", isManager = false, userTeam = "Genel Yönetim"))
+    }
+
+    @Test
+    fun `support models and curated FAQs provide valid categories and statuses`() {
+        assertTrue(SupportFaqData.ITEMS.isNotEmpty())
+        assertTrue(SupportFaqData.ITEMS.all { it.question.isNotBlank() && it.answer.isNotBlank() && it.category in SupportFaqData.CATEGORIES })
+        assertEquals("Açık", SupportTicketStatus.displayName(SupportTicketStatus.OPEN))
+        assertEquals("İnceleniyor", SupportTicketStatus.displayName(SupportTicketStatus.IN_PROGRESS))
+        assertEquals("Çözüldü", SupportTicketStatus.displayName(SupportTicketStatus.RESOLVED))
+        assertEquals(SupportTicketStatus.OPEN, SupportTicketStatus.normalize("unknown"))
     }
 }
