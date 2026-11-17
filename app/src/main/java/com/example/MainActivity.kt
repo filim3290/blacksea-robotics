@@ -15,7 +15,6 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.scaleOut
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.size
@@ -69,7 +68,6 @@ import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.auth
 import com.google.firebase.firestore.snapshots
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -165,6 +163,7 @@ fun AppContent(
         logDebug("Notifications", "POST_NOTIFICATIONS granted: $isGranted")
         if (isGranted) {
             BackgroundNotificationWorker.schedulePeriodicSync(context)
+            BackgroundNotificationWorker.triggerImmediateSync(context)
         } else {
             val enabled = NotificationManagerCompat.from(context).areNotificationsEnabled()
             if (!enabled) {
@@ -389,49 +388,34 @@ fun AppContent(
             TeamNotificationDispatcher.getUserJoinTimestampMs(context, uid)
         }
 
-        var hasHandledInitialSnapshot = false
-        val sessionStartMs = System.currentTimeMillis()
+        if (!TeamNotificationDispatcher.hasSeededBaseline(context, uid)) {
+            val initialSnapshot = repository.fetchNotificationsOnce(
+                userId = uid,
+                isManager = activeIsManager,
+                userTeam = profile.team,
+                userCreatedAtMs = effectiveJoinMs
+            )
+            if (initialSnapshot != null) {
+                TeamNotificationDispatcher.syncBaselineSilently(
+                    context = context,
+                    userId = uid,
+                    notifications = initialSnapshot
+                )
+            }
+        }
+
         repository.observeNotifications(
             userId = uid,
             isManager = activeIsManager,
             userTeam = profile.team,
             userCreatedAtMs = effectiveJoinMs
         ).collect { filteredNotifications ->
-            val withinInitialHydration = !hasHandledInitialSnapshot ||
-                (System.currentTimeMillis() - sessionStartMs) < 2_500L
-            if (withinInitialHydration) {
-                val liveNewDuringHydration = filteredNotifications.filter { notif ->
-                    val ts = notif.createdAt?.toDate()?.time
-                    ts != null && ts >= sessionStartMs
-                }
-                val historicalDuringHydration = filteredNotifications.filter { notif ->
-                    val ts = notif.createdAt?.toDate()?.time
-                    ts == null || ts < sessionStartMs
-                }
-                if (historicalDuringHydration.isNotEmpty() || !hasHandledInitialSnapshot) {
-                    TeamNotificationDispatcher.syncBaselineSilently(
-                        context = context,
-                        userId = uid,
-                        notifications = historicalDuringHydration
-                    )
-                }
-                if (liveNewDuringHydration.isNotEmpty()) {
-                    TeamNotificationDispatcher.processNotifications(
-                        context = context,
-                        userId = uid,
-                        notifications = liveNewDuringHydration,
-                        userCreatedAtMs = effectiveJoinMs
-                    )
-                }
-                hasHandledInitialSnapshot = true
-            } else {
-                TeamNotificationDispatcher.processNotifications(
-                    context = context,
-                    userId = uid,
-                    notifications = filteredNotifications,
-                    userCreatedAtMs = effectiveJoinMs
-                )
-            }
+            TeamNotificationDispatcher.processNotifications(
+                context = context,
+                userId = uid,
+                notifications = filteredNotifications,
+                userCreatedAtMs = effectiveJoinMs
+            )
         }
     }
 

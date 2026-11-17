@@ -2,6 +2,7 @@ package com.example.ui.screens
 
 import android.net.Uri
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -9,13 +10,16 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.slideInVertically
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
@@ -37,6 +41,8 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AttachFile
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Checklist
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.Delete
@@ -45,6 +51,7 @@ import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.PushPin
+import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material.icons.filled.Reply
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.UploadFile
@@ -59,10 +66,12 @@ import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -76,6 +85,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -88,6 +98,7 @@ import com.example.data.BlackseaRepository
 import com.example.model.ChatMessage
 import com.example.model.SharedProjectFile
 import com.example.model.UserProfile
+import com.example.model.canBeDeletedBy
 import com.example.model.canBeEditedBy
 import com.example.model.filterChatDisplayRoles
 import com.example.notifications.TeamNotificationDispatcher
@@ -169,13 +180,18 @@ fun RoomsScreen(
     var recordDurationSeconds by remember { mutableIntStateOf(0) }
     var isVoiceUploading by remember { mutableStateOf(false) }
 
-    // Message Edit (1-hour window) & Delete Confirmation State
+    // Message Edit (1-hour window) & Single/Bulk Delete Confirmation State
     var currentTimeMs by remember { mutableLongStateOf(System.currentTimeMillis()) }
     var messageToDelete by remember { mutableStateOf<ChatMessage?>(null) }
     var isDeletingMessage by remember { mutableStateOf(false) }
     var messageToEdit by remember { mutableStateOf<ChatMessage?>(null) }
     var editMessageText by remember { mutableStateOf("") }
     var isSavingMessageEdit by remember { mutableStateOf(false) }
+
+    var isSelectionMode by remember { mutableStateOf(false) }
+    var selectedMessageIds by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var showBulkDeleteDialog by remember { mutableStateOf(false) }
+    var isBulkDeleting by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
         while (true) {
@@ -276,6 +292,40 @@ fun RoomsScreen(
     )
 
     val isAdmin = currentUserProfile?.isManagerAccount() == true
+    val currentUid = currentUserProfile?.userId.orEmpty()
+    val selectableMessages = remember(messages, currentUid, isAdmin) {
+        messages.filter { it.canBeDeletedBy(currentUid, isAdmin) }
+    }
+    val allSelectableSelected = selectableMessages.isNotEmpty() &&
+        selectableMessages.all { it.id in selectedMessageIds }
+
+    LaunchedEffect(selectedRoomId) {
+        isSelectionMode = false
+        selectedMessageIds = emptySet()
+        showBulkDeleteDialog = false
+    }
+
+    LaunchedEffect(messages, currentUid, isAdmin) {
+        if (isSelectionMode) {
+            val validIds = messages
+                .filter { it.canBeDeletedBy(currentUid, isAdmin) }
+                .map { it.id }
+                .toSet()
+            val pruned = selectedMessageIds.intersect(validIds)
+            if (pruned != selectedMessageIds) {
+                selectedMessageIds = pruned
+            }
+            if (validIds.isEmpty()) {
+                isSelectionMode = false
+                showBulkDeleteDialog = false
+            }
+        }
+    }
+
+    BackHandler(enabled = isSelectionMode && !isBulkDeleting) {
+        isSelectionMode = false
+        selectedMessageIds = emptySet()
+    }
 
     val pinnedMessages = messages.filter { it.isPinned }
 
@@ -285,34 +335,161 @@ fun RoomsScreen(
             .imePadding()
             .testTag("rooms_screen")
     ) {
-        // Room Filter Tabs (All rooms are open to everyone!)
+        // Room Filter Tabs OR Contextual Bulk-Delete Selection Bar
         Surface(
             modifier = Modifier.fillMaxWidth(),
-            color = MaterialTheme.colorScheme.surface,
+            color = if (isSelectionMode) ext.dangerSolid.copy(alpha = if (ext.isDark) 0.16f else 0.08f) else MaterialTheme.colorScheme.surface,
             shadowElevation = 2.dp
         ) {
-            LazyRow(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                items(rooms) { (id, title) ->
-                    FilterChip(
-                        selected = selectedRoomId == id,
-                        onClick = { selectedRoomId = id },
-                        label = {
-                            Text(
-                                text = title,
-                                fontSize = 12.sp,
-                                fontWeight = if (selectedRoomId == id) FontWeight.Bold else FontWeight.Normal
-                            )
+            if (isSelectionMode) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 8.dp, vertical = 6.dp)
+                        .testTag("bulk_selection_bar"),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    IconButton(
+                        onClick = {
+                            isSelectionMode = false
+                            selectedMessageIds = emptySet()
                         },
-                        colors = FilterChipDefaults.filterChipColors(
-                            selectedContainerColor = ElectricBlue,
-                            selectedLabelColor = Color.White
+                        enabled = !isBulkDeleting,
+                        modifier = Modifier
+                            .minimumInteractiveComponentSize()
+                            .testTag("cancel_bulk_select_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Close,
+                            contentDescription = "Seçimi İptal Et",
+                            tint = MaterialTheme.colorScheme.onSurface
                         )
-                    )
+                    }
+
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "${selectedMessageIds.size} mesaj seçildi",
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            text = if (isAdmin) "Yönetici: Tüm mesajlar seçilebilir" else "Yalnızca kendi mesajlarınız seçilebilir",
+                            fontSize = 11.sp,
+                            color = ext.textSecondary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+
+                    TextButton(
+                        onClick = {
+                            selectedMessageIds = if (allSelectableSelected) {
+                                emptySet()
+                            } else {
+                                selectableMessages.map { it.id }.toSet()
+                            }
+                        },
+                        enabled = selectableMessages.isNotEmpty() && !isBulkDeleting,
+                        modifier = Modifier
+                            .minimumInteractiveComponentSize()
+                            .testTag("select_all_messages_button"),
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                    ) {
+                        Text(
+                            text = if (allSelectableSelected) "Temizle" else "Tümünü Seç",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = ElectricBlue
+                        )
+                    }
+
+                    Button(
+                        onClick = { showBulkDeleteDialog = true },
+                        enabled = selectedMessageIds.isNotEmpty() && !isBulkDeleting,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = ext.dangerSolid,
+                            contentColor = Color.White
+                        ),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                        modifier = Modifier
+                            .minimumInteractiveComponentSize()
+                            .testTag("bulk_delete_trigger_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Delete,
+                            contentDescription = "Seçilen Mesajları Sil",
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = "Sil (${selectedMessageIds.size})",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+            } else {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(start = 12.dp, end = 8.dp, top = 6.dp, bottom = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    LazyRow(
+                        modifier = Modifier.weight(1f),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        items(rooms) { (id, title) ->
+                            FilterChip(
+                                selected = selectedRoomId == id,
+                                onClick = { selectedRoomId = id },
+                                label = {
+                                    Text(
+                                        text = title,
+                                        fontSize = 12.sp,
+                                        fontWeight = if (selectedRoomId == id) FontWeight.Bold else FontWeight.Normal
+                                    )
+                                },
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = ElectricBlue,
+                                    selectedLabelColor = Color.White
+                                )
+                            )
+                        }
+                    }
+
+                    if (selectableMessages.isNotEmpty() && !isRecordingVoice) {
+                        OutlinedButton(
+                            onClick = {
+                                isSelectionMode = true
+                                selectedMessageIds = emptySet()
+                            },
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                            border = BorderStroke(1.dp, ext.dangerText.copy(alpha = 0.45f)),
+                            modifier = Modifier
+                                .minimumInteractiveComponentSize()
+                                .testTag("enter_bulk_delete_mode_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Checklist,
+                                contentDescription = "Toplu Mesaj Seçimi",
+                                tint = ext.dangerText,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = "Toplu Sil",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = ext.dangerText
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -393,11 +570,31 @@ fun RoomsScreen(
                 ) {
                     val isMyMessage = message.senderId == currentUserProfile?.userId
                     val canEditMessage = message.canBeEditedBy(currentUserProfile?.userId, currentTimeMs)
+                    val canSelectMessage = message.canBeDeletedBy(currentUid, isAdmin)
+                    val isMessageSelected = message.id in selectedMessageIds
                     MessageItemBubble(
                         message = message,
                         isMyMessage = isMyMessage,
                         canManage = isMyMessage || isAdmin,
                         canEdit = canEditMessage,
+                        isSelectionMode = isSelectionMode,
+                        canSelectForDelete = canSelectMessage,
+                        isSelected = isMessageSelected,
+                        onToggleSelect = {
+                            if (canSelectMessage) {
+                                selectedMessageIds = if (isMessageSelected) {
+                                    selectedMessageIds - message.id
+                                } else {
+                                    selectedMessageIds + message.id
+                                }
+                            }
+                        },
+                        onEnterSelectionMode = {
+                            if (canSelectMessage && !isRecordingVoice) {
+                                isSelectionMode = true
+                                selectedMessageIds = setOf(message.id)
+                            }
+                        },
                         onReply = { replyingTo = message },
                         onTogglePin = {
                             scope.launch {
@@ -429,8 +626,8 @@ fun RoomsScreen(
             }
         }
 
-        // Replying to Banner
-        if (replyingTo != null) {
+        // Replying to Banner (hidden during bulk selection mode)
+        if (!isSelectionMode && replyingTo != null) {
             Surface(
                 modifier = Modifier.fillMaxWidth(),
                 color = MaterialTheme.colorScheme.surfaceVariant
@@ -466,8 +663,8 @@ fun RoomsScreen(
             }
         }
 
-        // Attached file preview before sending
-        if (attachedFileName.isNotBlank()) {
+        // Attached file preview before sending (hidden during bulk selection mode)
+        if (!isSelectionMode && attachedFileName.isNotBlank()) {
             Surface(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -498,12 +695,32 @@ fun RoomsScreen(
             }
         }
 
-        // Bottom Input Bar
-        Surface(
-            modifier = Modifier.fillMaxWidth(),
-            color = MaterialTheme.colorScheme.surface,
-            shadowElevation = 8.dp
-        ) {
+        // Bottom Input Bar (hidden during bulk selection mode)
+        if (isSelectionMode) {
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                color = MaterialTheme.colorScheme.surface,
+                shadowElevation = 4.dp
+            ) {
+                Text(
+                    text = if (isAdmin) {
+                        "Silmek istediğiniz mesajlara dokunun (Yönetici tüm mesajları seçebilir)."
+                    } else {
+                        "Silmek istediğiniz kendi mesajlarınıza dokunun."
+                    },
+                    fontSize = 12.sp,
+                    color = ext.textSecondary,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 12.dp)
+                )
+            }
+        } else {
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                color = MaterialTheme.colorScheme.surface,
+                shadowElevation = 8.dp
+            ) {
             if (isRecordingVoice) {
                 // Active Voice Recording View
                 Row(
@@ -728,6 +945,7 @@ fun RoomsScreen(
                         }
                     }
                 }
+            }
             }
         }
     }
@@ -1093,15 +1311,93 @@ fun RoomsScreen(
             }
         )
     }
+
+    // Bulk Delete Messages Confirmation Dialog
+    if (showBulkDeleteDialog && selectedMessageIds.isNotEmpty()) {
+        val count = selectedMessageIds.size
+        AlertDialog(
+            onDismissRequest = { if (!isBulkDeleting) showBulkDeleteDialog = false },
+            title = {
+                Text(
+                    text = "Seçilen Mesajları Sil",
+                    fontWeight = FontWeight.Bold,
+                    color = ext.dangerText
+                )
+            },
+            text = {
+                Text(
+                    text = "Seçilen $count mesaj kalıcı olarak silinsin mi? Bu işlem geri alınamaz.",
+                    color = ext.textSecondary
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val idsToDelete = selectedMessageIds.toList()
+                        isBulkDeleting = true
+                        scope.launch {
+                            try {
+                                repository.deleteMessages(selectedRoomId, idsToDelete)
+                                showBulkDeleteDialog = false
+                                isSelectionMode = false
+                                selectedMessageIds = emptySet()
+                                Toast.makeText(context, "${idsToDelete.size} mesaj silindi.", Toast.LENGTH_SHORT).show()
+                            } catch (ce: CancellationException) {
+                                throw ce
+                            } catch (e: Exception) {
+                                logDebugError("RoomsScreen", "Bulk delete messages failed", e)
+                                Toast.makeText(
+                                    context,
+                                    sanitizeUserErrorMessage(e, "Mesajlar silinemedi."),
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            } finally {
+                                isBulkDeleting = false
+                            }
+                        }
+                    },
+                    enabled = !isBulkDeleting,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = ext.dangerSolid,
+                        contentColor = Color.White
+                    ),
+                    modifier = Modifier.testTag("confirm_bulk_delete_button")
+                ) {
+                    if (isBulkDeleting) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(16.dp),
+                            color = Color.White,
+                            strokeWidth = 2.dp
+                        )
+                    } else {
+                        Text("Evet, Tümünü Sil", fontWeight = FontWeight.Bold)
+                    }
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { showBulkDeleteDialog = false },
+                    enabled = !isBulkDeleting
+                ) {
+                    Text("Vazgeç")
+                }
+            }
+        )
+    }
 }
 
-@OptIn(ExperimentalLayoutApi::class)
+@OptIn(ExperimentalLayoutApi::class, ExperimentalFoundationApi::class)
 @Composable
 fun MessageItemBubble(
     message: ChatMessage,
     isMyMessage: Boolean,
     canManage: Boolean,
     canEdit: Boolean,
+    isSelectionMode: Boolean = false,
+    canSelectForDelete: Boolean = false,
+    isSelected: Boolean = false,
+    onToggleSelect: () -> Unit = {},
+    onEnterSelectionMode: () -> Unit = {},
     onReply: () -> Unit,
     onTogglePin: () -> Unit,
     onEdit: () -> Unit,
@@ -1114,9 +1410,12 @@ fun MessageItemBubble(
     val timeFormatter = remember { SimpleDateFormat("HH:mm", Locale.getDefault()) }
     val formattedTime = message.createdAt?.toDate()?.let { timeFormatter.format(it) } ?: ""
 
+    val bubbleAlpha = if (isSelectionMode && !canSelectForDelete) 0.45f else 1f
+
     Column(
         modifier = Modifier
             .fillMaxWidth()
+            .alpha(bubbleAlpha)
             .padding(vertical = 2.dp),
         horizontalAlignment = if (isMyMessage) Alignment.End else Alignment.Start
     ) {
@@ -1162,20 +1461,63 @@ fun MessageItemBubble(
             }
         }
 
-        Card(
-            shape = RoundedCornerShape(
-                topStart = 16.dp,
-                topEnd = 16.dp,
-                bottomStart = if (isMyMessage) 16.dp else 4.dp,
-                bottomEnd = if (isMyMessage) 4.dp else 16.dp
-            ),
-            colors = CardDefaults.cardColors(
-                containerColor = if (isMyMessage) ElectricBlue else MaterialTheme.colorScheme.surfaceVariant
-            ),
-            border = if (!isMyMessage) BorderStroke(1.dp, ext.cardBorder) else null,
-            modifier = Modifier.widthIn(max = 310.dp)
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            Column(modifier = Modifier.padding(10.dp)) {
+            if (isSelectionMode && canSelectForDelete) {
+                IconButton(
+                    onClick = onToggleSelect,
+                    modifier = Modifier
+                        .minimumInteractiveComponentSize()
+                        .testTag("select_message_checkbox_${message.id}")
+                ) {
+                    Icon(
+                        imageVector = if (isSelected) Icons.Default.CheckCircle else Icons.Default.RadioButtonUnchecked,
+                        contentDescription = if (isSelected) "Seçili Mesaj" else "Mesajı Seç",
+                        tint = if (isSelected) ext.dangerSolid else ext.textMuted,
+                        modifier = Modifier.size(22.dp)
+                    )
+                }
+            }
+
+            Card(
+                shape = RoundedCornerShape(
+                    topStart = 16.dp,
+                    topEnd = 16.dp,
+                    bottomStart = if (isMyMessage) 16.dp else 4.dp,
+                    bottomEnd = if (isMyMessage) 4.dp else 16.dp
+                ),
+                colors = CardDefaults.cardColors(
+                    containerColor = when {
+                        isSelected && isMyMessage -> ElectricBlue.copy(alpha = 0.85f)
+                        isSelected -> ext.dangerSolid.copy(alpha = if (ext.isDark) 0.18f else 0.10f)
+                        isMyMessage -> ElectricBlue
+                        else -> MaterialTheme.colorScheme.surfaceVariant
+                    }
+                ),
+                border = when {
+                    isSelected -> BorderStroke(2.dp, if (isMyMessage) PhoenixAmber else ext.dangerSolid)
+                    !isMyMessage -> BorderStroke(1.dp, ext.cardBorder)
+                    else -> null
+                },
+                modifier = Modifier
+                    .widthIn(max = 310.dp)
+                    .combinedClickable(
+                        onClick = {
+                            if (isSelectionMode && canSelectForDelete) {
+                                onToggleSelect()
+                            }
+                        },
+                        onLongClick = {
+                            if (!isSelectionMode && canSelectForDelete) {
+                                onEnterSelectionMode()
+                            }
+                        }
+                    )
+                    .testTag("message_card_${message.id}")
+            ) {
+                Column(modifier = Modifier.padding(10.dp)) {
                 // Reply Quote
                 if (message.replyToSender.isNotBlank()) {
                     Surface(
@@ -1254,13 +1596,19 @@ fun MessageItemBubble(
                         fileName = message.fileName.ifBlank { "Görsel" },
                         fileSizeText = projectFile.getFormattedSize(),
                         height = 190.dp,
-                        onClick = { onOpenFile(projectFile) },
+                        onClick = {
+                            if (isSelectionMode && canSelectForDelete) onToggleSelect() else if (!isSelectionMode) onOpenFile(projectFile)
+                        },
                         onDownload = {
-                            downloadFileToDevice(
-                                context,
-                                message.fileName.ifBlank { "gorsel.jpg" },
-                                message.fileUrl.ifBlank { message.storagePath }
-                            )
+                            if (isSelectionMode && canSelectForDelete) {
+                                onToggleSelect()
+                            } else if (!isSelectionMode) {
+                                downloadFileToDevice(
+                                    context,
+                                    message.fileName.ifBlank { "gorsel.jpg" },
+                                    message.fileUrl.ifBlank { message.storagePath }
+                                )
+                            }
                         },
                         testTag = "chat_image_preview_${message.id}"
                     )
@@ -1276,13 +1624,19 @@ fun MessageItemBubble(
                         fileSizeText = projectFile.getFormattedSize(),
                         durationMs = message.mediaDurationMs,
                         height = 190.dp,
-                        onClick = { onOpenFile(projectFile) },
+                        onClick = {
+                            if (isSelectionMode && canSelectForDelete) onToggleSelect() else if (!isSelectionMode) onOpenFile(projectFile)
+                        },
                         onDownload = {
-                            downloadFileToDevice(
-                                context,
-                                message.fileName.ifBlank { "video.mp4" },
-                                message.fileUrl.ifBlank { message.storagePath }
-                            )
+                            if (isSelectionMode && canSelectForDelete) {
+                                onToggleSelect()
+                            } else if (!isSelectionMode) {
+                                downloadFileToDevice(
+                                    context,
+                                    message.fileName.ifBlank { "video.mp4" },
+                                    message.fileUrl.ifBlank { message.storagePath }
+                                )
+                            }
                         },
                         testTag = "chat_video_preview_${message.id}"
                     )
@@ -1294,7 +1648,9 @@ fun MessageItemBubble(
                         color = if (isMyMessage) Color.White.copy(alpha = 0.22f) else MaterialTheme.colorScheme.surface,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clickable { onOpenFile(projectFile) }
+                            .clickable {
+                                if (isSelectionMode && canSelectForDelete) onToggleSelect() else if (!isSelectionMode) onOpenFile(projectFile)
+                            }
                     ) {
                         Row(
                             modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
@@ -1329,33 +1685,35 @@ fun MessageItemBubble(
                                 }
                             }
 
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Surface(
-                                    shape = RoundedCornerShape(6.dp),
-                                    color = (if (isMyMessage) Color.White else ElectricBlue).copy(alpha = 0.15f),
-                                    modifier = Modifier.clickable { onOpenFile(projectFile) }
-                                ) {
-                                    Text(
-                                        text = "Aç",
-                                        fontSize = 11.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        color = if (isMyMessage) Color.White else ext.accentBlue,
-                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                                    )
-                                }
-                                if (message.fileUrl.isNotBlank()) {
-                                    IconButton(
-                                        onClick = {
-                                            downloadFileToDevice(context, message.fileName.ifBlank { "dosya" }, message.fileUrl)
-                                        },
-                                        modifier = Modifier.size(28.dp)
+                            if (!isSelectionMode) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Surface(
+                                        shape = RoundedCornerShape(6.dp),
+                                        color = (if (isMyMessage) Color.White else ElectricBlue).copy(alpha = 0.15f),
+                                        modifier = Modifier.clickable { onOpenFile(projectFile) }
                                     ) {
-                                        Icon(
-                                            imageVector = Icons.Default.Download,
-                                            contentDescription = "Cihaza İndir",
-                                            tint = if (isMyMessage) Color.White else ext.accentBlue,
-                                            modifier = Modifier.size(16.dp)
+                                        Text(
+                                            text = "Aç",
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = if (isMyMessage) Color.White else ext.accentBlue,
+                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
                                         )
+                                    }
+                                    if (message.fileUrl.isNotBlank()) {
+                                        IconButton(
+                                            onClick = {
+                                                downloadFileToDevice(context, message.fileName.ifBlank { "dosya" }, message.fileUrl)
+                                            },
+                                            modifier = Modifier.size(28.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.Download,
+                                                contentDescription = "Cihaza İndir",
+                                                tint = if (isMyMessage) Color.White else ext.accentBlue,
+                                                modifier = Modifier.size(16.dp)
+                                            )
+                                        }
                                     }
                                 }
                             }
@@ -1393,54 +1751,57 @@ fun MessageItemBubble(
                         color = if (isMyMessage) Color.White.copy(alpha = 0.7f) else ext.textMuted
                     )
 
-                    Spacer(modifier = Modifier.width(8.dp))
+                    if (!isSelectionMode) {
+                        Spacer(modifier = Modifier.width(8.dp))
 
-                    Icon(
-                        imageVector = Icons.Default.Reply,
-                        contentDescription = "Cevapla",
-                        tint = if (isMyMessage) Color.White.copy(alpha = 0.8f) else ext.textMuted,
-                        modifier = Modifier
-                            .size(14.dp)
-                            .clickable { onReply() }
-                    )
-
-                    if (canEdit) {
-                        Spacer(modifier = Modifier.width(6.dp))
                         Icon(
-                            imageVector = Icons.Default.Edit,
-                            contentDescription = "Mesajı Düzenle",
-                            tint = if (isMyMessage) Color.White.copy(alpha = 0.85f) else ext.accentBlue,
-                            modifier = Modifier
-                                .size(14.dp)
-                                .clickable { onEdit() }
-                                .testTag("edit_message_${message.id}")
-                        )
-                    }
-
-                    if (canManage) {
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Icon(
-                            imageVector = Icons.Default.PushPin,
-                            contentDescription = "Sabitle",
+                            imageVector = Icons.Default.Reply,
+                            contentDescription = "Cevapla",
                             tint = if (isMyMessage) Color.White.copy(alpha = 0.8f) else ext.textMuted,
                             modifier = Modifier
                                 .size(14.dp)
-                                .clickable { onTogglePin() }
+                                .clickable { onReply() }
                         )
 
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Icon(
-                            imageVector = Icons.Default.Delete,
-                            contentDescription = "Sil",
-                            tint = if (isMyMessage) Color.White.copy(alpha = 0.8f) else ext.dangerText,
-                            modifier = Modifier
-                                .size(14.dp)
-                                .clickable { onDelete() }
-                                .testTag("delete_message_${message.id}")
-                        )
+                        if (canEdit) {
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Icon(
+                                imageVector = Icons.Default.Edit,
+                                contentDescription = "Mesajı Düzenle",
+                                tint = if (isMyMessage) Color.White.copy(alpha = 0.85f) else ext.accentBlue,
+                                modifier = Modifier
+                                    .size(14.dp)
+                                    .clickable { onEdit() }
+                                    .testTag("edit_message_${message.id}")
+                            )
+                        }
+
+                        if (canManage) {
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Icon(
+                                imageVector = Icons.Default.PushPin,
+                                contentDescription = "Sabitle",
+                                tint = if (isMyMessage) Color.White.copy(alpha = 0.8f) else ext.textMuted,
+                                modifier = Modifier
+                                    .size(14.dp)
+                                    .clickable { onTogglePin() }
+                            )
+
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Icon(
+                                imageVector = Icons.Default.Delete,
+                                contentDescription = "Sil",
+                                tint = if (isMyMessage) Color.White.copy(alpha = 0.8f) else ext.dangerText,
+                                modifier = Modifier
+                                    .size(14.dp)
+                                    .clickable { onDelete() }
+                                    .testTag("delete_message_${message.id}")
+                            )
+                        }
                     }
                 }
             }
+        }
         }
     }
 }

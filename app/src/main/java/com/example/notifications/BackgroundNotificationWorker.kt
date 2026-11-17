@@ -34,7 +34,7 @@ class BackgroundNotificationWorker(
         private const val TAG = "BgNotifWorker"
         const val WORK_NAME = "bsr_background_notification_sync"
         const val ONE_TIME_WORK_NAME = "bsr_onetime_update_sync"
-        private const val SCHEDULE_VERSION = 2
+        private const val SCHEDULE_VERSION = 3
 
         fun schedulePeriodicSync(context: Context) {
             try {
@@ -72,22 +72,27 @@ class BackgroundNotificationWorker(
             }
         }
 
+        fun triggerImmediateSync(context: Context) {
+            triggerOneTimeUpdateCheck(context, delaySeconds = 0L)
+        }
+
         fun triggerOneTimeUpdateCheck(context: Context, delaySeconds: Long = 15L) {
             try {
                 val appCtx = context.applicationContext
                 val constraints = Constraints.Builder()
                     .setRequiredNetworkType(NetworkType.CONNECTED)
                     .build()
-                val request = OneTimeWorkRequestBuilder<BackgroundNotificationWorker>()
+                val builder = OneTimeWorkRequestBuilder<BackgroundNotificationWorker>()
                     .setConstraints(constraints)
-                    .setInitialDelay(delaySeconds, TimeUnit.SECONDS)
                     .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.SECONDS)
-                    .build()
+                if (delaySeconds > 0L) {
+                    builder.setInitialDelay(delaySeconds, TimeUnit.SECONDS)
+                }
 
                 WorkManager.getInstance(appCtx).enqueueUniqueWork(
                     ONE_TIME_WORK_NAME,
-                    ExistingWorkPolicy.KEEP,
-                    request
+                    ExistingWorkPolicy.REPLACE,
+                    builder.build()
                 )
             } catch (e: Exception) {
                 logDebugWarn(TAG, "Failed to schedule one-time update check", e)

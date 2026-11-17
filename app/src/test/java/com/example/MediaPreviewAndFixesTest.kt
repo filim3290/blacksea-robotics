@@ -9,6 +9,7 @@ import com.example.model.ChatMessage
 import com.example.model.MESSAGE_EDIT_WINDOW_MS
 import com.example.model.TeamNotification
 import com.example.model.UserStatus
+import com.example.model.canBeDeletedBy
 import com.example.model.canBeEditedBy
 import com.example.ui.components.formatMediaDuration
 import com.example.ui.components.resolveMediaImageModel
@@ -174,5 +175,23 @@ class MediaPreviewAndFixesTest {
         assertFalse(msgNoId.canBeEditedBy("user1", nowMs))
         assertFalse(msgNow.canBeEditedBy("user2", nowMs))
         assertFalse(msgNow.canBeEditedBy(null, nowMs))
+    }
+
+    @Test
+    fun `ChatMessage canBeDeletedBy allows own messages for members and any message for managers`() {
+        val ownMsg = ChatMessage(id = "msg_own", senderId = "member_1", text = "Kendi mesajım")
+        val otherMsg = ChatMessage(id = "msg_other", senderId = "member_2", text = "Başkasının mesajı")
+        val blankIdMsg = ChatMessage(id = "", senderId = "member_1", text = "ID yok")
+
+        // Regular member: only own non-blank-id messages
+        assertTrue(ownMsg.canBeDeletedBy(userId = "member_1", isManager = false))
+        assertFalse(otherMsg.canBeDeletedBy(userId = "member_1", isManager = false))
+        assertFalse(blankIdMsg.canBeDeletedBy(userId = "member_1", isManager = false))
+        assertFalse(ownMsg.canBeDeletedBy(userId = null, isManager = false))
+
+        // Manager: can select any non-blank-id message regardless of sender
+        assertTrue(ownMsg.canBeDeletedBy(userId = "admin_1", isManager = true))
+        assertTrue(otherMsg.canBeDeletedBy(userId = "admin_1", isManager = true))
+        assertFalse(blankIdMsg.canBeDeletedBy(userId = "admin_1", isManager = true))
     }
 }

@@ -953,6 +953,35 @@ class BlackseaRepository(val db: FirebaseFirestore) {
             }
     }
 
+    suspend fun fetchNotificationsOnce(
+        userId: String,
+        isManager: Boolean,
+        userTeam: String = "",
+        userCreatedAtMs: Long = 0L
+    ): List<TeamNotification>? {
+        return try {
+            val snapshot = try {
+                db.collection("notifications").get(Source.SERVER).await()
+            } catch (_: Exception) {
+                db.collection("notifications").get().await()
+            }
+            snapshot.toObjects(TeamNotification::class.java).filter { notif ->
+                shouldUserReceiveNotification(
+                    notif = notif,
+                    userId = userId,
+                    isManager = isManager,
+                    userTeam = userTeam,
+                    userCreatedAtMs = userCreatedAtMs
+                )
+            }
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (e: Exception) {
+            logDebugWarn("Repository", "fetchNotificationsOnce failed", e)
+            null
+        }
+    }
+
     suspend fun sendBroadcastNotification(
         title: String,
         message: String,
@@ -1035,11 +1064,12 @@ class BlackseaRepository(val db: FirebaseFirestore) {
     }
 
     suspend fun markAllNotificationsAsRead(userId: String, notificationIds: List<String>, personalNotificationIds: Set<String> = emptySet()) {
-        if (notificationIds.isEmpty()) return
+        val cleanIds = notificationIds.map { it.trim() }.filter { it.isNotBlank() }.distinct()
+        if (cleanIds.isEmpty()) return
         try {
-            val batch = db.batch()
-            for (id in notificationIds) {
-                if (id.isNotBlank()) {
+            cleanIds.chunked(450).forEach { chunk ->
+                val batch = db.batch()
+                for (id in chunk) {
                     val ref = db.collection("notifications").document(id)
                     val updates = mutableMapOf<String, Any>()
                     if (userId.isNotBlank()) {
@@ -1052,8 +1082,10 @@ class BlackseaRepository(val db: FirebaseFirestore) {
                         batch.update(ref, updates)
                     }
                 }
+                batch.commit().await()
             }
-            batch.commit().await()
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             logDebugWarn("Repository", "Failed to mark all as read", e)
         }
@@ -1302,6 +1334,28 @@ class BlackseaRepository(val db: FirebaseFirestore) {
         val docRef = db.collection("rooms").document(roomId).collection("messages").document(messageId)
         try {
             docRef.delete().await()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.DELETE, path)
+            throw e
+        }
+    }
+
+    suspend fun deleteMessages(roomId: String, messageIds: List<String>) {
+        requireUserId()
+        val cleanIds = messageIds.map { it.trim() }.filter { it.isNotBlank() }.distinct()
+        if (cleanIds.isEmpty()) return
+        val path = "rooms/$roomId/messages"
+        val messagesCol = db.collection("rooms").document(roomId).collection("messages")
+        try {
+            cleanIds.chunked(450).forEach { chunk ->
+                val batch = db.batch()
+                chunk.forEach { msgId ->
+                    batch.delete(messagesCol.document(msgId))
+                }
+                batch.commit().await()
+            }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {

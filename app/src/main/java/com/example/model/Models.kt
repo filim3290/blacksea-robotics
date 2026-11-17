@@ -213,6 +213,12 @@ fun ChatMessage.canBeEditedBy(userId: String?, nowMs: Long = System.currentTimeM
     return elapsed <= MESSAGE_EDIT_WINDOW_MS && elapsed >= -300_000L
 }
 
+fun ChatMessage.canBeDeletedBy(userId: String?, isManager: Boolean): Boolean {
+    if (id.isBlank()) return false
+    if (isManager) return true
+    return !userId.isNullOrBlank() && senderId == userId
+}
+
 @IgnoreExtraProperties
 data class IdeaItem(
     @DocumentId val id: String = "",

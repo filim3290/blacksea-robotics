@@ -412,17 +412,25 @@ class NotificationAndStabilityTest {
                 android.app.NotificationManager.IMPORTANCE_MIN
             )
         )
+        nm.createNotificationChannel(
+            android.app.NotificationChannel(
+                "bsr_chat_messages_silent",
+                "Legacy Silent",
+                android.app.NotificationManager.IMPORTANCE_LOW
+            )
+        )
 
         TeamNotificationDispatcher.ensureNotificationChannels(context)
         TeamNotificationDispatcher.cleanupLegacyRealtimeSyncArtifacts(context)
 
         assertFalse(prefs.contains("realtime_sync_opt_in"))
         assertNull(nm.getNotificationChannel("bsr_realtime_sync"))
+        assertNull(nm.getNotificationChannel("bsr_chat_messages_silent"))
         assertTrue(nm.getNotificationChannel(TeamNotificationDispatcher.CHANNEL_TEAM) != null)
-        val silentChannel = nm.getNotificationChannel(TeamNotificationDispatcher.CHANNEL_MESSAGES_SILENT)
-        assertTrue(silentChannel != null)
-        assertEquals(NotificationManager.IMPORTANCE_LOW, silentChannel!!.importance)
-        assertNull(silentChannel.sound)
+        val messagesChannel = nm.getNotificationChannel(TeamNotificationDispatcher.CHANNEL_MESSAGES)
+        assertTrue(messagesChannel != null)
+        assertEquals(NotificationManager.IMPORTANCE_DEFAULT, messagesChannel!!.importance)
+        assertNull(messagesChannel.sound)
         assertTrue(nm.getNotificationChannel(TeamNotificationDispatcher.CHANNEL_ANNOUNCEMENTS) != null)
         assertTrue(nm.getNotificationChannel(TeamNotificationDispatcher.CHANNEL_UPDATES) != null)
     }
@@ -488,7 +496,7 @@ class NotificationAndStabilityTest {
     }
 
     @Test
-    fun `inactive chat batches messages until 10 then fires single silent notification while ideas fire immediately`() {
+    fun `inactive chat dispatches quiet room-grouped notifications immediately and clears on entering room`() {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val app = context.applicationContext as Application
         Shadows.shadowOf(app).grantPermissions(Manifest.permission.POST_NOTIFICATIONS)
@@ -496,49 +504,50 @@ class NotificationAndStabilityTest {
         val shadowNm = Shadows.shadowOf(notifManager)
         notifManager.cancelAll()
 
-        val uid = "batch_user_${System.nanoTime()}"
+        val uid = "quiet_chat_user_${System.nanoTime()}"
         try {
             TeamNotificationDispatcher.clearUserSyncState(context, uid)
             TeamNotificationDispatcher.syncBaselineSilently(context, uid, emptyList())
             TeamNotificationDispatcher.setAppForeground(false)
             TeamNotificationDispatcher.setActiveChatRoom(context, uid, null)
 
-            // First 9 messages in software room -> 0 OS notifications, pending count = 9
-            val firstNine = (1..9).map { idx ->
-                TeamNotification(
-                    id = "sw_msg_$idx",
-                    recipientUserId = "all",
-                    type = "message",
-                    targetRoomId = "software",
-                    senderId = "other_sender",
-                    title = "Yazılım Odası",
-                    message = "Mesaj $idx",
-                    createdAt = Timestamp(Date(System.currentTimeMillis() + idx * 100L))
-                )
-            }
-            assertEquals(0, TeamNotificationDispatcher.processNotifications(context, uid, firstNine))
-            assertEquals(0, shadowNm.size())
-            assertEquals(9, TeamNotificationDispatcher.getPendingMessageCount(context, uid, "software"))
-
-            // 10th message triggers 1 silent notification on CHANNEL_MESSAGES_SILENT and resets counter
-            val tenth = TeamNotification(
-                id = "sw_msg_10",
+            // 1st message in inactive room posts immediately as a quiet notification on CHANNEL_MESSAGES
+            val first = TeamNotification(
+                id = "sw_msg_1",
                 recipientUserId = "all",
                 type = "message",
                 targetRoomId = "software",
                 senderId = "other_sender",
                 title = "Yazılım Odası",
-                message = "Mesaj 10",
-                createdAt = Timestamp(Date(System.currentTimeMillis() + 2000L))
+                message = "İlk mesaj",
+                createdAt = Timestamp(Date(System.currentTimeMillis() + 100L))
             )
-            assertEquals(1, TeamNotificationDispatcher.processNotifications(context, uid, firstNine + tenth))
+            assertEquals(1, TeamNotificationDispatcher.processNotifications(context, uid, listOf(first)))
             assertEquals(1, shadowNm.size())
+            assertEquals(1, TeamNotificationDispatcher.getPendingMessageCount(context, uid, "software"))
+
+            val postedMsgNotif = shadowNm.allNotifications.first()
+            assertEquals(TeamNotificationDispatcher.CHANNEL_MESSAGES, postedMsgNotif.channelId)
+
+            // 2nd message updates the grouped room summary count and does not duplicate notification IDs
+            val second = TeamNotification(
+                id = "sw_msg_2",
+                recipientUserId = "all",
+                type = "message",
+                targetRoomId = "software",
+                senderId = "other_sender",
+                title = "Yazılım Odası",
+                message = "İkinci mesaj",
+                createdAt = Timestamp(Date(System.currentTimeMillis() + 200L))
+            )
+            assertEquals(1, TeamNotificationDispatcher.processNotifications(context, uid, listOf(first, second)))
+            assertEquals(2, TeamNotificationDispatcher.getPendingMessageCount(context, uid, "software"))
+
+            // Opening the room clears pending count and summary notification
+            TeamNotificationDispatcher.setActiveChatRoom(context, uid, "software")
             assertEquals(0, TeamNotificationDispatcher.getPendingMessageCount(context, uid, "software"))
 
-            val postedNotif = shadowNm.allNotifications.first()
-            assertEquals(TeamNotificationDispatcher.CHANNEL_MESSAGES_SILENT, postedNotif.channelId)
-
-            // Non-message notifications (e.g. idea) still dispatch immediately
+            // Non-message notifications (e.g. idea) dispatch immediately on CHANNEL_TEAM
             val idea = TeamNotification(
                 id = "instant_idea_1",
                 recipientUserId = "all",
@@ -549,8 +558,51 @@ class NotificationAndStabilityTest {
                 createdAt = Timestamp(Date(System.currentTimeMillis() + 3000L))
             )
             assertEquals(1, TeamNotificationDispatcher.processNotifications(context, uid, listOf(idea)))
-            assertEquals(2, shadowNm.size())
+            assertTrue(shadowNm.allNotifications.any { it.channelId == TeamNotificationDispatcher.CHANNEL_TEAM })
         } finally {
+            TeamNotificationDispatcher.setAppForeground(false)
+            TeamNotificationDispatcher.setActiveChatRoom(context, uid, null)
+            TeamNotificationDispatcher.clearUserSyncState(context, uid)
+        }
+    }
+
+    @Test
+    fun `notifications arriving while POST_NOTIFICATIONS is denied are retained and dispatch after grant`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val app = context.applicationContext as Application
+        val shadowApp = Shadows.shadowOf(app)
+        shadowApp.denyPermissions(Manifest.permission.POST_NOTIFICATIONS)
+        val notifManager = context.getSystemService(NotificationManager::class.java)!!
+        val shadowNm = Shadows.shadowOf(notifManager)
+        notifManager.cancelAll()
+
+        val uid = "perm_retry_user_${System.nanoTime()}"
+        try {
+            TeamNotificationDispatcher.clearUserSyncState(context, uid)
+            TeamNotificationDispatcher.syncBaselineSilently(context, uid, emptyList())
+            TeamNotificationDispatcher.setAppForeground(false)
+            TeamNotificationDispatcher.setActiveChatRoom(context, uid, null)
+
+            val pendingIdea = TeamNotification(
+                id = "perm_idea_1",
+                recipientUserId = "all",
+                type = "idea",
+                senderId = "other_sender",
+                title = "Yeni Fikir",
+                message = "İzin verildikten sonra gösterilmeli",
+                createdAt = Timestamp(Date(System.currentTimeMillis() + 1000L))
+            )
+
+            // Denied permission -> 0 OS notifications posted, NOT dropped
+            assertEquals(0, TeamNotificationDispatcher.processNotifications(context, uid, listOf(pendingIdea)))
+            assertEquals(0, shadowNm.size())
+
+            // Grant permission -> same notification dispatches cleanly
+            shadowApp.grantPermissions(Manifest.permission.POST_NOTIFICATIONS)
+            assertEquals(1, TeamNotificationDispatcher.processNotifications(context, uid, listOf(pendingIdea)))
+            assertEquals(1, shadowNm.size())
+        } finally {
+            shadowApp.grantPermissions(Manifest.permission.POST_NOTIFICATIONS)
             TeamNotificationDispatcher.setAppForeground(false)
             TeamNotificationDispatcher.setActiveChatRoom(context, uid, null)
             TeamNotificationDispatcher.clearUserSyncState(context, uid)

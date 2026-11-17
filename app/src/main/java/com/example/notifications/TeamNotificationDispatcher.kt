@@ -35,13 +35,13 @@ object TeamNotificationDispatcher {
     private const val CLOCK_SKEW_TOLERANCE_MS = 3 * 60_000L
 
     const val CHANNEL_TEAM = "bsr_team_notifications"
-    const val CHANNEL_MESSAGES_SILENT = "bsr_chat_messages_silent"
+    const val CHANNEL_MESSAGES = "bsr_chat_messages_v2"
+    const val CHANNEL_MESSAGES_SILENT = CHANNEL_MESSAGES
     const val CHANNEL_ANNOUNCEMENTS = "bsr_announcements"
     const val CHANNEL_UPDATES = "bsr_updates"
 
-    const val MESSAGE_BATCH_THRESHOLD = 10
-
     private const val LEGACY_CHANNEL_REALTIME_SYNC = "bsr_realtime_sync"
+    private const val LEGACY_CHANNEL_MESSAGES_SILENT = "bsr_chat_messages_silent"
     private const val LEGACY_PREF_REALTIME_SYNC_ENABLED = "realtime_sync_opt_in"
     private const val LEGACY_FOREGROUND_SYNC_NOTIFICATION_ID = 1099
     private const val PENDING_MSG_PREFIX = "pending_msg_count_"
@@ -190,15 +190,15 @@ object TeamNotificationDispatcher {
                 enableVibration(true)
             }
 
-            val silentMessagesChannel = NotificationChannel(
-                CHANNEL_MESSAGES_SILENT,
-                "Sohbet Mesajları (Sessiz)",
-                NotificationManager.IMPORTANCE_LOW
+            val messagesChannel = NotificationChannel(
+                CHANNEL_MESSAGES,
+                "Sohbet Mesajları",
+                NotificationManager.IMPORTANCE_DEFAULT
             ).apply {
-                description = "Aktif olmadığınız sohbet odalarında biriken mesaj bildirimleri"
+                description = "Aktif olmadığınız sohbet odalarından gelen yeni mesajlar (sessiz bildirim)"
                 setSound(null, null)
                 enableVibration(false)
-                enableLights(false)
+                enableLights(true)
                 setShowBadge(true)
             }
 
@@ -223,10 +223,11 @@ object TeamNotificationDispatcher {
             }
 
             notificationManager.createNotificationChannel(generalChannel)
-            notificationManager.createNotificationChannel(silentMessagesChannel)
+            notificationManager.createNotificationChannel(messagesChannel)
             notificationManager.createNotificationChannel(announcementsChannel)
             notificationManager.createNotificationChannel(updatesChannel)
             notificationManager.deleteNotificationChannel(LEGACY_CHANNEL_REALTIME_SYNC)
+            notificationManager.deleteNotificationChannel(LEGACY_CHANNEL_MESSAGES_SILENT)
         }
     }
 
@@ -248,7 +249,7 @@ object TeamNotificationDispatcher {
         return when (type.lowercase()) {
             "update" -> CHANNEL_UPDATES
             "broadcast", "announcement" -> CHANNEL_ANNOUNCEMENTS
-            "message" -> CHANNEL_MESSAGES_SILENT
+            "message" -> CHANNEL_MESSAGES
             else -> CHANNEL_TEAM
         }
     }
@@ -344,7 +345,7 @@ object TeamNotificationDispatcher {
      * Processes a filtered list of notifications for [userId].
      * On first run for this [userId], seeds the baseline silently so historical notifications are
      * NOT re-fired on app startup. Any genuine new notification arriving afterwards fires immediately
-     * as an Android OS notification.
+     * as an Android OS notification (except chat messages inside the currently open active room).
      */
     fun processNotifications(
         context: Context,
@@ -360,7 +361,7 @@ object TeamNotificationDispatcher {
         val baselineTsKey = "baseline_ts_$userId"
         val idsKey = "dispatched_list_$userId"
 
-        val toDispatch: List<TeamNotification>
+        val candidateSelection: List<TeamNotification>
         synchronized(dispatchLock) {
             val hasSeeded = prefs.getBoolean(seededKey, false)
             if (!hasSeeded && notifications.isEmpty()) {
@@ -391,49 +392,40 @@ object TeamNotificationDispatcher {
             if (selection.toDispatch.isEmpty()) {
                 return 0
             }
-
-            // Record dispatched IDs immediately before posting so concurrent realtime + worker runs don't duplicate
-            val updatedIds = (storedList + selection.toDispatch.map { it.id })
-                .distinct()
-                .takeLast(MAX_STORED_IDS)
-            prefs.edit()
-                .putString(idsKey, writeStoredIdList(updatedIds))
-                .apply()
-
-            toDispatch = selection.toDispatch
+            candidateSelection = selection.toDispatch
         }
 
         val updateManager = AppUpdateManager(appCtx)
-        val filteredToDispatch = toDispatch.filterNot { notif ->
+        val (obsoleteUpdates, activeToDispatch) = candidateSelection.partition { notif ->
             updateManager.isNotificationUpdateObsolete(notif.type, notif.targetId, notif.message)
         }
-        if (filteredToDispatch.isEmpty()) return 0
 
-        val (messageNotifs, nonMessageNotifs) = filteredToDispatch.partition {
+        if (obsoleteUpdates.isNotEmpty()) {
+            markIdsAsDispatched(prefs, idsKey, obsoleteUpdates.map { it.id })
+        }
+        if (activeToDispatch.isEmpty()) return 0
+
+        val (messageNotifs, nonMessageNotifs) = activeToDispatch.partition {
             it.type.equals("message", ignoreCase = true)
         }
 
-        // Accumulate inactive-room chat messages & determine which rooms hit the batch threshold
-        val readyRoomSummaries = mutableListOf<Pair<String, Int>>()
-        if (messageNotifs.isNotEmpty()) {
-            synchronized(dispatchLock) {
-                val editor = prefs.edit()
-                messageNotifs.groupBy { normalizeRoomKey(it.targetRoomId) }.forEach { (roomKey, roomMsgs) ->
-                    val countKey = pendingCountKey(userId, roomKey)
-                    if (isActivelyChattingInRoom(roomKey)) {
-                        editor.remove(countKey)
-                    } else {
-                        val updatedCount = prefs.getInt(countKey, 0) + roomMsgs.size
-                        editor.putInt(countKey, updatedCount)
-                        if (updatedCount >= MESSAGE_BATCH_THRESHOLD) {
-                            readyRoomSummaries.add(roomKey to updatedCount)
-                        }
-                    }
-                }
-                editor.apply()
+        // Suppress chat messages for the exact room the user is currently viewing in foreground
+        val (activeRoomMsgs, inactiveRoomMsgs) = messageNotifs.partition {
+            isActivelyChattingInRoom(normalizeRoomKey(it.targetRoomId))
+        }
+        if (activeRoomMsgs.isNotEmpty()) {
+            markIdsAsDispatched(prefs, idsKey, activeRoomMsgs.map { it.id })
+            activeRoomMsgs.map { normalizeRoomKey(it.targetRoomId) }.distinct().forEach { roomKey ->
+                clearPendingMessagesForRoom(appCtx, userId, roomKey)
             }
         }
 
+        if (inactiveRoomMsgs.isEmpty() && nonMessageNotifs.isEmpty()) {
+            return 0
+        }
+
+        // Never mark unseen notifications as dispatched when OS permission is missing;
+        // once the user grants notification permission, they will dispatch cleanly.
         if (!hasNotificationPermission(appCtx)) {
             return 0
         }
@@ -442,56 +434,75 @@ object TeamNotificationDispatcher {
         val notifManager = appCtx.getSystemService(NotificationManager::class.java) ?: return 0
 
         var postedCount = 0
+        val dispatchedIdsToRecord = mutableListOf<String>()
 
-        // 1. Dispatch silent batch notification for any inactive room that reached >= 10 messages
-        readyRoomSummaries.forEach { (roomKey, totalCount) ->
-            if (isActivelyChattingInRoom(roomKey)) {
-                clearPendingMessagesForRoom(appCtx, userId, roomKey)
-                return@forEach
-            }
-            try {
-                val summaryId = roomSummaryNotificationId(roomKey)
-                val tapIntent = Intent(appCtx, MainActivity::class.java).apply {
-                    flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
-                    putExtra(EXTRA_NOTIF_TYPE, "message")
-                    putExtra(EXTRA_NOTIF_ROOM_ID, roomKey)
-                    putExtra(EXTRA_OPEN_UPDATE_DIALOG, false)
+        // 1. Dispatch chat notifications immediately (quiet, grouped per room) for inactive rooms
+        if (inactiveRoomMsgs.isNotEmpty()) {
+            inactiveRoomMsgs.groupBy { normalizeRoomKey(it.targetRoomId) }.forEach { (roomKey, roomMsgs) ->
+                if (isActivelyChattingInRoom(roomKey)) {
+                    clearPendingMessagesForRoom(appCtx, userId, roomKey)
+                    dispatchedIdsToRecord.addAll(roomMsgs.map { it.id })
+                    return@forEach
                 }
-                val pendingIntent = PendingIntent.getActivity(
-                    appCtx,
-                    summaryId,
-                    tapIntent,
-                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-                )
-                val titleText = "${roomDisplayName(roomKey)} • Devam Eden Sohbet"
-                val bodyText = "Sohbet devam ediyor: $totalCount yeni mesaj var"
-                val builder = NotificationCompat.Builder(appCtx, CHANNEL_MESSAGES_SILENT)
-                    .setSmallIcon(R.mipmap.ic_launcher)
-                    .setContentTitle(titleText)
-                    .setContentText(bodyText)
-                    .setStyle(NotificationCompat.BigTextStyle().bigText(bodyText))
-                    .setPriority(NotificationCompat.PRIORITY_LOW)
-                    .setSilent(true)
-                    .setOnlyAlertOnce(true)
-                    .setSound(null)
-                    .setDefaults(0)
-                    .setContentIntent(pendingIntent)
-                    .setAutoCancel(true)
+                try {
+                    val countKey = pendingCountKey(userId, roomKey)
+                    val totalUnreadInRoom = synchronized(dispatchLock) {
+                        val updated = prefs.getInt(countKey, 0) + roomMsgs.size
+                        prefs.edit().putInt(countKey, updated).apply()
+                        updated
+                    }
+                    val latestMsg = roomMsgs.last()
+                    val summaryId = roomSummaryNotificationId(roomKey)
+                    val tapIntent = Intent(appCtx, MainActivity::class.java).apply {
+                        flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                        putExtra(EXTRA_NOTIF_ID, latestMsg.id)
+                        putExtra(EXTRA_NOTIF_TYPE, "message")
+                        putExtra(EXTRA_NOTIF_ROOM_ID, roomKey)
+                        putExtra(EXTRA_OPEN_UPDATE_DIALOG, false)
+                    }
+                    val pendingIntent = PendingIntent.getActivity(
+                        appCtx,
+                        summaryId,
+                        tapIntent,
+                        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                    )
+                    val titleText = if (totalUnreadInRoom <= 1) {
+                        latestMsg.title.ifBlank { "Yeni mesaj (${roomDisplayName(roomKey)})" }
+                    } else {
+                        "${roomDisplayName(roomKey)} • $totalUnreadInRoom yeni mesaj"
+                    }
+                    val bodyText = latestMsg.message.ifBlank { latestMsg.title.ifBlank { "Yeni mesaj" } }
+                    val builder = NotificationCompat.Builder(appCtx, CHANNEL_MESSAGES)
+                        .setSmallIcon(R.mipmap.ic_launcher)
+                        .setContentTitle(titleText)
+                        .setContentText(bodyText)
+                        .setStyle(NotificationCompat.BigTextStyle().bigText(bodyText))
+                        .setNumber(totalUnreadInRoom)
+                        .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+                        .setSilent(true)
+                        .setOnlyAlertOnce(true)
+                        .setSound(null)
+                        .setDefaults(0)
+                        .setContentIntent(pendingIntent)
+                        .setAutoCancel(true)
 
-                notifManager.notify(summaryId, builder.build())
-                synchronized(dispatchLock) {
-                    prefs.edit().remove(pendingCountKey(userId, roomKey)).apply()
+                    notifManager.notify(summaryId, builder.build())
+                    dispatchedIdsToRecord.addAll(roomMsgs.map { it.id })
+                    postedCount++
+                } catch (sec: SecurityException) {
+                    logDebugWarn(TAG, "Missing notification permission for chat notification", sec)
+                } catch (e: Exception) {
+                    logDebugWarn(TAG, "Failed to post chat notification for $roomKey", e)
                 }
-                postedCount++
-            } catch (sec: SecurityException) {
-                logDebugWarn(TAG, "Missing notification permission for silent chat summary", sec)
-            } catch (e: Exception) {
-                logDebugWarn(TAG, "Failed to post silent chat summary for $roomKey", e)
             }
         }
 
-        // 2. Dispatch non-chat notifications immediately (capped burst size to avoid rate limiting)
-        nonMessageNotifs.takeLast(5).forEach { notif ->
+        // 2. Dispatch non-chat notifications immediately (capped burst size to avoid OS rate limiting)
+        val nonMsgBatch = nonMessageNotifs.takeLast(8)
+        if (nonMessageNotifs.size > nonMsgBatch.size) {
+            dispatchedIdsToRecord.addAll(nonMessageNotifs.dropLast(nonMsgBatch.size).map { it.id })
+        }
+        nonMsgBatch.forEach { notif ->
             try {
                 val channelId = resolveChannelId(notif.type)
                 val stableId = (notif.id.hashCode() and 0x7FFFFFFF) + 2000
@@ -520,6 +531,7 @@ object TeamNotificationDispatcher {
                     .setAutoCancel(true)
 
                 notifManager.notify(stableId, builder.build())
+                dispatchedIdsToRecord.add(notif.id)
                 postedCount++
             } catch (sec: SecurityException) {
                 logDebugWarn(TAG, "Missing notification permission", sec)
@@ -527,7 +539,29 @@ object TeamNotificationDispatcher {
                 logDebugWarn(TAG, "Failed to post system notification for ${notif.id}", e)
             }
         }
+
+        if (dispatchedIdsToRecord.isNotEmpty()) {
+            markIdsAsDispatched(prefs, idsKey, dispatchedIdsToRecord)
+        }
         return postedCount
+    }
+
+    private fun markIdsAsDispatched(
+        prefs: android.content.SharedPreferences,
+        idsKey: String,
+        newIds: List<String>
+    ) {
+        if (newIds.isEmpty()) return
+        synchronized(dispatchLock) {
+            val storedList = readStoredIdList(prefs.getString(idsKey, null))
+            val updatedIds = (storedList + newIds)
+                .filter { it.isNotBlank() }
+                .distinct()
+                .takeLast(MAX_STORED_IDS)
+            prefs.edit()
+                .putString(idsKey, writeStoredIdList(updatedIds))
+                .apply()
+        }
     }
 
     /**
