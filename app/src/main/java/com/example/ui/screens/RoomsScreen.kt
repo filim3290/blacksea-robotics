@@ -7,6 +7,9 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.slideInVertically
 import androidx.compose.foundation.BorderStroke
@@ -14,6 +17,7 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -28,6 +32,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -40,15 +45,18 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.Checklist
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Code
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.DoneAll
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.RadioButtonUnchecked
@@ -61,12 +69,14 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -86,12 +96,19 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.BlackseaRepository
@@ -101,6 +118,7 @@ import com.example.model.UserProfile
 import com.example.model.canBeDeletedBy
 import com.example.model.canBeEditedBy
 import com.example.model.filterChatDisplayRoles
+import com.example.model.formatMessagesForClipboard
 import com.example.notifications.TeamNotificationDispatcher
 import com.example.ui.components.FileUploadProgressDialog
 import com.example.ui.components.InAppFileViewerDialog
@@ -131,6 +149,8 @@ fun RoomsScreen(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
+    val clipboardManager = LocalClipboardManager.current
+    val haptics = LocalHapticFeedback.current
     val scope = rememberCoroutineScope()
     val ext = MaterialTheme.blackseaColors
 
@@ -180,16 +200,15 @@ fun RoomsScreen(
     var recordDurationSeconds by remember { mutableIntStateOf(0) }
     var isVoiceUploading by remember { mutableStateOf(false) }
 
-    // Message Edit (1-hour window) & Single/Bulk Delete Confirmation State
+    // Message Edit (1-hour window) & WhatsApp-style Selection / Bulk Delete State
     var currentTimeMs by remember { mutableLongStateOf(System.currentTimeMillis()) }
-    var messageToDelete by remember { mutableStateOf<ChatMessage?>(null) }
-    var isDeletingMessage by remember { mutableStateOf(false) }
     var messageToEdit by remember { mutableStateOf<ChatMessage?>(null) }
     var editMessageText by remember { mutableStateOf("") }
     var isSavingMessageEdit by remember { mutableStateOf(false) }
 
     var isSelectionMode by remember { mutableStateOf(false) }
     var selectedMessageIds by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var showSelectionMoreMenu by remember { mutableStateOf(false) }
     var showBulkDeleteDialog by remember { mutableStateOf(false) }
     var isBulkDeleting by remember { mutableStateOf(false) }
 
@@ -293,38 +312,58 @@ fun RoomsScreen(
 
     val isAdmin = currentUserProfile?.isManagerAccount() == true
     val currentUid = currentUserProfile?.userId.orEmpty()
-    val selectableMessages = remember(messages, currentUid, isAdmin) {
-        messages.filter { it.canBeDeletedBy(currentUid, isAdmin) }
+    val selectableMessages = remember(messages) {
+        messages.filter { it.id.isNotBlank() }
     }
+    val selectedMessages = remember(messages, selectedMessageIds) {
+        messages.filter { it.id in selectedMessageIds }
+    }
+    val canDeleteSelection = remember(selectedMessages, currentUid, isAdmin) {
+        selectedMessages.isNotEmpty() && selectedMessages.all { it.canBeDeletedBy(currentUid, isAdmin) }
+    }
+    val singleSelectedMessage = selectedMessages.singleOrNull()
+    val canPinSingle = singleSelectedMessage != null && (singleSelectedMessage.senderId == currentUid || isAdmin)
+    val canEditSingle = singleSelectedMessage != null && singleSelectedMessage.canBeEditedBy(currentUid, currentTimeMs)
     val allSelectableSelected = selectableMessages.isNotEmpty() &&
         selectableMessages.all { it.id in selectedMessageIds }
 
-    LaunchedEffect(selectedRoomId) {
+    fun exitSelectionMode() {
         isSelectionMode = false
         selectedMessageIds = emptySet()
+        showSelectionMoreMenu = false
         showBulkDeleteDialog = false
     }
 
-    LaunchedEffect(messages, currentUid, isAdmin) {
+    fun copySelectedMessagesToClipboard() {
+        val textToCopy = formatMessagesForClipboard(selectedMessages)
+        if (textToCopy.isNotBlank()) {
+            clipboardManager.setText(AnnotatedString(textToCopy))
+            Toast.makeText(context, "Panoya kopyalandı.", Toast.LENGTH_SHORT).show()
+        }
+        exitSelectionMode()
+    }
+
+    LaunchedEffect(selectedRoomId) {
+        exitSelectionMode()
+    }
+
+    LaunchedEffect(messages) {
         if (isSelectionMode) {
             val validIds = messages
-                .filter { it.canBeDeletedBy(currentUid, isAdmin) }
-                .map { it.id }
+                .mapNotNull { it.id.takeIf { id -> id.isNotBlank() } }
                 .toSet()
             val pruned = selectedMessageIds.intersect(validIds)
             if (pruned != selectedMessageIds) {
                 selectedMessageIds = pruned
             }
-            if (validIds.isEmpty()) {
-                isSelectionMode = false
-                showBulkDeleteDialog = false
+            if (pruned.isEmpty()) {
+                exitSelectionMode()
             }
         }
     }
 
     BackHandler(enabled = isSelectionMode && !isBulkDeleting) {
-        isSelectionMode = false
-        selectedMessageIds = emptySet()
+        exitSelectionMode()
     }
 
     val pinnedMessages = messages.filter { it.isPinned }
@@ -335,160 +374,252 @@ fun RoomsScreen(
             .imePadding()
             .testTag("rooms_screen")
     ) {
-        // Room Filter Tabs OR Contextual Bulk-Delete Selection Bar
+        // Room Filter Tabs OR WhatsApp-style Contextual Selection Bar
         Surface(
             modifier = Modifier.fillMaxWidth(),
-            color = if (isSelectionMode) ext.dangerSolid.copy(alpha = if (ext.isDark) 0.16f else 0.08f) else MaterialTheme.colorScheme.surface,
+            color = if (isSelectionMode) ElectricBlue.copy(alpha = if (ext.isDark) 0.20f else 0.12f) else MaterialTheme.colorScheme.surface,
             shadowElevation = 2.dp
         ) {
             if (isSelectionMode) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 8.dp, vertical = 6.dp)
+                        .padding(horizontal = 6.dp, vertical = 4.dp)
                         .testTag("bulk_selection_bar"),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    horizontalArrangement = Arrangement.spacedBy(2.dp)
                 ) {
                     IconButton(
-                        onClick = {
-                            isSelectionMode = false
-                            selectedMessageIds = emptySet()
-                        },
+                        onClick = { exitSelectionMode() },
                         enabled = !isBulkDeleting,
                         modifier = Modifier
                             .minimumInteractiveComponentSize()
                             .testTag("cancel_bulk_select_button")
                     ) {
                         Icon(
-                            imageVector = Icons.Default.Close,
+                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
                             contentDescription = "Seçimi İptal Et",
                             tint = MaterialTheme.colorScheme.onSurface
                         )
                     }
 
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "${selectedMessageIds.size} mesaj seçildi",
-                            fontSize = 14.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onSurface,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        Text(
-                            text = if (isAdmin) "Yönetici: Tüm mesajlar seçilebilir" else "Yalnızca kendi mesajlarınız seçilebilir",
-                            fontSize = 11.sp,
-                            color = ext.textSecondary,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
+                    Text(
+                        text = "${selectedMessageIds.size} seçildi",
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(start = 4.dp)
+                    )
+
+                    if (canDeleteSelection) {
+                        IconButton(
+                            onClick = { showBulkDeleteDialog = true },
+                            enabled = !isBulkDeleting,
+                            modifier = Modifier
+                                .minimumInteractiveComponentSize()
+                                .testTag("bulk_delete_trigger_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Delete,
+                                contentDescription = "Seçilen Mesajları Sil",
+                                tint = ext.dangerText
+                            )
+                        }
                     }
 
-                    TextButton(
-                        onClick = {
-                            selectedMessageIds = if (allSelectableSelected) {
-                                emptySet()
-                            } else {
-                                selectableMessages.map { it.id }.toSet()
-                            }
-                        },
-                        enabled = selectableMessages.isNotEmpty() && !isBulkDeleting,
+                    IconButton(
+                        onClick = { copySelectedMessagesToClipboard() },
+                        enabled = selectedMessages.isNotEmpty() && !isBulkDeleting,
                         modifier = Modifier
                             .minimumInteractiveComponentSize()
-                            .testTag("select_all_messages_button"),
-                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
-                    ) {
-                        Text(
-                            text = if (allSelectableSelected) "Temizle" else "Tümünü Seç",
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            color = ElectricBlue
-                        )
-                    }
-
-                    Button(
-                        onClick = { showBulkDeleteDialog = true },
-                        enabled = selectedMessageIds.isNotEmpty() && !isBulkDeleting,
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = ext.dangerSolid,
-                            contentColor = Color.White
-                        ),
-                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-                        modifier = Modifier
-                            .minimumInteractiveComponentSize()
-                            .testTag("bulk_delete_trigger_button")
+                            .testTag("bulk_copy_button")
                     ) {
                         Icon(
-                            imageVector = Icons.Default.Delete,
-                            contentDescription = "Seçilen Mesajları Sil",
-                            modifier = Modifier.size(16.dp)
+                            imageVector = Icons.Default.ContentCopy,
+                            contentDescription = "Seçilen Mesajları Kopyala",
+                            tint = MaterialTheme.colorScheme.onSurface
                         )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text(
-                            text = "Sil (${selectedMessageIds.size})",
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.Bold
-                        )
+                    }
+
+                    Box {
+                        IconButton(
+                            onClick = { showSelectionMoreMenu = true },
+                            enabled = !isBulkDeleting,
+                            modifier = Modifier
+                                .minimumInteractiveComponentSize()
+                                .testTag("selection_more_menu_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.MoreVert,
+                                contentDescription = "Diğer İşlemler",
+                                tint = MaterialTheme.colorScheme.onSurface
+                            )
+                        }
+
+                        DropdownMenu(
+                            expanded = showSelectionMoreMenu,
+                            onDismissRequest = { showSelectionMoreMenu = false }
+                        ) {
+                            if (singleSelectedMessage != null) {
+                                DropdownMenuItem(
+                                    text = { Text("Yanıtla") },
+                                    leadingIcon = {
+                                        Icon(
+                                            imageVector = Icons.Default.Reply,
+                                            contentDescription = null,
+                                            tint = ElectricBlue
+                                        )
+                                    },
+                                    onClick = {
+                                        val target = singleSelectedMessage
+                                        exitSelectionMode()
+                                        replyingTo = target
+                                    },
+                                    modifier = Modifier.testTag("menu_reply_message")
+                                )
+                            }
+
+                            if (canPinSingle && singleSelectedMessage != null) {
+                                DropdownMenuItem(
+                                    text = { Text(if (singleSelectedMessage.isPinned) "Sabitlemeyi Kaldır" else "Sabitle") },
+                                    leadingIcon = {
+                                        Icon(
+                                            imageVector = Icons.Default.PushPin,
+                                            contentDescription = null,
+                                            tint = ext.amberText
+                                        )
+                                    },
+                                    onClick = {
+                                        val target = singleSelectedMessage
+                                        exitSelectionMode()
+                                        scope.launch {
+                                            try {
+                                                repository.togglePinMessage(selectedRoomId, target.id, !target.isPinned)
+                                            } catch (ce: CancellationException) {
+                                                throw ce
+                                            } catch (e: Exception) {
+                                                logDebugError("RoomsScreen", "Toggle pin failed", e)
+                                                Toast.makeText(
+                                                    context,
+                                                    sanitizeUserErrorMessage(e, "Sabitleme işlemi yapılamadı."),
+                                                    Toast.LENGTH_SHORT
+                                                ).show()
+                                            }
+                                        }
+                                    },
+                                    modifier = Modifier.testTag("menu_pin_message")
+                                )
+                            }
+
+                            if (canEditSingle && singleSelectedMessage != null) {
+                                DropdownMenuItem(
+                                    text = { Text("Düzenle") },
+                                    leadingIcon = {
+                                        Icon(
+                                            imageVector = Icons.Default.Edit,
+                                            contentDescription = null,
+                                            tint = ext.accentBlue
+                                        )
+                                    },
+                                    onClick = {
+                                        val target = singleSelectedMessage
+                                        exitSelectionMode()
+                                        messageToEdit = target
+                                        editMessageText = target.text
+                                    },
+                                    modifier = Modifier.testTag("menu_edit_message")
+                                )
+                            }
+
+                            DropdownMenuItem(
+                                text = { Text("Kopyala") },
+                                leadingIcon = {
+                                    Icon(
+                                        imageVector = Icons.Default.ContentCopy,
+                                        contentDescription = null
+                                    )
+                                },
+                                onClick = {
+                                    copySelectedMessagesToClipboard()
+                                },
+                                modifier = Modifier.testTag("menu_copy_messages")
+                            )
+
+                            if (canDeleteSelection) {
+                                DropdownMenuItem(
+                                    text = {
+                                        Text(
+                                            text = if (selectedMessages.size > 1) "Sil (${selectedMessages.size})" else "Sil",
+                                            color = ext.dangerText,
+                                            fontWeight = FontWeight.SemiBold
+                                        )
+                                    },
+                                    leadingIcon = {
+                                        Icon(
+                                            imageVector = Icons.Default.Delete,
+                                            contentDescription = null,
+                                            tint = ext.dangerText
+                                        )
+                                    },
+                                    onClick = {
+                                        showSelectionMoreMenu = false
+                                        showBulkDeleteDialog = true
+                                    },
+                                    modifier = Modifier.testTag("menu_delete_messages")
+                                )
+                            }
+
+                            HorizontalDivider()
+
+                            DropdownMenuItem(
+                                text = { Text(if (allSelectableSelected) "Seçimi Temizle" else "Tümünü Seç") },
+                                leadingIcon = {
+                                    Icon(
+                                        imageVector = Icons.Default.DoneAll,
+                                        contentDescription = null,
+                                        tint = ElectricBlue
+                                    )
+                                },
+                                onClick = {
+                                    showSelectionMoreMenu = false
+                                    if (allSelectableSelected) {
+                                        exitSelectionMode()
+                                    } else {
+                                        selectedMessageIds = selectableMessages.map { it.id }.toSet()
+                                    }
+                                },
+                                modifier = Modifier.testTag("select_all_messages_button")
+                            )
+                        }
                     }
                 }
             } else {
-                Row(
+                LazyRow(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(start = 12.dp, end = 8.dp, top = 6.dp, bottom = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
+                        .padding(horizontal = 12.dp, vertical = 6.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    LazyRow(
-                        modifier = Modifier.weight(1f),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        items(rooms) { (id, title) ->
-                            FilterChip(
-                                selected = selectedRoomId == id,
-                                onClick = { selectedRoomId = id },
-                                label = {
-                                    Text(
-                                        text = title,
-                                        fontSize = 12.sp,
-                                        fontWeight = if (selectedRoomId == id) FontWeight.Bold else FontWeight.Normal
-                                    )
-                                },
-                                colors = FilterChipDefaults.filterChipColors(
-                                    selectedContainerColor = ElectricBlue,
-                                    selectedLabelColor = Color.White
+                    items(rooms) { (id, title) ->
+                        FilterChip(
+                            selected = selectedRoomId == id,
+                            onClick = { selectedRoomId = id },
+                            label = {
+                                Text(
+                                    text = title,
+                                    fontSize = 12.sp,
+                                    fontWeight = if (selectedRoomId == id) FontWeight.Bold else FontWeight.Normal
                                 )
-                            )
-                        }
-                    }
-
-                    if (selectableMessages.isNotEmpty() && !isRecordingVoice) {
-                        OutlinedButton(
-                            onClick = {
-                                isSelectionMode = true
-                                selectedMessageIds = emptySet()
                             },
-                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                            border = BorderStroke(1.dp, ext.dangerText.copy(alpha = 0.45f)),
-                            modifier = Modifier
-                                .minimumInteractiveComponentSize()
-                                .testTag("enter_bulk_delete_mode_button")
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Checklist,
-                                contentDescription = "Toplu Mesaj Seçimi",
-                                tint = ext.dangerText,
-                                modifier = Modifier.size(16.dp)
+                            colors = FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = ElectricBlue,
+                                selectedLabelColor = Color.White
                             )
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text(
-                                text = "Toplu Sil",
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                color = ext.dangerText
-                            )
-                        }
+                        )
                     }
                 }
             }
@@ -569,52 +700,35 @@ fun RoomsScreen(
                     enter = fadeIn() + slideInVertically(initialOffsetY = { 20 })
                 ) {
                     val isMyMessage = message.senderId == currentUserProfile?.userId
-                    val canEditMessage = message.canBeEditedBy(currentUserProfile?.userId, currentTimeMs)
-                    val canSelectMessage = message.canBeDeletedBy(currentUid, isAdmin)
+                    val canSelectMessage = message.id.isNotBlank()
                     val isMessageSelected = message.id in selectedMessageIds
                     MessageItemBubble(
                         message = message,
                         isMyMessage = isMyMessage,
-                        canManage = isMyMessage || isAdmin,
-                        canEdit = canEditMessage,
                         isSelectionMode = isSelectionMode,
-                        canSelectForDelete = canSelectMessage,
+                        canSelect = canSelectMessage,
                         isSelected = isMessageSelected,
                         onToggleSelect = {
                             if (canSelectMessage) {
-                                selectedMessageIds = if (isMessageSelected) {
+                                val updated = if (isMessageSelected) {
                                     selectedMessageIds - message.id
                                 } else {
                                     selectedMessageIds + message.id
+                                }
+                                selectedMessageIds = updated
+                                if (updated.isEmpty()) {
+                                    exitSelectionMode()
                                 }
                             }
                         },
                         onEnterSelectionMode = {
                             if (canSelectMessage && !isRecordingVoice) {
+                                haptics.performHapticFeedback(HapticFeedbackType.LongPress)
                                 isSelectionMode = true
                                 selectedMessageIds = setOf(message.id)
                             }
                         },
                         onReply = { replyingTo = message },
-                        onTogglePin = {
-                            scope.launch {
-                                try {
-                                    repository.togglePinMessage(selectedRoomId, message.id, !message.isPinned)
-                                } catch (ce: CancellationException) {
-                                    throw ce
-                                } catch (e: Exception) {
-                                    logDebugError("RoomsScreen", "Toggle pin failed", e)
-                                    Toast.makeText(context, sanitizeUserErrorMessage(e, "Sabitleme işlemi yapılamadı."), Toast.LENGTH_SHORT).show()
-                                }
-                            }
-                        },
-                        onEdit = {
-                            messageToEdit = message
-                            editMessageText = message.text
-                        },
-                        onDelete = {
-                            messageToDelete = message
-                        },
                         onOpenFile = { projectFile ->
                             activePreviewFile = projectFile
                         },
@@ -695,19 +809,21 @@ fun RoomsScreen(
             }
         }
 
-        // Bottom Input Bar (hidden during bulk selection mode)
+        // Bottom Input Bar (shows contextual selection hint while selecting messages)
         if (isSelectionMode) {
             Surface(
                 modifier = Modifier.fillMaxWidth(),
                 color = MaterialTheme.colorScheme.surface,
                 shadowElevation = 4.dp
             ) {
+                val footerHint = when {
+                    canDeleteSelection -> "${selectedMessages.size} mesaj seçildi · Kopyalamak, silmek veya diğer işlemler için üst menüyü (⋮) kullanın."
+                    selectedMessages.any { !it.canBeDeletedBy(currentUid, isAdmin) } ->
+                        "${selectedMessages.size} mesaj seçildi · Kopyalayabilirsiniz (başkalarının mesajları silinemez)."
+                    else -> "${selectedMessages.size} mesaj seçildi."
+                }
                 Text(
-                    text = if (isAdmin) {
-                        "Silmek istediğiniz mesajlara dokunun (Yönetici tüm mesajları seçebilir)."
-                    } else {
-                        "Silmek istediğiniz kendi mesajlarınıza dokunun."
-                    },
+                    text = footerHint,
                     fontSize = 12.sp,
                     color = ext.textSecondary,
                     modifier = Modifier
@@ -1175,62 +1291,6 @@ fun RoomsScreen(
         )
     }
 
-    // Delete Message Confirmation Dialog
-    if (messageToDelete != null) {
-        val targetMsg = messageToDelete!!
-        AlertDialog(
-            onDismissRequest = { if (!isDeletingMessage) messageToDelete = null },
-            title = { Text("Mesajı Sil", fontWeight = FontWeight.Bold, color = ext.dangerText) },
-            text = {
-                Text(
-                    "Bu mesaj kalıcı olarak silinsin mi? Emin misiniz?",
-                    color = ext.textSecondary
-                )
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        isDeletingMessage = true
-                        scope.launch {
-                            try {
-                                repository.deleteMessage(selectedRoomId, targetMsg.id)
-                                messageToDelete = null
-                                Toast.makeText(context, "Mesaj silindi.", Toast.LENGTH_SHORT).show()
-                            } catch (ce: CancellationException) {
-                                throw ce
-                            } catch (e: Exception) {
-                                logDebugError("RoomsScreen", "Delete message failed", e)
-                                Toast.makeText(context, sanitizeUserErrorMessage(e, "Mesaj silinemedi."), Toast.LENGTH_SHORT).show()
-                            } finally {
-                                isDeletingMessage = false
-                            }
-                        }
-                    },
-                    enabled = !isDeletingMessage,
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = ext.dangerSolid,
-                        contentColor = Color.White
-                    ),
-                    modifier = Modifier.testTag("confirm_delete_message_button")
-                ) {
-                    if (isDeletingMessage) {
-                        CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.White, strokeWidth = 2.dp)
-                    } else {
-                        Text("Evet, Sil", fontWeight = FontWeight.Bold)
-                    }
-                }
-            },
-            dismissButton = {
-                TextButton(
-                    onClick = { messageToDelete = null },
-                    enabled = !isDeletingMessage
-                ) {
-                    Text("Vazgeç")
-                }
-            }
-        )
-    }
-
     // Edit Message Dialog (within 1 hour)
     if (messageToEdit != null) {
         val targetMsg = messageToEdit!!
@@ -1312,21 +1372,25 @@ fun RoomsScreen(
         )
     }
 
-    // Bulk Delete Messages Confirmation Dialog
-    if (showBulkDeleteDialog && selectedMessageIds.isNotEmpty()) {
+    // Single / Bulk Delete Messages Confirmation Dialog
+    if (showBulkDeleteDialog && selectedMessageIds.isNotEmpty() && canDeleteSelection) {
         val count = selectedMessageIds.size
         AlertDialog(
             onDismissRequest = { if (!isBulkDeleting) showBulkDeleteDialog = false },
             title = {
                 Text(
-                    text = "Seçilen Mesajları Sil",
+                    text = if (count == 1) "Mesajı Sil" else "Seçilen Mesajları Sil",
                     fontWeight = FontWeight.Bold,
                     color = ext.dangerText
                 )
             },
             text = {
                 Text(
-                    text = "Seçilen $count mesaj kalıcı olarak silinsin mi? Bu işlem geri alınamaz.",
+                    text = if (count == 1) {
+                        "Bu mesaj kalıcı olarak silinsin mi? Bu işlem geri alınamaz."
+                    } else {
+                        "Seçilen $count mesaj kalıcı olarak silinsin mi? Bu işlem geri alınamaz."
+                    },
                     color = ext.textSecondary
                 )
             },
@@ -1338,10 +1402,9 @@ fun RoomsScreen(
                         scope.launch {
                             try {
                                 repository.deleteMessages(selectedRoomId, idsToDelete)
-                                showBulkDeleteDialog = false
-                                isSelectionMode = false
-                                selectedMessageIds = emptySet()
-                                Toast.makeText(context, "${idsToDelete.size} mesaj silindi.", Toast.LENGTH_SHORT).show()
+                                exitSelectionMode()
+                                val toastText = if (idsToDelete.size == 1) "Mesaj silindi." else "${idsToDelete.size} mesaj silindi."
+                                Toast.makeText(context, toastText, Toast.LENGTH_SHORT).show()
                             } catch (ce: CancellationException) {
                                 throw ce
                             } catch (e: Exception) {
@@ -1370,7 +1433,7 @@ fun RoomsScreen(
                             strokeWidth = 2.dp
                         )
                     } else {
-                        Text("Evet, Tümünü Sil", fontWeight = FontWeight.Bold)
+                        Text(if (count == 1) "Evet, Sil" else "Evet, Tümünü Sil", fontWeight = FontWeight.Bold)
                     }
                 }
             },
@@ -1391,417 +1454,465 @@ fun RoomsScreen(
 fun MessageItemBubble(
     message: ChatMessage,
     isMyMessage: Boolean,
-    canManage: Boolean,
-    canEdit: Boolean,
     isSelectionMode: Boolean = false,
-    canSelectForDelete: Boolean = false,
+    canSelect: Boolean = true,
     isSelected: Boolean = false,
     onToggleSelect: () -> Unit = {},
     onEnterSelectionMode: () -> Unit = {},
     onReply: () -> Unit,
-    onTogglePin: () -> Unit,
-    onEdit: () -> Unit,
-    onDelete: () -> Unit,
     onOpenFile: (SharedProjectFile) -> Unit,
     onDownloadFile: (String) -> Unit
 ) {
     val context = LocalContext.current
     val ext = MaterialTheme.blackseaColors
+    val density = LocalDensity.current
+    val haptics = LocalHapticFeedback.current
+    val scope = rememberCoroutineScope()
     val timeFormatter = remember { SimpleDateFormat("HH:mm", Locale.getDefault()) }
     val formattedTime = message.createdAt?.toDate()?.let { timeFormatter.format(it) } ?: ""
 
-    val bubbleAlpha = if (isSelectionMode && !canSelectForDelete) 0.45f else 1f
+    val swipeThresholdPx = with(density) { 52.dp.toPx() }
+    val maxSwipePx = with(density) { 80.dp.toPx() }
+    val swipeOffsetX = remember(message.id) { Animatable(0f) }
+    var hapticFiredOnSwipe by remember(message.id) { mutableStateOf(false) }
 
-    Column(
+    val rowBackgroundColor = if (isSelected) {
+        ElectricBlue.copy(alpha = if (ext.isDark) 0.18f else 0.10f)
+    } else {
+        Color.Transparent
+    }
+
+    Box(
         modifier = Modifier
             .fillMaxWidth()
-            .alpha(bubbleAlpha)
-            .padding(vertical = 2.dp),
-        horizontalAlignment = if (isMyMessage) Alignment.End else Alignment.Start
+            .background(rowBackgroundColor, RoundedCornerShape(12.dp))
+            .pointerInput(message.id, isSelectionMode) {
+                if (isSelectionMode) return@pointerInput
+                detectHorizontalDragGestures(
+                    onHorizontalDrag = { change, dragAmount ->
+                        val next = (swipeOffsetX.value + dragAmount).coerceIn(0f, maxSwipePx)
+                        if (next > 0f || swipeOffsetX.value > 0f) {
+                            change.consume()
+                            scope.launch {
+                                swipeOffsetX.snapTo(next)
+                            }
+                            if (!hapticFiredOnSwipe && next >= swipeThresholdPx) {
+                                hapticFiredOnSwipe = true
+                                haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                            } else if (hapticFiredOnSwipe && next < swipeThresholdPx * 0.75f) {
+                                hapticFiredOnSwipe = false
+                            }
+                        }
+                    },
+                    onDragEnd = {
+                        val reachedThreshold = swipeOffsetX.value >= swipeThresholdPx
+                        hapticFiredOnSwipe = false
+                        scope.launch {
+                            swipeOffsetX.animateTo(
+                                targetValue = 0f,
+                                animationSpec = spring(
+                                    dampingRatio = Spring.DampingRatioMediumBouncy,
+                                    stiffness = Spring.StiffnessMedium
+                                )
+                            )
+                        }
+                        if (reachedThreshold) {
+                            onReply()
+                        }
+                    },
+                    onDragCancel = {
+                        hapticFiredOnSwipe = false
+                        scope.launch {
+                            swipeOffsetX.animateTo(
+                                targetValue = 0f,
+                                animationSpec = spring(
+                                    dampingRatio = Spring.DampingRatioMediumBouncy,
+                                    stiffness = Spring.StiffnessMedium
+                                )
+                            )
+                        }
+                    }
+                )
+            }
+            .combinedClickable(
+                onClick = {
+                    if (isSelectionMode && canSelect) {
+                        onToggleSelect()
+                    }
+                },
+                onLongClick = {
+                    if (!isSelectionMode && canSelect) {
+                        onEnterSelectionMode()
+                    }
+                }
+            )
     ) {
-        val displayRoles = remember(message.senderRoles) {
-            filterChatDisplayRoles(message.senderRoles)
-        }
-        // Sender header with Real Name + Team + Kaptan/Öğretmen badge only (never show internal/other roles)
-        if (!isMyMessage) {
-            FlowRow(
-                verticalArrangement = Arrangement.spacedBy(4.dp),
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                modifier = Modifier.padding(bottom = 4.dp)
+        // WhatsApp-style Reply Indicator revealed when swiping right
+        if (swipeOffsetX.value > 2f) {
+            val swipeProgress = (swipeOffsetX.value / swipeThresholdPx).coerceIn(0f, 1f)
+            Surface(
+                shape = CircleShape,
+                color = ElectricBlue.copy(alpha = 0.14f + 0.16f * swipeProgress),
+                modifier = Modifier
+                    .align(Alignment.CenterStart)
+                    .padding(start = 10.dp)
+                    .size(34.dp)
+                    .alpha(swipeProgress)
+                    .scale(0.65f + 0.35f * swipeProgress)
             ) {
-                Surface(
-                    shape = CircleShape,
-                    color = ElectricBlue.copy(alpha = 0.2f),
-                    modifier = Modifier
-                        .size(26.dp)
-                        .align(Alignment.CenterVertically)
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                        imageVector = Icons.Default.Reply,
+                        contentDescription = "Yanıtla",
+                        tint = ElectricBlue,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+            }
+        }
+
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .offset { IntOffset(swipeOffsetX.value.toInt(), 0) }
+                .padding(vertical = 2.dp, horizontal = 2.dp),
+            horizontalAlignment = if (isMyMessage) Alignment.End else Alignment.Start
+        ) {
+            val displayRoles = remember(message.senderRoles) {
+                filterChatDisplayRoles(message.senderRoles)
+            }
+            // Sender header with Real Name + Team + Kaptan/Öğretmen badge only (never show internal/other roles)
+            if (!isMyMessage) {
+                FlowRow(
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    modifier = Modifier.padding(bottom = 4.dp)
                 ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Text(
-                            text = message.senderName.take(1).uppercase(),
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = ElectricBlue
+                    Surface(
+                        shape = CircleShape,
+                        color = ElectricBlue.copy(alpha = 0.2f),
+                        modifier = Modifier
+                            .size(26.dp)
+                            .align(Alignment.CenterVertically)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Text(
+                                text = message.senderName.take(1).uppercase(),
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = ElectricBlue
+                            )
+                        }
+                    }
+                    Text(
+                        text = message.senderName,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.align(Alignment.CenterVertically)
+                    )
+                    TeamBadge(teamName = message.senderTeam)
+                    displayRoles.forEach { roleLabel ->
+                        RoleBadge(role = roleLabel)
+                    }
+                }
+            }
+
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                if (isSelectionMode && canSelect) {
+                    IconButton(
+                        onClick = onToggleSelect,
+                        modifier = Modifier
+                            .minimumInteractiveComponentSize()
+                            .testTag("select_message_checkbox_${message.id}")
+                    ) {
+                        Icon(
+                            imageVector = if (isSelected) Icons.Default.CheckCircle else Icons.Default.RadioButtonUnchecked,
+                            contentDescription = if (isSelected) "Seçili Mesaj" else "Mesajı Seç",
+                            tint = if (isSelected) ElectricBlue else ext.textMuted,
+                            modifier = Modifier.size(22.dp)
                         )
                     }
                 }
-                Text(
-                    text = message.senderName,
-                    fontSize = 13.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.align(Alignment.CenterVertically)
-                )
-                TeamBadge(teamName = message.senderTeam)
-                displayRoles.forEach { roleLabel ->
-                    RoleBadge(role = roleLabel)
-                }
-            }
-        }
 
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            if (isSelectionMode && canSelectForDelete) {
-                IconButton(
-                    onClick = onToggleSelect,
-                    modifier = Modifier
-                        .minimumInteractiveComponentSize()
-                        .testTag("select_message_checkbox_${message.id}")
-                ) {
-                    Icon(
-                        imageVector = if (isSelected) Icons.Default.CheckCircle else Icons.Default.RadioButtonUnchecked,
-                        contentDescription = if (isSelected) "Seçili Mesaj" else "Mesajı Seç",
-                        tint = if (isSelected) ext.dangerSolid else ext.textMuted,
-                        modifier = Modifier.size(22.dp)
-                    )
-                }
-            }
-
-            Card(
-                shape = RoundedCornerShape(
-                    topStart = 16.dp,
-                    topEnd = 16.dp,
-                    bottomStart = if (isMyMessage) 16.dp else 4.dp,
-                    bottomEnd = if (isMyMessage) 4.dp else 16.dp
-                ),
-                colors = CardDefaults.cardColors(
-                    containerColor = when {
-                        isSelected && isMyMessage -> ElectricBlue.copy(alpha = 0.85f)
-                        isSelected -> ext.dangerSolid.copy(alpha = if (ext.isDark) 0.18f else 0.10f)
-                        isMyMessage -> ElectricBlue
-                        else -> MaterialTheme.colorScheme.surfaceVariant
-                    }
-                ),
-                border = when {
-                    isSelected -> BorderStroke(2.dp, if (isMyMessage) PhoenixAmber else ext.dangerSolid)
-                    !isMyMessage -> BorderStroke(1.dp, ext.cardBorder)
-                    else -> null
-                },
-                modifier = Modifier
-                    .widthIn(max = 310.dp)
-                    .combinedClickable(
-                        onClick = {
-                            if (isSelectionMode && canSelectForDelete) {
-                                onToggleSelect()
-                            }
-                        },
-                        onLongClick = {
-                            if (!isSelectionMode && canSelectForDelete) {
-                                onEnterSelectionMode()
-                            }
+                Card(
+                    shape = RoundedCornerShape(
+                        topStart = 16.dp,
+                        topEnd = 16.dp,
+                        bottomStart = if (isMyMessage) 16.dp else 4.dp,
+                        bottomEnd = if (isMyMessage) 4.dp else 16.dp
+                    ),
+                    colors = CardDefaults.cardColors(
+                        containerColor = when {
+                            isSelected && isMyMessage -> ElectricBlue.copy(alpha = 0.85f)
+                            isSelected -> ElectricBlue.copy(alpha = if (ext.isDark) 0.24f else 0.14f)
+                            isMyMessage -> ElectricBlue
+                            else -> MaterialTheme.colorScheme.surfaceVariant
                         }
-                    )
-                    .testTag("message_card_${message.id}")
-            ) {
-                Column(modifier = Modifier.padding(10.dp)) {
-                // Reply Quote
-                if (message.replyToSender.isNotBlank()) {
-                    Surface(
-                        shape = RoundedCornerShape(6.dp),
-                        color = Color.Black.copy(alpha = 0.15f),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(bottom = 6.dp)
-                    ) {
-                        Column(modifier = Modifier.padding(6.dp)) {
-                            Text(
-                                text = message.replyToSender,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 11.sp,
-                                color = if (isMyMessage) Color.White else ElectricBlue
-                            )
-                            Text(
-                                text = message.replyToText,
-                                fontSize = 11.sp,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                color = if (isMyMessage) Color.White.copy(alpha = 0.8f) else MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    }
-                }
-
-                // Main Text
-                Text(
-                    text = message.text,
-                    fontSize = 14.sp,
-                    color = if (isMyMessage) Color.White else MaterialTheme.colorScheme.onSurfaceVariant
-                )
-
-                val projectFile = SharedProjectFile(
-                    id = message.id,
-                    roomId = message.roomId,
-                    fileName = message.fileName.ifBlank {
-                        when (message.fileType) {
-                            "image" -> "Görsel.jpg"
-                            "video" -> "Video.mp4"
-                            "audio" -> "Ses_Kaydı.m4a"
-                            else -> "Dosya"
-                        }
+                    ),
+                    border = when {
+                        isSelected -> BorderStroke(2.dp, if (isMyMessage) PhoenixAmber else ElectricBlue)
+                        !isMyMessage -> BorderStroke(1.dp, ext.cardBorder)
+                        else -> null
                     },
-                    fileType = message.fileType,
-                    fileSize = message.fileSize,
-                    content = if (message.fileType == "code" || message.fileType == "text") message.fileUrl else "",
-                    downloadUrl = message.fileUrl,
-                    storagePath = message.storagePath,
-                    thumbnailUrl = message.thumbnailUrl,
-                    mediaDurationMs = message.mediaDurationMs,
-                    uploadedByName = message.senderName,
-                    uploadedByTeam = message.senderTeam
-                )
-
-                // Voice Note Audio Player
-                if (message.fileType == "audio" && message.fileUrl.isNotBlank()) {
-                    Spacer(modifier = Modifier.height(6.dp))
-                    VoiceNotePlayer(
-                        audioUrl = message.fileUrl,
-                        fileName = message.fileName.ifBlank { "Ses Kaydı.m4a" },
-                        isMyMessage = isMyMessage,
-                        onDownload = {
-                            downloadFileToDevice(context, message.fileName.ifBlank { "Ses_Kaydı.m4a" }, message.fileUrl)
-                        }
-                    )
-                } else if (message.fileType == "image" && (message.fileUrl.isNotBlank() || message.thumbnailUrl.isNotBlank() || message.storagePath.isNotBlank())) {
-                    // INLINE IMAGE PREVIEW with Base64/local support and tap to zoom
-                    Spacer(modifier = Modifier.height(8.dp))
-                    MediaThumbnailPreview(
-                        mediaType = "image",
-                        mediaUrl = message.fileUrl,
-                        thumbnailUrl = message.thumbnailUrl,
-                        storagePath = message.storagePath,
-                        fileName = message.fileName.ifBlank { "Görsel" },
-                        fileSizeText = projectFile.getFormattedSize(),
-                        height = 190.dp,
-                        onClick = {
-                            if (isSelectionMode && canSelectForDelete) onToggleSelect() else if (!isSelectionMode) onOpenFile(projectFile)
-                        },
-                        onDownload = {
-                            if (isSelectionMode && canSelectForDelete) {
-                                onToggleSelect()
-                            } else if (!isSelectionMode) {
-                                downloadFileToDevice(
-                                    context,
-                                    message.fileName.ifBlank { "gorsel.jpg" },
-                                    message.fileUrl.ifBlank { message.storagePath }
-                                )
+                    modifier = Modifier
+                        .widthIn(max = 310.dp)
+                        .combinedClickable(
+                            onClick = {
+                                if (isSelectionMode && canSelect) {
+                                    onToggleSelect()
+                                }
+                            },
+                            onLongClick = {
+                                if (!isSelectionMode && canSelect) {
+                                    onEnterSelectionMode()
+                                }
                             }
-                        },
-                        testTag = "chat_image_preview_${message.id}"
-                    )
-                } else if (message.fileType == "video" && (message.fileUrl.isNotBlank() || message.thumbnailUrl.isNotBlank() || message.storagePath.isNotBlank())) {
-                    // INLINE VIDEO THUMBNAIL PREVIEW with real frame, duration badge, and tap to play in ExoPlayer
-                    Spacer(modifier = Modifier.height(8.dp))
-                    MediaThumbnailPreview(
-                        mediaType = "video",
-                        mediaUrl = message.fileUrl,
-                        thumbnailUrl = message.thumbnailUrl,
-                        storagePath = message.storagePath,
-                        fileName = message.fileName.ifBlank { "Video.mp4" },
-                        fileSizeText = projectFile.getFormattedSize(),
-                        durationMs = message.mediaDurationMs,
-                        height = 190.dp,
-                        onClick = {
-                            if (isSelectionMode && canSelectForDelete) onToggleSelect() else if (!isSelectionMode) onOpenFile(projectFile)
-                        },
-                        onDownload = {
-                            if (isSelectionMode && canSelectForDelete) {
-                                onToggleSelect()
-                            } else if (!isSelectionMode) {
-                                downloadFileToDevice(
-                                    context,
-                                    message.fileName.ifBlank { "video.mp4" },
-                                    message.fileUrl.ifBlank { message.storagePath }
-                                )
-                            }
-                        },
-                        testTag = "chat_video_preview_${message.id}"
-                    )
-                } else if (message.fileName.isNotBlank()) {
-                    // DOCUMENT / CODE / CAD / ZIP PREVIEW CARD
-                    Spacer(modifier = Modifier.height(6.dp))
-                    Surface(
-                        shape = RoundedCornerShape(10.dp),
-                        color = if (isMyMessage) Color.White.copy(alpha = 0.22f) else MaterialTheme.colorScheme.surface,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable {
-                                if (isSelectionMode && canSelectForDelete) onToggleSelect() else if (!isSelectionMode) onOpenFile(projectFile)
-                            }
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                modifier = Modifier.weight(1f)
+                        )
+                        .testTag("message_card_${message.id}")
+                ) {
+                    Column(modifier = Modifier.padding(10.dp)) {
+                        // Reply Quote
+                        if (message.replyToSender.isNotBlank()) {
+                            Surface(
+                                shape = RoundedCornerShape(6.dp),
+                                color = Color.Black.copy(alpha = 0.15f),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(bottom = 6.dp)
                             ) {
-                                Icon(
-                                    imageVector = getFileIcon(message.fileType),
-                                    contentDescription = null,
-                                    tint = if (isMyMessage) Color.White else getFileIconColor(message.fileType),
-                                    modifier = Modifier.size(22.dp)
-                                )
-                                Column {
+                                Column(modifier = Modifier.padding(6.dp)) {
                                     Text(
-                                        text = message.fileName,
-                                        fontSize = 12.sp,
+                                        text = message.replyToSender,
                                         fontWeight = FontWeight.Bold,
-                                        color = if (isMyMessage) Color.White else MaterialTheme.colorScheme.onSurface,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
+                                        fontSize = 11.sp,
+                                        color = if (isMyMessage) Color.White else ElectricBlue
                                     )
                                     Text(
-                                        text = "${message.fileType.uppercase()} · Önizlemek İçin Dokunun",
-                                        fontSize = 10.sp,
-                                        color = if (isMyMessage) Color.White.copy(alpha = 0.8f) else ext.textMuted
+                                        text = message.replyToText,
+                                        fontSize = 11.sp,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        color = if (isMyMessage) Color.White.copy(alpha = 0.8f) else MaterialTheme.colorScheme.onSurfaceVariant
                                     )
                                 }
                             }
+                        }
 
-                            if (!isSelectionMode) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Surface(
-                                        shape = RoundedCornerShape(6.dp),
-                                        color = (if (isMyMessage) Color.White else ElectricBlue).copy(alpha = 0.15f),
-                                        modifier = Modifier.clickable { onOpenFile(projectFile) }
-                                    ) {
-                                        Text(
-                                            text = "Aç",
-                                            fontSize = 11.sp,
-                                            fontWeight = FontWeight.Bold,
-                                            color = if (isMyMessage) Color.White else ext.accentBlue,
-                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                        // Main Text
+                        Text(
+                            text = message.text,
+                            fontSize = 14.sp,
+                            color = if (isMyMessage) Color.White else MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+
+                        val projectFile = SharedProjectFile(
+                            id = message.id,
+                            roomId = message.roomId,
+                            fileName = message.fileName.ifBlank {
+                                when (message.fileType) {
+                                    "image" -> "Görsel.jpg"
+                                    "video" -> "Video.mp4"
+                                    "audio" -> "Ses_Kaydı.m4a"
+                                    else -> "Dosya"
+                                }
+                            },
+                            fileType = message.fileType,
+                            fileSize = message.fileSize,
+                            content = if (message.fileType == "code" || message.fileType == "text") message.fileUrl else "",
+                            downloadUrl = message.fileUrl,
+                            storagePath = message.storagePath,
+                            thumbnailUrl = message.thumbnailUrl,
+                            mediaDurationMs = message.mediaDurationMs,
+                            uploadedByName = message.senderName,
+                            uploadedByTeam = message.senderTeam
+                        )
+
+                        // Voice Note Audio Player
+                        if (message.fileType == "audio" && message.fileUrl.isNotBlank()) {
+                            Spacer(modifier = Modifier.height(6.dp))
+                            VoiceNotePlayer(
+                                audioUrl = message.fileUrl,
+                                fileName = message.fileName.ifBlank { "Ses Kaydı.m4a" },
+                                isMyMessage = isMyMessage,
+                                onDownload = {
+                                    downloadFileToDevice(context, message.fileName.ifBlank { "Ses_Kaydı.m4a" }, message.fileUrl)
+                                }
+                            )
+                        } else if (message.fileType == "image" && (message.fileUrl.isNotBlank() || message.thumbnailUrl.isNotBlank() || message.storagePath.isNotBlank())) {
+                            // INLINE IMAGE PREVIEW with Base64/local support and tap to zoom
+                            Spacer(modifier = Modifier.height(8.dp))
+                            MediaThumbnailPreview(
+                                mediaType = "image",
+                                mediaUrl = message.fileUrl,
+                                thumbnailUrl = message.thumbnailUrl,
+                                storagePath = message.storagePath,
+                                fileName = message.fileName.ifBlank { "Görsel" },
+                                fileSizeText = projectFile.getFormattedSize(),
+                                height = 190.dp,
+                                onClick = {
+                                    if (isSelectionMode && canSelect) onToggleSelect() else if (!isSelectionMode) onOpenFile(projectFile)
+                                },
+                                onDownload = {
+                                    if (isSelectionMode && canSelect) {
+                                        onToggleSelect()
+                                    } else if (!isSelectionMode) {
+                                        downloadFileToDevice(
+                                            context,
+                                            message.fileName.ifBlank { "gorsel.jpg" },
+                                            message.fileUrl.ifBlank { message.storagePath }
                                         )
                                     }
-                                    if (message.fileUrl.isNotBlank()) {
-                                        IconButton(
-                                            onClick = {
-                                                downloadFileToDevice(context, message.fileName.ifBlank { "dosya" }, message.fileUrl)
-                                            },
-                                            modifier = Modifier.size(28.dp)
-                                        ) {
-                                            Icon(
-                                                imageVector = Icons.Default.Download,
-                                                contentDescription = "Cihaza İndir",
-                                                tint = if (isMyMessage) Color.White else ext.accentBlue,
-                                                modifier = Modifier.size(16.dp)
+                                },
+                                testTag = "chat_image_preview_${message.id}"
+                            )
+                        } else if (message.fileType == "video" && (message.fileUrl.isNotBlank() || message.thumbnailUrl.isNotBlank() || message.storagePath.isNotBlank())) {
+                            // INLINE VIDEO THUMBNAIL PREVIEW with real frame, duration badge, and tap to play in ExoPlayer
+                            Spacer(modifier = Modifier.height(8.dp))
+                            MediaThumbnailPreview(
+                                mediaType = "video",
+                                mediaUrl = message.fileUrl,
+                                thumbnailUrl = message.thumbnailUrl,
+                                storagePath = message.storagePath,
+                                fileName = message.fileName.ifBlank { "Video.mp4" },
+                                fileSizeText = projectFile.getFormattedSize(),
+                                durationMs = message.mediaDurationMs,
+                                height = 190.dp,
+                                onClick = {
+                                    if (isSelectionMode && canSelect) onToggleSelect() else if (!isSelectionMode) onOpenFile(projectFile)
+                                },
+                                onDownload = {
+                                    if (isSelectionMode && canSelect) {
+                                        onToggleSelect()
+                                    } else if (!isSelectionMode) {
+                                        downloadFileToDevice(
+                                            context,
+                                            message.fileName.ifBlank { "video.mp4" },
+                                            message.fileUrl.ifBlank { message.storagePath }
+                                        )
+                                    }
+                                },
+                                testTag = "chat_video_preview_${message.id}"
+                            )
+                        } else if (message.fileName.isNotBlank()) {
+                            // DOCUMENT / CODE / CAD / ZIP PREVIEW CARD
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Surface(
+                                shape = RoundedCornerShape(10.dp),
+                                color = if (isMyMessage) Color.White.copy(alpha = 0.22f) else MaterialTheme.colorScheme.surface,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        if (isSelectionMode && canSelect) onToggleSelect() else if (!isSelectionMode) onOpenFile(projectFile)
+                                    }
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                        modifier = Modifier.weight(1f)
+                                    ) {
+                                        Icon(
+                                            imageVector = getFileIcon(message.fileType),
+                                            contentDescription = null,
+                                            tint = if (isMyMessage) Color.White else getFileIconColor(message.fileType),
+                                            modifier = Modifier.size(22.dp)
+                                        )
+                                        Column {
+                                            Text(
+                                                text = message.fileName,
+                                                fontSize = 12.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                color = if (isMyMessage) Color.White else MaterialTheme.colorScheme.onSurface,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
                                             )
+                                            Text(
+                                                text = "${message.fileType.uppercase()} · Önizlemek İçin Dokunun",
+                                                fontSize = 10.sp,
+                                                color = if (isMyMessage) Color.White.copy(alpha = 0.8f) else ext.textMuted
+                                            )
+                                        }
+                                    }
+
+                                    if (!isSelectionMode) {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Surface(
+                                                shape = RoundedCornerShape(6.dp),
+                                                color = (if (isMyMessage) Color.White else ElectricBlue).copy(alpha = 0.15f),
+                                                modifier = Modifier.clickable { onOpenFile(projectFile) }
+                                            ) {
+                                                Text(
+                                                    text = "Aç",
+                                                    fontSize = 11.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = if (isMyMessage) Color.White else ext.accentBlue,
+                                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                                )
+                                            }
+                                            if (message.fileUrl.isNotBlank()) {
+                                                IconButton(
+                                                    onClick = {
+                                                        downloadFileToDevice(context, message.fileName.ifBlank { "dosya" }, message.fileUrl)
+                                                    },
+                                                    modifier = Modifier.size(28.dp)
+                                                ) {
+                                                    Icon(
+                                                        imageVector = Icons.Default.Download,
+                                                        contentDescription = "Cihaza İndir",
+                                                        tint = if (isMyMessage) Color.White else ext.accentBlue,
+                                                        modifier = Modifier.size(16.dp)
+                                                    )
+                                                }
+                                            }
                                         }
                                     }
                                 }
                             }
                         }
-                    }
-                }
 
-                // Footer: Time & Action Buttons
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 4.dp),
-                    horizontalArrangement = Arrangement.End,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    if (message.isPinned) {
-                        Icon(
-                            imageVector = Icons.Default.PushPin,
-                            contentDescription = "Sabitlendi",
-                            tint = if (isMyMessage) PhoenixAmber else ext.amberText,
-                            modifier = Modifier.size(12.dp)
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                    }
-
-                    val timeDisplay = buildString {
-                        if (message.isEdited) {
-                            append("(düzenlendi) ")
-                        }
-                        append(formattedTime)
-                    }.trim()
-                    Text(
-                        text = timeDisplay,
-                        fontSize = 10.sp,
-                        color = if (isMyMessage) Color.White.copy(alpha = 0.7f) else ext.textMuted
-                    )
-
-                    if (!isSelectionMode) {
-                        Spacer(modifier = Modifier.width(8.dp))
-
-                        Icon(
-                            imageVector = Icons.Default.Reply,
-                            contentDescription = "Cevapla",
-                            tint = if (isMyMessage) Color.White.copy(alpha = 0.8f) else ext.textMuted,
+                        // Clean Footer: subtle pin status icon (when pinned) + timestamp only
+                        Row(
                             modifier = Modifier
-                                .size(14.dp)
-                                .clickable { onReply() }
-                        )
+                                .fillMaxWidth()
+                                .padding(top = 4.dp),
+                            horizontalArrangement = Arrangement.End,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            if (message.isPinned) {
+                                Icon(
+                                    imageVector = Icons.Default.PushPin,
+                                    contentDescription = "Sabitlendi",
+                                    tint = if (isMyMessage) PhoenixAmber else ext.amberText,
+                                    modifier = Modifier.size(12.dp)
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                            }
 
-                        if (canEdit) {
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Icon(
-                                imageVector = Icons.Default.Edit,
-                                contentDescription = "Mesajı Düzenle",
-                                tint = if (isMyMessage) Color.White.copy(alpha = 0.85f) else ext.accentBlue,
-                                modifier = Modifier
-                                    .size(14.dp)
-                                    .clickable { onEdit() }
-                                    .testTag("edit_message_${message.id}")
-                            )
-                        }
-
-                        if (canManage) {
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Icon(
-                                imageVector = Icons.Default.PushPin,
-                                contentDescription = "Sabitle",
-                                tint = if (isMyMessage) Color.White.copy(alpha = 0.8f) else ext.textMuted,
-                                modifier = Modifier
-                                    .size(14.dp)
-                                    .clickable { onTogglePin() }
-                            )
-
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Icon(
-                                imageVector = Icons.Default.Delete,
-                                contentDescription = "Sil",
-                                tint = if (isMyMessage) Color.White.copy(alpha = 0.8f) else ext.dangerText,
-                                modifier = Modifier
-                                    .size(14.dp)
-                                    .clickable { onDelete() }
-                                    .testTag("delete_message_${message.id}")
+                            val timeDisplay = buildString {
+                                if (message.isEdited) {
+                                    append("(düzenlendi) ")
+                                }
+                                append(formattedTime)
+                            }.trim()
+                            Text(
+                                text = timeDisplay,
+                                fontSize = 10.sp,
+                                color = if (isMyMessage) Color.White.copy(alpha = 0.7f) else ext.textMuted
                             )
                         }
                     }
                 }
             }
-        }
         }
     }
 }

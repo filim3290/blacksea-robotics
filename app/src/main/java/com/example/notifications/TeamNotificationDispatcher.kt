@@ -32,16 +32,17 @@ object TeamNotificationDispatcher {
     private const val TAG = "TeamNotifDispatcher"
     private const val PREFS_NAME = "bsr_notif_dispatch_prefs"
     private const val MAX_STORED_IDS = 1000
-    private const val CLOCK_SKEW_TOLERANCE_MS = 3 * 60_000L
+    private const val CLOCK_SKEW_TOLERANCE_MS = 10 * 60_000L
 
     const val CHANNEL_TEAM = "bsr_team_notifications"
-    const val CHANNEL_MESSAGES = "bsr_chat_messages_v2"
+    const val CHANNEL_MESSAGES = "bsr_chat_messages_v3"
     const val CHANNEL_MESSAGES_SILENT = CHANNEL_MESSAGES
     const val CHANNEL_ANNOUNCEMENTS = "bsr_announcements"
     const val CHANNEL_UPDATES = "bsr_updates"
 
     private const val LEGACY_CHANNEL_REALTIME_SYNC = "bsr_realtime_sync"
     private const val LEGACY_CHANNEL_MESSAGES_SILENT = "bsr_chat_messages_silent"
+    private const val LEGACY_CHANNEL_MESSAGES_V2 = "bsr_chat_messages_v2"
     private const val LEGACY_PREF_REALTIME_SYNC_ENABLED = "realtime_sync_opt_in"
     private const val LEGACY_FOREGROUND_SYNC_NOTIFICATION_ID = 1099
     private const val PENDING_MSG_PREFIX = "pending_msg_count_"
@@ -193,12 +194,11 @@ object TeamNotificationDispatcher {
             val messagesChannel = NotificationChannel(
                 CHANNEL_MESSAGES,
                 "Sohbet Mesajları",
-                NotificationManager.IMPORTANCE_DEFAULT
+                NotificationManager.IMPORTANCE_HIGH
             ).apply {
-                description = "Aktif olmadığınız sohbet odalarından gelen yeni mesajlar (sessiz bildirim)"
-                setSound(null, null)
-                enableVibration(false)
+                description = "Aktif olmadığınız sohbet odalarından gelen yeni mesajlar"
                 enableLights(true)
+                enableVibration(true)
                 setShowBadge(true)
             }
 
@@ -228,6 +228,7 @@ object TeamNotificationDispatcher {
             notificationManager.createNotificationChannel(updatesChannel)
             notificationManager.deleteNotificationChannel(LEGACY_CHANNEL_REALTIME_SYNC)
             notificationManager.deleteNotificationChannel(LEGACY_CHANNEL_MESSAGES_SILENT)
+            notificationManager.deleteNotificationChannel(LEGACY_CHANNEL_MESSAGES_V2)
         }
     }
 
@@ -276,7 +277,7 @@ object TeamNotificationDispatcher {
                 shouldSeedBaseline = true,
                 seedIds = validItems.map { it.id }.takeLast(MAX_STORED_IDS),
                 toDispatch = emptyList(),
-                newBaselineTimestampMs = maxOf(nowMs, maxCreatedMs)
+                newBaselineTimestampMs = if (maxCreatedMs > 0L) maxCreatedMs else nowMs
             )
         }
 
@@ -328,7 +329,8 @@ object TeamNotificationDispatcher {
             val existingBaseline = prefs.getLong(baselineTsKey, 0L)
             val storedList = readStoredIdList(prefs.getString(idsKey, null))
             val maxCreatedMs = validItems.mapNotNull { it.createdAt?.toDate()?.time }.maxOrNull() ?: 0L
-            val newBaseline = maxOf(existingBaseline, nowMs, maxCreatedMs)
+            val candidateBaseline = if (maxCreatedMs > 0L) maxCreatedMs else nowMs
+            val newBaseline = maxOf(existingBaseline, candidateBaseline)
             val mergedIds = (storedList + validItems.map { it.id })
                 .distinct()
                 .takeLast(MAX_STORED_IDS)
@@ -436,7 +438,7 @@ object TeamNotificationDispatcher {
         var postedCount = 0
         val dispatchedIdsToRecord = mutableListOf<String>()
 
-        // 1. Dispatch chat notifications immediately (quiet, grouped per room) for inactive rooms
+        // 1. Dispatch chat notifications immediately per room for inactive rooms
         if (inactiveRoomMsgs.isNotEmpty()) {
             inactiveRoomMsgs.groupBy { normalizeRoomKey(it.targetRoomId) }.forEach { (roomKey, roomMsgs) ->
                 if (isActivelyChattingInRoom(roomKey)) {
@@ -473,16 +475,13 @@ object TeamNotificationDispatcher {
                     }
                     val bodyText = latestMsg.message.ifBlank { latestMsg.title.ifBlank { "Yeni mesaj" } }
                     val builder = NotificationCompat.Builder(appCtx, CHANNEL_MESSAGES)
-                        .setSmallIcon(R.mipmap.ic_launcher)
+                        .setSmallIcon(R.drawable.ic_notification)
                         .setContentTitle(titleText)
                         .setContentText(bodyText)
                         .setStyle(NotificationCompat.BigTextStyle().bigText(bodyText))
                         .setNumber(totalUnreadInRoom)
-                        .setPriority(NotificationCompat.PRIORITY_DEFAULT)
-                        .setSilent(true)
-                        .setOnlyAlertOnce(true)
-                        .setSound(null)
-                        .setDefaults(0)
+                        .setPriority(NotificationCompat.PRIORITY_HIGH)
+                        .setDefaults(NotificationCompat.DEFAULT_ALL)
                         .setContentIntent(pendingIntent)
                         .setAutoCancel(true)
 
@@ -522,11 +521,12 @@ object TeamNotificationDispatcher {
 
                 val bodyText = notif.message.ifBlank { notif.title }
                 val builder = NotificationCompat.Builder(appCtx, channelId)
-                    .setSmallIcon(R.mipmap.ic_launcher)
+                    .setSmallIcon(R.drawable.ic_notification)
                     .setContentTitle(notif.title.ifBlank { "BLACKSEA ROBOTICS" })
                     .setContentText(bodyText)
                     .setStyle(NotificationCompat.BigTextStyle().bigText(bodyText))
                     .setPriority(NotificationCompat.PRIORITY_HIGH)
+                    .setDefaults(NotificationCompat.DEFAULT_ALL)
                     .setContentIntent(pendingIntent)
                     .setAutoCancel(true)
 
@@ -601,11 +601,12 @@ object TeamNotificationDispatcher {
                 "Blacksea Robotics için yeni bir sürüm (v${release.versionName}) yayınlandı. Tarayıcıdan indirebilirsiniz."
             }
             val builder = NotificationCompat.Builder(appCtx, CHANNEL_UPDATES)
-                .setSmallIcon(R.mipmap.ic_launcher)
+                .setSmallIcon(R.drawable.ic_notification)
                 .setContentTitle("🔔 Yeni Güncelleme Mevcut")
                 .setContentText(contentText)
                 .setStyle(NotificationCompat.BigTextStyle().bigText(contentText))
                 .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .setDefaults(NotificationCompat.DEFAULT_ALL)
                 .setContentIntent(pendingIntent)
                 .setAutoCancel(true)
             notifManager.notify(UPDATE_NOTIFICATION_ID, builder.build())

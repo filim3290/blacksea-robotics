@@ -174,7 +174,46 @@ class NotificationAndStabilityTest {
         assertTrue(firstRun.shouldSeedBaseline)
         assertTrue(firstRun.toDispatch.isEmpty())
         assertEquals(listOf("old_1", "old_2"), firstRun.seedIds)
-        assertEquals(now, firstRun.newBaselineTimestampMs)
+        assertEquals(now - 10_000L, firstRun.newBaselineTimestampMs)
+    }
+
+    @Test
+    fun `selectNotificationsToDispatch does not drop server notifications when device clock runs ahead`() {
+        val serverNow = 1_700_000_000_000L
+        val skewedDeviceNow = serverNow + 60 * 60_000L // device clock 1 hour ahead
+        val initial = listOf(
+            TeamNotification(
+                id = "init_1",
+                type = "idea",
+                senderId = "other",
+                createdAt = Timestamp(Date(serverNow))
+            )
+        )
+        val firstRun = TeamNotificationDispatcher.selectNotificationsToDispatch(
+            notifications = initial,
+            userId = "me",
+            hasSeededBaseline = false,
+            baselineTimestampMs = 0L,
+            dispatchedIds = emptySet(),
+            nowMs = skewedDeviceNow
+        )
+        assertEquals(serverNow, firstRun.newBaselineTimestampMs)
+
+        val genuineNew = TeamNotification(
+            id = "new_idea_1",
+            type = "idea",
+            senderId = "other",
+            createdAt = Timestamp(Date(serverNow + 15_000L))
+        )
+        val secondRun = TeamNotificationDispatcher.selectNotificationsToDispatch(
+            notifications = initial + genuineNew,
+            userId = "me",
+            hasSeededBaseline = true,
+            baselineTimestampMs = firstRun.newBaselineTimestampMs,
+            dispatchedIds = firstRun.seedIds.toSet(),
+            nowMs = skewedDeviceNow + 20_000L
+        )
+        assertEquals(listOf("new_idea_1"), secondRun.toDispatch.map { it.id })
     }
 
     @Test
@@ -184,7 +223,7 @@ class NotificationAndStabilityTest {
             id = "stale_old",
             type = "message",
             senderId = "other",
-            createdAt = Timestamp(Date(baseline - 5 * 60_000L))
+            createdAt = Timestamp(Date(baseline - 15 * 60_000L))
         )
         val alreadySeen = TeamNotification(
             id = "seen_id",
@@ -419,6 +458,13 @@ class NotificationAndStabilityTest {
                 android.app.NotificationManager.IMPORTANCE_LOW
             )
         )
+        nm.createNotificationChannel(
+            android.app.NotificationChannel(
+                "bsr_chat_messages_v2",
+                "Legacy v2",
+                android.app.NotificationManager.IMPORTANCE_DEFAULT
+            )
+        )
 
         TeamNotificationDispatcher.ensureNotificationChannels(context)
         TeamNotificationDispatcher.cleanupLegacyRealtimeSyncArtifacts(context)
@@ -426,11 +472,12 @@ class NotificationAndStabilityTest {
         assertFalse(prefs.contains("realtime_sync_opt_in"))
         assertNull(nm.getNotificationChannel("bsr_realtime_sync"))
         assertNull(nm.getNotificationChannel("bsr_chat_messages_silent"))
+        assertNull(nm.getNotificationChannel("bsr_chat_messages_v2"))
         assertTrue(nm.getNotificationChannel(TeamNotificationDispatcher.CHANNEL_TEAM) != null)
         val messagesChannel = nm.getNotificationChannel(TeamNotificationDispatcher.CHANNEL_MESSAGES)
         assertTrue(messagesChannel != null)
-        assertEquals(NotificationManager.IMPORTANCE_DEFAULT, messagesChannel!!.importance)
-        assertNull(messagesChannel.sound)
+        assertEquals(NotificationManager.IMPORTANCE_HIGH, messagesChannel!!.importance)
+        assertTrue(messagesChannel.sound != null)
         assertTrue(nm.getNotificationChannel(TeamNotificationDispatcher.CHANNEL_ANNOUNCEMENTS) != null)
         assertTrue(nm.getNotificationChannel(TeamNotificationDispatcher.CHANNEL_UPDATES) != null)
     }

@@ -11,6 +11,7 @@ import com.example.model.TeamNotification
 import com.example.model.UserStatus
 import com.example.model.canBeDeletedBy
 import com.example.model.canBeEditedBy
+import com.example.model.formatMessagesForClipboard
 import com.example.ui.components.formatMediaDuration
 import com.example.ui.components.resolveMediaImageModel
 import com.example.ui.components.resolvePlayableVideoUri
@@ -193,5 +194,26 @@ class MediaPreviewAndFixesTest {
         assertTrue(ownMsg.canBeDeletedBy(userId = "admin_1", isManager = true))
         assertTrue(otherMsg.canBeDeletedBy(userId = "admin_1", isManager = true))
         assertFalse(blankIdMsg.canBeDeletedBy(userId = "admin_1", isManager = true))
+    }
+
+    @Test
+    fun `formatMessagesForClipboard handles empty single text file fallback and multi-message selection`() {
+        assertEquals("", formatMessagesForClipboard(emptyList()))
+
+        val singleText = ChatMessage(id = "1", senderName = "Ali", text = "Test mesaji")
+        assertEquals("Test mesaji", formatMessagesForClipboard(listOf(singleText)))
+
+        val singleFile = ChatMessage(id = "2", senderName = "Ayse", text = "", fileName = "sasi_v2.step")
+        assertEquals("sasi_v2.step", formatMessagesForClipboard(listOf(singleFile)))
+
+        val multi = listOf(
+            ChatMessage(id = "1", senderName = "Ali", text = "Merhaba"),
+            ChatMessage(id = "2", senderName = "Ayse", text = "", fileName = "kod.kt"),
+            ChatMessage(id = "3", senderName = "", text = "Hazir")
+        )
+        assertEquals(
+            "Ali: Merhaba\nAyse: kod.kt\nHazir",
+            formatMessagesForClipboard(multi)
+        )
     }
 }

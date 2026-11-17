@@ -651,7 +651,7 @@ class AppUpdateManager(private val context: Context) {
                 .header("Accept", "application/vnd.github.v3+json")
                 .header("User-Agent", "BlackseaRobotics-AndroidApp/$currentName")
 
-            if (!cachedReleaseJson.isNullOrBlank() && !cachedEtag.isNullOrBlank()) {
+            if (!forceRefresh && !cachedReleaseJson.isNullOrBlank() && !cachedEtag.isNullOrBlank()) {
                 reqBuilder.header("If-None-Match", cachedEtag)
             }
 

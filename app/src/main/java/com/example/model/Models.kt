@@ -219,6 +219,18 @@ fun ChatMessage.canBeDeletedBy(userId: String?, isManager: Boolean): Boolean {
     return !userId.isNullOrBlank() && senderId == userId
 }
 
+fun formatMessagesForClipboard(messages: List<ChatMessage>): String {
+    if (messages.isEmpty()) return ""
+    if (messages.size == 1) {
+        val msg = messages.first()
+        return msg.text.ifBlank { msg.fileName }
+    }
+    return messages.joinToString("\n") { msg ->
+        val body = msg.text.ifBlank { msg.fileName }
+        if (msg.senderName.isNotBlank()) "${msg.senderName}: $body" else body
+    }
+}
+
 @IgnoreExtraProperties
 data class IdeaItem(
     @DocumentId val id: String = "",

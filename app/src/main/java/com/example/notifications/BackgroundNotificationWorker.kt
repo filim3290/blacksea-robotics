@@ -21,6 +21,7 @@ import com.example.update.UpdateCheckResult
 import com.example.util.logDebugWarn
 import com.google.firebase.Firebase
 import com.google.firebase.auth.auth
+import com.google.firebase.firestore.Source
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.tasks.await
 import java.util.concurrent.TimeUnit
@@ -34,7 +35,7 @@ class BackgroundNotificationWorker(
         private const val TAG = "BgNotifWorker"
         const val WORK_NAME = "bsr_background_notification_sync"
         const val ONE_TIME_WORK_NAME = "bsr_onetime_update_sync"
-        private const val SCHEDULE_VERSION = 3
+        private const val SCHEDULE_VERSION = 4
 
         fun schedulePeriodicSync(context: Context) {
             try {
@@ -128,7 +129,11 @@ class BackgroundNotificationWorker(
                     val joinMs = profile.createdAt?.toDate()?.time
                         ?: TeamNotificationDispatcher.getUserJoinTimestampMs(applicationContext, currentUser.uid)
 
-                    val snapshot = repository.db.collection("notifications").get().await()
+                    val snapshot = try {
+                        repository.db.collection("notifications").get(Source.SERVER).await()
+                    } catch (_: Exception) {
+                        repository.db.collection("notifications").get().await()
+                    }
                     val allNotifications = snapshot.toObjects(TeamNotification::class.java)
                     val filtered = allNotifications.filter { notif ->
                         shouldUserReceiveNotification(
@@ -167,7 +172,11 @@ class BackgroundNotificationWorker(
                     )
                 }
                 is UpdateCheckResult.UpToDate -> {
-                    TeamNotificationDispatcher.clearPendingUpdateNotification(applicationContext)
+                    if (currentUser != null) {
+                        checkFirestoreLatestUpdate(repository, updateManager)
+                    } else {
+                        TeamNotificationDispatcher.clearPendingUpdateNotification(applicationContext)
+                    }
                 }
                 is UpdateCheckResult.NoReleaseFound -> {
                     TeamNotificationDispatcher.clearPendingUpdateNotification(applicationContext)

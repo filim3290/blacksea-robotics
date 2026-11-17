@@ -33,6 +33,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -156,12 +157,14 @@ fun AppContent(
     var inAppLatestUpdate by remember { mutableStateOf<AppReleaseInfo?>(null) }
     var showNotificationRationale by remember { mutableStateOf(false) }
     var isSelfDeleting by remember { mutableStateOf(false) }
+    var permissionGrantCount by remember { mutableIntStateOf(0) }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { isGranted ->
         logDebug("Notifications", "POST_NOTIFICATIONS granted: $isGranted")
         if (isGranted) {
+            permissionGrantCount++
             BackgroundNotificationWorker.schedulePeriodicSync(context)
             BackgroundNotificationWorker.triggerImmediateSync(context)
         } else {
@@ -177,7 +180,7 @@ fun AppContent(
 
     suspend fun performUpdateCheckAndNotify(
         forceRefresh: Boolean = false,
-        notifyOs: Boolean = false,
+        notifyOs: Boolean = true,
         openDialogRegardlessOfSignature: Boolean = false
     ) {
         updateCheckMutex.withLock {
@@ -185,7 +188,7 @@ fun AppContent(
             if (result is UpdateCheckResult.UpdateAvailable) {
                 val update = result.release
                 inAppLatestUpdate = update
-                if (result.isSignatureCompatible || openDialogRegardlessOfSignature) {
+                if (openDialogRegardlessOfSignature || (update.isForceUpdate && result.isSignatureCompatible)) {
                     availableUpdate = update
                 }
                 if (notifyOs) {
@@ -236,7 +239,7 @@ fun AppContent(
     LaunchedEffect(Unit) {
         TeamNotificationDispatcher.cleanupLegacyRealtimeSyncArtifacts(context)
         BackgroundNotificationWorker.schedulePeriodicSync(context)
-        performUpdateCheckAndNotify(forceRefresh = false, notifyOs = false)
+        performUpdateCheckAndNotify(forceRefresh = true, notifyOs = true)
 
         // Real-time listener for Firestore app_config/latest_update
         try {
@@ -268,7 +271,7 @@ fun AppContent(
                                     isForceUpdate = doc.getBoolean("isForceUpdate") ?: false
                                 )
                                 inAppLatestUpdate = release
-                                if (updateManager.isReleaseSignatureCompatible(release)) {
+                                if (release.isForceUpdate && updateManager.isReleaseSignatureCompatible(release)) {
                                     availableUpdate = release
                                 }
                                 if (shouldNotifyOs) {
@@ -309,7 +312,7 @@ fun AppContent(
         if (activeUid != null && isAuthCompleted) {
             isSelfDeleting = false
             BackgroundNotificationWorker.schedulePeriodicSync(context)
-            performUpdateCheckAndNotify(forceRefresh = false, notifyOs = false)
+            performUpdateCheckAndNotify(forceRefresh = false, notifyOs = true)
         }
     }
 
@@ -369,7 +372,7 @@ fun AppContent(
         }
     }
 
-    LaunchedEffect(authenticatedUid, activeProfile?.status, activeIsManager, activeProfile?.team) {
+    LaunchedEffect(authenticatedUid, activeProfile?.status, activeIsManager, activeProfile?.team, permissionGrantCount) {
         val uid = authenticatedUid ?: return@LaunchedEffect
         val profile = activeProfile ?: return@LaunchedEffect
         val isFounder = profile.isSuperAdmin ||
@@ -425,12 +428,12 @@ fun AppContent(
             if (event == Lifecycle.Event.ON_RESUME) {
                 TeamNotificationDispatcher.setAppForeground(context, currentUser?.uid, true)
                 scope.launch {
-                    performUpdateCheckAndNotify()
+                    performUpdateCheckAndNotify(forceRefresh = true, notifyOs = true)
                 }
             } else if (event == Lifecycle.Event.ON_STOP) {
                 TeamNotificationDispatcher.setAppForeground(context, currentUser?.uid, false)
                 BackgroundNotificationWorker.schedulePeriodicSync(context)
-                BackgroundNotificationWorker.triggerOneTimeUpdateCheck(context)
+                BackgroundNotificationWorker.triggerOneTimeUpdateCheck(context, delaySeconds = 5L)
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
