@@ -11,6 +11,9 @@ import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 import com.example.data.BlackseaRepository
 import com.example.data.UserProfileLoadState
+import com.example.model.PLATFORM_FOUNDER_EMAIL
+import com.example.model.PLATFORM_MAIN_TEAM_ID
+import com.example.model.TeamMembership
 import com.example.model.UserStatus
 import com.example.update.AppReleaseInfo
 import com.example.update.AppUpdateManager
@@ -31,12 +34,13 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 
 /**
  * Persistent foreground listener service (`dataSync`) that keeps Firestore notification
  * and release listeners active continuously in the background so team chat messages,
- * announcements, ideas, files, support updates, and member events arrive immediately.
+ * announcements, ideas, files, support updates, and team approvals arrive immediately.
  */
 class RealtimeNotificationService : Service() {
 
@@ -124,28 +128,48 @@ class RealtimeNotificationService : Service() {
                 }
 
                 try {
-                    repository.observeUserProfileState(uid).collectLatest { state ->
+                    combine(
+                        repository.observeUserProfileState(uid),
+                        repository.observeMyMemberships(uid)
+                    ) { profileState, memberships ->
+                        profileState to memberships
+                    }.collectLatest { (state, memberships) ->
                         when (state) {
                             is UserProfileLoadState.Loading -> Unit
                             is UserProfileLoadState.Missing -> {
                                 val isFounderEmail = Firebase.auth.currentUser?.email
-                                    .equals("filim3290@gmail.com", ignoreCase = true)
+                                    .equals(PLATFORM_FOUNDER_EMAIL, ignoreCase = true)
                                 if (!isFounderEmail) {
                                     stopSelf()
                                 }
                             }
                             is UserProfileLoadState.Found -> {
                                 val profile = state.profile
-                                val currentEmail = Firebase.auth.currentUser?.email
-                                val isFounder = profile.isSuperAdmin ||
-                                    profile.email.equals("filim3290@gmail.com", ignoreCase = true) ||
-                                    currentEmail.equals("filim3290@gmail.com", ignoreCase = true)
-                                val isApproved = UserStatus.isActive(profile.status) || isFounder
-                                if (!isApproved) {
-                                    return@collectLatest
+                                val isPlatformAdmin = profile.isPlatformManagerAccount() ||
+                                    Firebase.auth.currentUser?.email.equals(PLATFORM_FOUNDER_EMAIL, ignoreCase = true)
+
+                                val membershipsByTeam = memberships
+                                    .filter { it.teamId.isNotBlank() }
+                                    .associateBy { it.teamId }
+                                    .toMutableMap()
+
+                                if (!membershipsByTeam.containsKey(PLATFORM_MAIN_TEAM_ID) &&
+                                    (isPlatformAdmin || (profile.activeTeamId.isBlank() && UserStatus.isActive(profile.status) && profile.roles.any { it != "Takım Üyesi" }))
+                                ) {
+                                    membershipsByTeam[PLATFORM_MAIN_TEAM_ID] = TeamMembership(
+                                        id = "${PLATFORM_MAIN_TEAM_ID}_$uid",
+                                        teamId = PLATFORM_MAIN_TEAM_ID,
+                                        userId = uid,
+                                        userName = profile.getFullName(),
+                                        userEmail = profile.email,
+                                        subTeam = profile.team,
+                                        role = profile.role,
+                                        roles = profile.roles,
+                                        status = UserStatus.ACTIVE.value,
+                                        isTeamAdmin = profile.isManagerAccount() || isPlatformAdmin
+                                    )
                                 }
 
-                                val isManager = profile.isManagerAccount()
                                 val profileJoinMs = profile.createdAt?.toDate()?.time ?: 0L
                                 if (profileJoinMs > 0L) {
                                     TeamNotificationDispatcher.recordUserJoinTimestampIfMissing(
@@ -161,10 +185,10 @@ class RealtimeNotificationService : Service() {
                                 }
 
                                 if (!TeamNotificationDispatcher.hasSeededBaseline(applicationContext, uid)) {
-                                    val initialSnapshot = repository.fetchNotificationsOnce(
+                                    val initialSnapshot = repository.fetchNotificationsOnceForUser(
                                         userId = uid,
-                                        isManager = isManager,
-                                        userTeam = profile.team,
+                                        membershipsByTeam = membershipsByTeam,
+                                        isPlatformAdmin = isPlatformAdmin,
                                         userCreatedAtMs = effectiveJoinMs
                                     )
                                     if (initialSnapshot != null) {
@@ -176,10 +200,10 @@ class RealtimeNotificationService : Service() {
                                     }
                                 }
 
-                                repository.observeNotifications(
+                                repository.observeNotificationsForUser(
                                     userId = uid,
-                                    isManager = isManager,
-                                    userTeam = profile.team,
+                                    membershipsByTeam = membershipsByTeam,
+                                    isPlatformAdmin = isPlatformAdmin,
                                     userCreatedAtMs = effectiveJoinMs
                                 ).collect { notifications ->
                                     TeamNotificationDispatcher.processNotifications(

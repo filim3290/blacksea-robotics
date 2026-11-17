@@ -78,6 +78,7 @@ import kotlinx.coroutines.sync.withLock
 data class NotificationNavEvent(
     val type: String = "",
     val roomId: String = "",
+    val teamId: String = "",
     val openUpdateDialog: Boolean = false,
     val nonce: Long = System.currentTimeMillis()
 )
@@ -125,16 +126,19 @@ class MainActivity : ComponentActivity() {
         if (intent == null) return
         val notifType = intent.getStringExtra(TeamNotificationDispatcher.EXTRA_NOTIF_TYPE).orEmpty()
         val roomId = intent.getStringExtra(TeamNotificationDispatcher.EXTRA_NOTIF_ROOM_ID).orEmpty()
+        val teamId = intent.getStringExtra(TeamNotificationDispatcher.EXTRA_NOTIF_TEAM_ID).orEmpty()
         val openUpdate = intent.getBooleanExtra(TeamNotificationDispatcher.EXTRA_OPEN_UPDATE_DIALOG, false)
         if (notifType.isNotBlank() || openUpdate) {
             pendingNavEvent.value = NotificationNavEvent(
                 type = notifType,
                 roomId = roomId,
+                teamId = teamId,
                 openUpdateDialog = openUpdate,
                 nonce = System.nanoTime()
             )
             intent.removeExtra(TeamNotificationDispatcher.EXTRA_NOTIF_TYPE)
             intent.removeExtra(TeamNotificationDispatcher.EXTRA_NOTIF_ROOM_ID)
+            intent.removeExtra(TeamNotificationDispatcher.EXTRA_NOTIF_TEAM_ID)
             intent.removeExtra(TeamNotificationDispatcher.EXTRA_OPEN_UPDATE_DIALOG)
         }
     }
@@ -329,62 +333,78 @@ fun AppContent(
     }.collectAsState(initial = UserProfileLoadState.Loading)
 
     val activeProfile = (profileState as? UserProfileLoadState.Found)?.profile
-    val activeIsManager = activeProfile?.isManagerAccount() ?: false
+    val isPlatformAdmin = remember(activeProfile, currentUser?.email) {
+        activeProfile?.isPlatformManagerAccount() == true ||
+            currentUser?.email.equals(com.example.model.PLATFORM_FOUNDER_EMAIL, ignoreCase = true)
+    }
+
+    val myMemberships by remember(authenticatedUid) {
+        if (authenticatedUid.isNullOrBlank()) {
+            flowOf(emptyList())
+        } else {
+            repository.observeMyMemberships(authenticatedUid)
+        }
+    }.collectAsState(initial = emptyList())
+
+    val membershipsByTeam = remember(myMemberships, activeProfile, isPlatformAdmin) {
+        val map = myMemberships.associateBy { it.teamId }.toMutableMap()
+        val profile = activeProfile
+        if (profile != null && !map.containsKey(com.example.model.PLATFORM_MAIN_TEAM_ID)) {
+            val uid = profile.userId.ifBlank { profile.id }
+            if (isPlatformAdmin && uid.isNotBlank()) {
+                map[com.example.model.PLATFORM_MAIN_TEAM_ID] = com.example.model.TeamMembership(
+                    id = "${com.example.model.PLATFORM_MAIN_TEAM_ID}_$uid",
+                    teamId = com.example.model.PLATFORM_MAIN_TEAM_ID,
+                    userId = uid,
+                    userName = profile.getFullName(),
+                    userEmail = profile.email,
+                    subTeam = profile.team,
+                    role = profile.role,
+                    roles = profile.roles,
+                    status = UserStatus.ACTIVE.value,
+                    isTeamAdmin = true
+                )
+            }
+        }
+        map
+    }
 
     LaunchedEffect(authenticatedUid, profileState, isSelfDeleting) {
         if (authenticatedUid == null) return@LaunchedEffect
         when (val state = profileState) {
             is UserProfileLoadState.Loading -> Unit
             is UserProfileLoadState.Missing -> {
-                val isFounderEmail = currentUser?.email.equals("filim3290@gmail.com", ignoreCase = true)
+                val isFounderEmail = currentUser?.email.equals(com.example.model.PLATFORM_FOUNDER_EMAIL, ignoreCase = true)
                 if (!isFounderEmail && !isSelfDeleting) {
                     BackgroundNotificationWorker.cancelPeriodicSync(context)
                     RealtimeNotificationService.stop(context)
                     isAuthCompleted = false
                     Toast.makeText(
                         context,
-                        "Hesabınız yönetici tarafından kaldırıldığı için oturum kapatıldı.",
+                        "Hesabınız kaldırıldığı için oturum kapatıldı.",
                         Toast.LENGTH_LONG
                     ).show()
                 }
             }
             is UserProfileLoadState.Found -> {
                 val profile = state.profile
-                val isFounder = profile.isSuperAdmin ||
-                    profile.email.equals("filim3290@gmail.com", ignoreCase = true) ||
-                    currentUser?.email.equals("filim3290@gmail.com", ignoreCase = true)
-                val isApproved = UserStatus.isActive(profile.status) || isFounder
-                if (!isApproved) {
-                    BackgroundNotificationWorker.cancelPeriodicSync(context)
-                    RealtimeNotificationService.stop(context)
-                    isAuthCompleted = false
-                    if (UserStatus.isRevoked(profile.status)) {
-                        Toast.makeText(
-                            context,
-                            "Uygulama erişiminiz yönetici tarafından kaldırıldı.",
-                            Toast.LENGTH_LONG
-                        ).show()
-                    }
-                } else {
-                    BackgroundNotificationWorker.schedulePeriodicSync(context)
-                    RealtimeNotificationService.startIfEnabled(context)
-                    try {
+                BackgroundNotificationWorker.schedulePeriodicSync(context)
+                RealtimeNotificationService.startIfEnabled(context)
+                try {
+                    repository.migrateLegacyUserToMainTeamMembershipIfNeeded(profile)
+                    if (isPlatformAdmin) {
+                        repository.ensureMainTeamExists()
                         repository.ensureDefaultRoomsExist()
-                    } catch (_: Exception) {
                     }
+                } catch (_: Exception) {
                 }
             }
         }
     }
 
-    LaunchedEffect(authenticatedUid, activeProfile?.status, activeIsManager, activeProfile?.team, permissionGrantCount) {
+    LaunchedEffect(authenticatedUid, activeProfile?.createdAt, membershipsByTeam, isPlatformAdmin, permissionGrantCount) {
         val uid = authenticatedUid ?: return@LaunchedEffect
         val profile = activeProfile ?: return@LaunchedEffect
-        val isFounder = profile.isSuperAdmin ||
-            profile.email.equals("filim3290@gmail.com", ignoreCase = true) ||
-            currentUser?.email.equals("filim3290@gmail.com", ignoreCase = true)
-        val isApproved = UserStatus.isActive(profile.status) || isFounder
-        if (!isApproved) return@LaunchedEffect
 
         val profileJoinMs = profile.createdAt?.toDate()?.time ?: 0L
         if (profileJoinMs > 0L) {
@@ -397,10 +417,10 @@ fun AppContent(
         }
 
         if (!TeamNotificationDispatcher.hasSeededBaseline(context, uid)) {
-            val initialSnapshot = repository.fetchNotificationsOnce(
+            val initialSnapshot = repository.fetchNotificationsOnceForUser(
                 userId = uid,
-                isManager = activeIsManager,
-                userTeam = profile.team,
+                membershipsByTeam = membershipsByTeam,
+                isPlatformAdmin = isPlatformAdmin,
                 userCreatedAtMs = effectiveJoinMs
             )
             if (initialSnapshot != null) {
@@ -412,10 +432,10 @@ fun AppContent(
             }
         }
 
-        repository.observeNotifications(
+        repository.observeNotificationsForUser(
             userId = uid,
-            isManager = activeIsManager,
-            userTeam = profile.team,
+            membershipsByTeam = membershipsByTeam,
+            isPlatformAdmin = isPlatformAdmin,
             userCreatedAtMs = effectiveJoinMs
         ).collect { filteredNotifications ->
             TeamNotificationDispatcher.processNotifications(

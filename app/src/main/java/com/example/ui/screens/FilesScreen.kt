@@ -75,19 +75,27 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import java.util.Locale
 
+import com.example.model.PLATFORM_MAIN_TEAM_ID
+import com.example.model.TeamInfo
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun FilesScreen(
     repository: BlackseaRepository,
     currentUserProfile: UserProfile?,
+    activeTeam: TeamInfo = TeamInfo.mainBlackseaTeam(),
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val ext = MaterialTheme.blackseaColors
 
+    val activeTeamId = activeTeam.id.ifBlank { PLATFORM_MAIN_TEAM_ID }
+    val activeTeamName = activeTeam.name.ifBlank { "BlackSea Robotics" }
+    val storagePrefix = if (activeTeamId == PLATFORM_MAIN_TEAM_ID) "" else "teams/$activeTeamId/"
+
     var selectedTypeFilter by remember { mutableStateOf("Hepsi") }
-    val files by repository.observeSharedFiles().collectAsState(initial = emptyList())
+    val files by repository.observeSharedFiles(teamId = activeTeamId).collectAsState(initial = emptyList())
 
     // File Preview Modal & Delete Confirmation
     var activePreviewFile by remember { mutableStateOf<SharedProjectFile?>(null) }
@@ -392,7 +400,7 @@ fun FilesScreen(
                             val uploadResult = repository.uploadFile(
                                 context = context,
                                 uri = uri,
-                                folder = "workspace_files",
+                                folder = "${storagePrefix}workspace_files",
                                 onProgress = { prog -> uploadProgress = prog }
                             )
 
@@ -410,7 +418,9 @@ fun FilesScreen(
                                 uploadedByName = currentUserProfile?.getFullName() ?: "Takım Üyesi",
                                 uploadedByTeam = currentUserProfile?.team ?: "",
                                 uploadedByRoles = currentUserProfile?.roles ?: emptyList(),
-                                notifyTeam = true
+                                notifyTeam = true,
+                                teamId = activeTeamId,
+                                teamName = activeTeamName
                             )
 
                             isUploading = false
@@ -450,7 +460,7 @@ fun FilesScreen(
                             isDeletingFile = true
                             scope.launch {
                                 try {
-                                    repository.deleteSharedFile(targetFile.id)
+                                    repository.deleteSharedFile(targetFile.id, teamId = activeTeamId)
                                     fileToDelete = null
                                     Toast.makeText(context, "Dosya silindi.", Toast.LENGTH_SHORT).show()
                                 } catch (ce: CancellationException) {

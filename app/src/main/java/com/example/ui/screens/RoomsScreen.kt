@@ -141,10 +141,13 @@ import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Locale
 
+import com.example.model.TeamInfo
+
 @Composable
 fun RoomsScreen(
     repository: BlackseaRepository,
     currentUserProfile: UserProfile?,
+    activeTeam: TeamInfo = TeamInfo.mainBlackseaTeam(),
     initialRoomId: String = "general",
     modifier: Modifier = Modifier
 ) {
@@ -154,18 +157,22 @@ fun RoomsScreen(
     val scope = rememberCoroutineScope()
     val ext = MaterialTheme.blackseaColors
 
+    val activeTeamId = activeTeam.id.ifBlank { com.example.model.PLATFORM_MAIN_TEAM_ID }
+    val activeTeamName = activeTeam.name.ifBlank { "BlackSea Robotics" }
+    val storagePrefix = if (activeTeamId == com.example.model.PLATFORM_MAIN_TEAM_ID) "" else "teams/$activeTeamId/"
+
     var selectedRoomId by remember { mutableStateOf(initialRoomId) }
     LaunchedEffect(initialRoomId) {
         selectedRoomId = initialRoomId
     }
-    DisposableEffect(selectedRoomId, currentUserProfile?.userId, currentUserProfile?.id) {
+    DisposableEffect(selectedRoomId, activeTeamId, currentUserProfile?.userId, currentUserProfile?.id) {
         val activeUid = currentUserProfile?.userId?.ifBlank { currentUserProfile.id }.orEmpty()
-        TeamNotificationDispatcher.setActiveChatRoom(context, activeUid, selectedRoomId)
+        TeamNotificationDispatcher.setActiveChatRoom(context, activeUid, selectedRoomId, activeTeamId)
         onDispose {
-            TeamNotificationDispatcher.setActiveChatRoom(context, activeUid, null)
+            TeamNotificationDispatcher.setActiveChatRoom(context, activeUid, null, activeTeamId)
         }
     }
-    val messages by repository.observeMessages(selectedRoomId).collectAsState(initial = emptyList())
+    val messages by repository.observeMessages(selectedRoomId, teamId = activeTeamId).collectAsState(initial = emptyList())
 
     val listState = rememberLazyListState()
 
@@ -498,7 +505,7 @@ fun RoomsScreen(
                                         exitSelectionMode()
                                         scope.launch {
                                             try {
-                                                repository.togglePinMessage(selectedRoomId, target.id, !target.isPinned)
+                                                repository.togglePinMessage(selectedRoomId, target.id, !target.isPinned, teamId = activeTeamId)
                                             } catch (ce: CancellationException) {
                                                 throw ce
                                             } catch (e: Exception) {
@@ -896,7 +903,7 @@ fun RoomsScreen(
                                     try {
                                         val uploadResult = repository.uploadLocalFile(
                                             file = file,
-                                            folder = "rooms_attachments/$selectedRoomId/audio",
+                                            folder = "${storagePrefix}rooms_attachments/$selectedRoomId/audio",
                                             fileType = "audio"
                                         )
 
@@ -910,7 +917,9 @@ fun RoomsScreen(
                                             fileName = "Ses_Kaydı_${System.currentTimeMillis()}.m4a",
                                             fileType = "audio",
                                             fileUrl = uploadResult.downloadUrl,
-                                            fileSize = uploadResult.fileSize
+                                            fileSize = uploadResult.fileSize,
+                                            teamId = activeTeamId,
+                                            teamName = activeTeamName
                                         )
 
                                         repository.addSharedFile(
@@ -924,7 +933,9 @@ fun RoomsScreen(
                                             storagePath = "",
                                             uploadedByName = realName,
                                             uploadedByTeam = team,
-                                            uploadedByRoles = roles
+                                            uploadedByRoles = roles,
+                                            teamId = activeTeamId,
+                                            teamName = activeTeamName
                                         )
 
                                         Toast.makeText(context, "Ses kaydı başarıyla gönderildi!", Toast.LENGTH_SHORT).show()
@@ -1036,7 +1047,9 @@ fun RoomsScreen(
                                             fileUrl = fileContentToSend,
                                             replyToId = reply?.id ?: "",
                                             replyToSender = reply?.senderName ?: "",
-                                            replyToText = reply?.text ?: ""
+                                            replyToText = reply?.text ?: "",
+                                            teamId = activeTeamId,
+                                            teamName = activeTeamName
                                         )
                                     } catch (ce: CancellationException) {
                                         throw ce
@@ -1226,7 +1239,7 @@ fun RoomsScreen(
                         val result = repository.uploadFile(
                             context = context,
                             uri = uri,
-                            folder = "rooms_attachments/$selectedRoomId",
+                            folder = "${storagePrefix}rooms_attachments/$selectedRoomId",
                             onProgress = { prog -> uploadProgress = prog }
                         )
 
@@ -1244,7 +1257,9 @@ fun RoomsScreen(
                             mediaDurationMs = result.mediaDurationMs,
                             uploadedByName = currentUserProfile?.getFullName() ?: "Takım Üyesi",
                             uploadedByTeam = currentUserProfile?.team ?: "",
-                            uploadedByRoles = currentUserProfile?.roles ?: emptyList()
+                            uploadedByRoles = currentUserProfile?.roles ?: emptyList(),
+                            teamId = activeTeamId,
+                            teamName = activeTeamName
                         )
 
                         // 2. Post chat message with file attachment
@@ -1261,7 +1276,9 @@ fun RoomsScreen(
                             fileSize = result.fileSize,
                             thumbnailUrl = result.thumbnailUrl,
                             storagePath = result.storagePath,
-                            mediaDurationMs = result.mediaDurationMs
+                            mediaDurationMs = result.mediaDurationMs,
+                            teamId = activeTeamId,
+                            teamName = activeTeamName
                         )
 
                         isUploadingFile = false
@@ -1325,7 +1342,7 @@ fun RoomsScreen(
                         isSavingMessageEdit = true
                         scope.launch {
                             try {
-                                repository.editMessage(selectedRoomId, targetMsg.id, trimmed)
+                                repository.editMessage(selectedRoomId, targetMsg.id, trimmed, teamId = activeTeamId)
                                 messageToEdit = null
                                 Toast.makeText(context, "Mesaj güncellendi.", Toast.LENGTH_SHORT).show()
                             } catch (ce: CancellationException) {
@@ -1401,7 +1418,7 @@ fun RoomsScreen(
                         isBulkDeleting = true
                         scope.launch {
                             try {
-                                repository.deleteMessages(selectedRoomId, idsToDelete)
+                                repository.deleteMessages(selectedRoomId, idsToDelete, teamId = activeTeamId)
                                 exitSelectionMode()
                                 val toastText = if (idsToDelete.size == 1) "Mesaj silindi." else "${idsToDelete.size} mesaj silindi."
                                 Toast.makeText(context, toastText, Toast.LENGTH_SHORT).show()

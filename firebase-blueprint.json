@@ -2,20 +2,97 @@
   "entities": {
     "User": {
       "title": "User",
-      "description": "User profile in Blacksea Robotics platform",
+      "description": "Global student/user identity in the multi-team robotics platform",
       "type": "object",
       "properties": {
         "userId": { "type": "string" },
+        "firstName": { "type": "string" },
+        "lastName": { "type": "string" },
+        "username": { "type": "string" },
         "displayName": { "type": "string" },
         "email": { "type": "string" },
         "team": { "type": "string" },
         "role": { "type": "string" },
+        "roles": { "type": "array", "items": { "type": "string" } },
         "status": { "type": "string" },
         "photoUrl": { "type": "string" },
+        "isSuperAdmin": { "type": "boolean" },
+        "isPlatformAdmin": { "type": "boolean" },
+        "activeTeamId": { "type": "string" },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
-      "required": ["userId", "displayName", "email", "team", "role", "status", "createdAt", "updatedAt"]
+      "required": ["userId", "displayName", "email", "photoUrl", "createdAt", "updatedAt"]
+    },
+    "Team": {
+      "title": "Team",
+      "description": "Independent robotics/engineering/competition team on the platform",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "shortCode": { "type": "string" },
+        "competition": { "type": "string" },
+        "schoolName": { "type": "string" },
+        "city": { "type": "string" },
+        "description": { "type": "string" },
+        "motto": { "type": "string" },
+        "logoKey": { "type": "string" },
+        "accentColorHex": { "type": "string" },
+        "managerName": { "type": "string" },
+        "managerContact": { "type": "string" },
+        "founderId": { "type": "string" },
+        "founderEmail": { "type": "string" },
+        "status": { "type": "string", "enum": ["pending", "approved", "rejected"] },
+        "isMainTeam": { "type": "boolean" },
+        "memberCount": { "type": "integer" },
+        "rejectionReason": { "type": "string" },
+        "reviewedBy": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["name", "shortCode", "competition", "schoolName", "city", "description", "managerName", "managerContact", "founderId", "founderEmail", "status", "isMainTeam", "createdAt", "updatedAt"]
+    },
+    "TeamMembership": {
+      "title": "TeamMembership",
+      "description": "Per-team membership and isolated roles/permissions for a user (doc ID: teamId_userId)",
+      "type": "object",
+      "properties": {
+        "teamId": { "type": "string" },
+        "userId": { "type": "string" },
+        "userName": { "type": "string" },
+        "userEmail": { "type": "string" },
+        "userPhotoUrl": { "type": "string" },
+        "subTeam": { "type": "string" },
+        "role": { "type": "string" },
+        "roles": { "type": "array", "items": { "type": "string" } },
+        "status": { "type": "string", "enum": ["pending", "active", "approved", "rejected", "revoked"] },
+        "isTeamAdmin": { "type": "boolean" },
+        "joinNote": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["teamId", "userId", "userName", "userEmail", "subTeam", "role", "roles", "status", "isTeamAdmin", "createdAt", "updatedAt"]
+    },
+    "TeamTask": {
+      "title": "TeamTask",
+      "description": "Team-scoped task / görev item inside a team's isolated workspace",
+      "type": "object",
+      "properties": {
+        "teamId": { "type": "string" },
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "subTeam": { "type": "string" },
+        "assignedToId": { "type": "string" },
+        "assignedToName": { "type": "string" },
+        "createdById": { "type": "string" },
+        "createdByName": { "type": "string" },
+        "priority": { "type": "string" },
+        "status": { "type": "string", "enum": ["todo", "in_progress", "done"] },
+        "dueDateText": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["teamId", "title", "subTeam", "createdById", "createdByName", "status", "createdAt", "updatedAt"]
     },
     "Room": {
       "title": "Room",
@@ -23,6 +100,7 @@
       "type": "object",
       "properties": {
         "roomId": { "type": "string" },
+        "teamId": { "type": "string" },
         "name": { "type": "string" },
         "description": { "type": "string" },
         "allowedTeam": { "type": "string" },
@@ -37,6 +115,7 @@
       "type": "object",
       "properties": {
         "roomId": { "type": "string" },
+        "teamId": { "type": "string" },
         "senderId": { "type": "string" },
         "senderName": { "type": "string" },
         "senderPhotoUrl": { "type": "string" },
@@ -60,6 +139,7 @@
       "type": "object",
       "properties": {
         "roomId": { "type": "string" },
+        "teamId": { "type": "string" },
         "authorId": { "type": "string" },
         "authorName": { "type": "string" },
         "authorTeam": { "type": "string" },
@@ -94,6 +174,7 @@
       "type": "object",
       "properties": {
         "roomId": { "type": "string" },
+        "teamId": { "type": "string" },
         "uploadedById": { "type": "string" },
         "uploadedByName": { "type": "string" },
         "fileName": { "type": "string" },
@@ -109,6 +190,7 @@
       "description": "Team announcement broadcasted by leaders/admins",
       "type": "object",
       "properties": {
+        "teamId": { "type": "string" },
         "authorId": { "type": "string" },
         "authorName": { "type": "string" },
         "title": { "type": "string" },
@@ -123,6 +205,7 @@
       "description": "Member help & support ticket routed to team managers",
       "type": "object",
       "properties": {
+        "teamId": { "type": "string" },
         "userId": { "type": "string" },
         "userName": { "type": "string" },
         "userEmail": { "type": "string" },
@@ -146,33 +229,73 @@
       "schema": "User",
       "description": "User profile collection"
     },
+    "/teams/{teamId}": {
+      "schema": "Team",
+      "description": "Teams registry and team creation applications"
+    },
+    "/team_memberships/{membershipId}": {
+      "schema": "TeamMembership",
+      "description": "Isolated per-team membership and role assignments"
+    },
+    "/teams/{teamId}/tasks/{taskId}": {
+      "schema": "TeamTask",
+      "description": "Isolated tasks for a team"
+    },
+    "/teams/{teamId}/rooms/{roomId}": {
+      "schema": "Room",
+      "description": "Isolated rooms for a team"
+    },
+    "/teams/{teamId}/rooms/{roomId}/messages/{messageId}": {
+      "schema": "Message",
+      "description": "Isolated messages inside a team room"
+    },
+    "/teams/{teamId}/ideas/{ideaId}": {
+      "schema": "Idea",
+      "description": "Isolated ideas for a team"
+    },
+    "/teams/{teamId}/ideas/{ideaId}/comments/{commentId}": {
+      "schema": "Comment",
+      "description": "Comments on isolated team ideas"
+    },
+    "/teams/{teamId}/files/{fileId}": {
+      "schema": "SharedFile",
+      "description": "Isolated shared files for a team"
+    },
+    "/teams/{teamId}/announcements/{announcementId}": {
+      "schema": "Announcement",
+      "description": "Isolated announcements for a team"
+    },
+    "/teams/{teamId}/support_tickets/{ticketId}": {
+      "schema": "SupportTicket",
+      "description": "Isolated support tickets for a team"
+    },
     "/rooms/{roomId}": {
       "schema": "Room",
-      "description": "Rooms collection"
+      "description": "Main platform team (blacksea_robotics) rooms collection"
     },
     "/rooms/{roomId}/messages/{messageId}": {
       "schema": "Message",
-      "description": "Room messages subcollection"
+      "description": "Main platform team (blacksea_robotics) room messages subcollection"
     },
     "/ideas/{ideaId}": {
       "schema": "Idea",
-      "description": "Team ideas collection"
+      "description": "Main platform team (blacksea_robotics) ideas collection"
     },
     "/ideas/{ideaId}/comments/{commentId}": {
       "schema": "Comment",
-      "description": "Idea comments subcollection"
+      "description": "Main platform team (blacksea_robotics) idea comments subcollection"
     },
     "/files/{fileId}": {
       "schema": "SharedFile",
-      "description": "Workspace shared files collection"
+      "description": "Main platform team (blacksea_robotics) shared files collection"
     },
     "/announcements/{announcementId}": {
       "schema": "Announcement",
-      "description": "Team announcements collection"
+      "description": "Main platform team (blacksea_robotics) announcements collection"
     },
     "/support_tickets/{ticketId}": {
       "schema": "SupportTicket",
-      "description": "Member help & support tickets collection"
+      "description": "Main platform team (blacksea_robotics) support tickets collection"
     }
   }
 }

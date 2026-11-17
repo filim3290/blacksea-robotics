@@ -13,6 +13,7 @@ import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import com.example.MainActivity
 import com.example.R
+import com.example.model.PLATFORM_MAIN_TEAM_ID
 import com.example.model.TeamNotification
 import com.example.update.AppReleaseInfo
 import com.example.update.AppUpdateManager
@@ -53,6 +54,7 @@ object TeamNotificationDispatcher {
     const val EXTRA_NOTIF_ID = "notif_id"
     const val EXTRA_NOTIF_TYPE = "notif_type"
     const val EXTRA_NOTIF_ROOM_ID = "notif_room_id"
+    const val EXTRA_NOTIF_TEAM_ID = "notif_team_id"
     const val EXTRA_OPEN_UPDATE_DIALOG = "open_update_dialog"
 
     private val dispatchLock = Any()
@@ -63,6 +65,9 @@ object TeamNotificationDispatcher {
     @Volatile
     private var activeChatRoomId: String? = null
 
+    @Volatile
+    private var activeChatTeamId: String = PLATFORM_MAIN_TEAM_ID
+
     fun setAppForeground(inForeground: Boolean) {
         isAppForeground = inForeground
     }
@@ -70,45 +75,66 @@ object TeamNotificationDispatcher {
     fun setAppForeground(context: Context, userId: String?, inForeground: Boolean) {
         isAppForeground = inForeground
         val currentRoom = activeChatRoomId
+        val currentTeam = activeChatTeamId
         if (inForeground && !userId.isNullOrBlank() && !currentRoom.isNullOrBlank()) {
-            clearPendingMessagesForRoom(context, userId, currentRoom)
+            clearPendingMessagesForRoom(context, userId, currentRoom, currentTeam)
         }
     }
 
-    fun setActiveChatRoom(context: Context, userId: String, roomId: String?) {
+    fun setActiveChatRoom(
+        context: Context,
+        userId: String,
+        roomId: String?,
+        teamId: String = PLATFORM_MAIN_TEAM_ID
+    ) {
         val normalized = roomId?.trim()?.lowercase()?.takeIf { it.isNotBlank() }
+        val cleanTeam = normalizeTeamKey(teamId)
         activeChatRoomId = normalized
+        activeChatTeamId = cleanTeam
         if (normalized != null && userId.isNotBlank()) {
-            clearPendingMessagesForRoom(context, userId, normalized)
+            clearPendingMessagesForRoom(context, userId, normalized, cleanTeam)
         }
     }
 
-    fun isActivelyChattingInRoom(roomId: String): Boolean {
+    fun isActivelyChattingInRoom(roomId: String, teamId: String = PLATFORM_MAIN_TEAM_ID): Boolean {
         val active = activeChatRoomId ?: return false
-        return isAppForeground && active == normalizeRoomKey(roomId)
+        return isAppForeground &&
+            active == normalizeRoomKey(roomId) &&
+            activeChatTeamId == normalizeTeamKey(teamId)
     }
 
-    fun getPendingMessageCount(context: Context, userId: String, roomId: String): Int {
+    fun getPendingMessageCount(
+        context: Context,
+        userId: String,
+        roomId: String,
+        teamId: String = PLATFORM_MAIN_TEAM_ID
+    ): Int {
         if (userId.isBlank()) return 0
-        val key = pendingCountKey(userId, normalizeRoomKey(roomId))
+        val key = pendingCountKey(userId, normalizeRoomKey(roomId), normalizeTeamKey(teamId))
         return context.applicationContext
             .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .getInt(key, 0)
     }
 
-    fun clearPendingMessagesForRoom(context: Context, userId: String, roomId: String) {
+    fun clearPendingMessagesForRoom(
+        context: Context,
+        userId: String,
+        roomId: String,
+        teamId: String = PLATFORM_MAIN_TEAM_ID
+    ) {
         if (userId.isBlank()) return
         val roomKey = normalizeRoomKey(roomId)
+        val cleanTeam = normalizeTeamKey(teamId)
         val appCtx = context.applicationContext
         synchronized(dispatchLock) {
             appCtx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
                 .edit()
-                .remove(pendingCountKey(userId, roomKey))
+                .remove(pendingCountKey(userId, roomKey, cleanTeam))
                 .apply()
         }
         try {
             appCtx.getSystemService(NotificationManager::class.java)
-                ?.cancel(roomSummaryNotificationId(roomKey))
+                ?.cancel(roomSummaryNotificationId(roomKey, cleanTeam))
         } catch (_: Exception) {
         }
     }
@@ -459,15 +485,17 @@ object TeamNotificationDispatcher {
                 it.type.equals("message", ignoreCase = true)
             }
 
-            // Suppress chat messages for the exact room the user is currently viewing in foreground
+            // Suppress chat messages for the exact room+team the user is currently viewing in foreground
             val (activeRoomMsgs, inactiveRoomMsgs) = messageNotifs.partition {
-                isActivelyChattingInRoom(normalizeRoomKey(it.targetRoomId))
+                isActivelyChattingInRoom(normalizeRoomKey(it.targetRoomId), it.effectiveTeamId())
             }
             if (activeRoomMsgs.isNotEmpty()) {
                 markIdsAsDispatched(prefs, idsKey, activeRoomMsgs.map { it.id })
-                activeRoomMsgs.map { normalizeRoomKey(it.targetRoomId) }.distinct().forEach { roomKey ->
-                    clearPendingMessagesForRoom(appCtx, userId, roomKey)
-                }
+                activeRoomMsgs.map { normalizeRoomKey(it.targetRoomId) to it.effectiveTeamId() }
+                    .distinct()
+                    .forEach { (roomKey, teamId) ->
+                        clearPendingMessagesForRoom(appCtx, userId, roomKey, teamId)
+                    }
             }
 
             if (inactiveRoomMsgs.isEmpty() && nonMessageNotifs.isEmpty()) {
@@ -486,62 +514,68 @@ object TeamNotificationDispatcher {
             var postedCount = 0
             val dispatchedIdsToRecord = mutableListOf<String>()
 
-        // 1. Dispatch chat notifications immediately per room for inactive rooms
+        // 1. Dispatch chat notifications immediately per (teamId, room) for inactive rooms
         if (inactiveRoomMsgs.isNotEmpty()) {
-            inactiveRoomMsgs.groupBy { normalizeRoomKey(it.targetRoomId) }.forEach { (roomKey, roomMsgs) ->
-                if (isActivelyChattingInRoom(roomKey)) {
-                    clearPendingMessagesForRoom(appCtx, userId, roomKey)
-                    dispatchedIdsToRecord.addAll(roomMsgs.map { it.id })
-                    return@forEach
-                }
-                try {
-                    val countKey = pendingCountKey(userId, roomKey)
-                    val totalUnreadInRoom = synchronized(dispatchLock) {
-                        val updated = prefs.getInt(countKey, 0) + roomMsgs.size
-                        prefs.edit().putInt(countKey, updated).apply()
-                        updated
+            inactiveRoomMsgs.groupBy { normalizeTeamKey(it.effectiveTeamId()) to normalizeRoomKey(it.targetRoomId) }
+                .forEach { (teamAndRoom, roomMsgs) ->
+                    val (teamKey, roomKey) = teamAndRoom
+                    if (isActivelyChattingInRoom(roomKey, teamKey)) {
+                        clearPendingMessagesForRoom(appCtx, userId, roomKey, teamKey)
+                        dispatchedIdsToRecord.addAll(roomMsgs.map { it.id })
+                        return@forEach
                     }
-                    val latestMsg = roomMsgs.last()
-                    val summaryId = roomSummaryNotificationId(roomKey)
-                    val tapIntent = Intent(appCtx, MainActivity::class.java).apply {
-                        flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
-                        putExtra(EXTRA_NOTIF_ID, latestMsg.id)
-                        putExtra(EXTRA_NOTIF_TYPE, "message")
-                        putExtra(EXTRA_NOTIF_ROOM_ID, roomKey)
-                        putExtra(EXTRA_OPEN_UPDATE_DIALOG, false)
-                    }
-                    val pendingIntent = PendingIntent.getActivity(
-                        appCtx,
-                        summaryId,
-                        tapIntent,
-                        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-                    )
-                    val titleText = if (totalUnreadInRoom <= 1) {
-                        latestMsg.title.ifBlank { "Yeni mesaj (${roomDisplayName(roomKey)})" }
-                    } else {
-                        "${roomDisplayName(roomKey)} • $totalUnreadInRoom yeni mesaj"
-                    }
-                    val bodyText = latestMsg.message.ifBlank { latestMsg.title.ifBlank { "Yeni mesaj" } }
-                    val builder = NotificationCompat.Builder(appCtx, CHANNEL_MESSAGES)
-                        .setSmallIcon(R.drawable.ic_notification)
-                        .setContentTitle(titleText)
-                        .setContentText(bodyText)
-                        .setStyle(NotificationCompat.BigTextStyle().bigText(bodyText))
-                        .setNumber(totalUnreadInRoom)
-                        .setPriority(NotificationCompat.PRIORITY_HIGH)
-                        .setDefaults(NotificationCompat.DEFAULT_ALL)
-                        .setContentIntent(pendingIntent)
-                        .setAutoCancel(true)
+                    try {
+                        val countKey = pendingCountKey(userId, roomKey, teamKey)
+                        val totalUnreadInRoom = synchronized(dispatchLock) {
+                            val updated = prefs.getInt(countKey, 0) + roomMsgs.size
+                            prefs.edit().putInt(countKey, updated).apply()
+                            updated
+                        }
+                        val latestMsg = roomMsgs.last()
+                        val summaryId = roomSummaryNotificationId(roomKey, teamKey)
+                        val tapIntent = Intent(appCtx, MainActivity::class.java).apply {
+                            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                            putExtra(EXTRA_NOTIF_ID, latestMsg.id)
+                            putExtra(EXTRA_NOTIF_TYPE, "message")
+                            putExtra(EXTRA_NOTIF_ROOM_ID, roomKey)
+                            putExtra(EXTRA_NOTIF_TEAM_ID, teamKey)
+                            putExtra(EXTRA_OPEN_UPDATE_DIALOG, false)
+                        }
+                        val pendingIntent = PendingIntent.getActivity(
+                            appCtx,
+                            summaryId,
+                            tapIntent,
+                            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                        )
+                        val teamPrefix = if (latestMsg.teamName.isNotBlank() && teamKey != PLATFORM_MAIN_TEAM_ID) {
+                            "[${latestMsg.teamName}] "
+                        } else ""
+                        val titleText = if (totalUnreadInRoom <= 1) {
+                            "$teamPrefix${latestMsg.title.ifBlank { "Yeni mesaj (${roomDisplayName(roomKey)})" }}"
+                        } else {
+                            "$teamPrefix${roomDisplayName(roomKey)} • $totalUnreadInRoom yeni mesaj"
+                        }
+                        val bodyText = latestMsg.message.ifBlank { latestMsg.title.ifBlank { "Yeni mesaj" } }
+                        val builder = NotificationCompat.Builder(appCtx, CHANNEL_MESSAGES)
+                            .setSmallIcon(R.drawable.ic_notification)
+                            .setContentTitle(titleText)
+                            .setContentText(bodyText)
+                            .setStyle(NotificationCompat.BigTextStyle().bigText(bodyText))
+                            .setNumber(totalUnreadInRoom)
+                            .setPriority(NotificationCompat.PRIORITY_HIGH)
+                            .setDefaults(NotificationCompat.DEFAULT_ALL)
+                            .setContentIntent(pendingIntent)
+                            .setAutoCancel(true)
 
-                    notifManager.notify(summaryId, builder.build())
-                    dispatchedIdsToRecord.addAll(roomMsgs.map { it.id })
-                    postedCount++
-                } catch (sec: SecurityException) {
-                    logDebugWarn(TAG, "Missing notification permission for chat notification", sec)
-                } catch (e: Exception) {
-                    logDebugWarn(TAG, "Failed to post chat notification for $roomKey", e)
+                        notifManager.notify(summaryId, builder.build())
+                        dispatchedIdsToRecord.addAll(roomMsgs.map { it.id })
+                        postedCount++
+                    } catch (sec: SecurityException) {
+                        logDebugWarn(TAG, "Missing notification permission for chat notification", sec)
+                    } catch (e: Exception) {
+                        logDebugWarn(TAG, "Failed to post chat notification for $roomKey", e)
+                    }
                 }
-            }
         }
 
         // 2. Dispatch non-chat notifications immediately (capped burst size to avoid OS rate limiting)
@@ -553,11 +587,13 @@ object TeamNotificationDispatcher {
             try {
                 val channelId = resolveChannelId(notif.type)
                 val stableId = (notif.id.hashCode() and 0x7FFFFFFF) + 2000
+                val notifTeamId = notif.effectiveTeamId()
                 val tapIntent = Intent(appCtx, MainActivity::class.java).apply {
                     flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
                     putExtra(EXTRA_NOTIF_ID, notif.id)
                     putExtra(EXTRA_NOTIF_TYPE, notif.type)
                     putExtra(EXTRA_NOTIF_ROOM_ID, notif.targetRoomId)
+                    putExtra(EXTRA_NOTIF_TEAM_ID, notifTeamId)
                     putExtra(EXTRA_OPEN_UPDATE_DIALOG, notif.type.equals("update", ignoreCase = true))
                 }
                 val pendingIntent = PendingIntent.getActivity(
@@ -568,9 +604,18 @@ object TeamNotificationDispatcher {
                 )
 
                 val bodyText = notif.message.ifBlank { notif.title }
+                val teamPrefix = if (
+                    notif.teamName.isNotBlank() &&
+                    notifTeamId != PLATFORM_MAIN_TEAM_ID &&
+                    notifTeamId != "platform" &&
+                    notifTeamId != "platform_admin" &&
+                    !notif.title.contains(notif.teamName, ignoreCase = true)
+                ) {
+                    "[${notif.teamName}] "
+                } else ""
                 val builder = NotificationCompat.Builder(appCtx, channelId)
                     .setSmallIcon(R.drawable.ic_notification)
-                    .setContentTitle(notif.title.ifBlank { "BLACKSEA ROBOTICS" })
+                    .setContentTitle("$teamPrefix${notif.title.ifBlank { "BLACKSEA ROBOTICS" }}")
                     .setContentText(bodyText)
                     .setStyle(NotificationCompat.BigTextStyle().bigText(bodyText))
                     .setPriority(NotificationCompat.PRIORITY_HIGH)
@@ -670,16 +715,32 @@ object TeamNotificationDispatcher {
         }
     }
 
+    private fun normalizeTeamKey(teamId: String?): String {
+        return teamId?.trim()?.takeIf { it.isNotBlank() } ?: PLATFORM_MAIN_TEAM_ID
+    }
+
     private fun normalizeRoomKey(roomId: String?): String {
         return roomId?.trim()?.lowercase()?.takeIf { it.isNotBlank() } ?: "general"
     }
 
-    private fun pendingCountKey(userId: String, roomKey: String): String {
-        return "$PENDING_MSG_PREFIX${userId}_$roomKey"
+    private fun pendingCountKey(
+        userId: String,
+        roomKey: String,
+        teamId: String = PLATFORM_MAIN_TEAM_ID
+    ): String {
+        return if (teamId == PLATFORM_MAIN_TEAM_ID) {
+            "$PENDING_MSG_PREFIX${userId}_$roomKey"
+        } else {
+            "$PENDING_MSG_PREFIX${userId}_${teamId}_$roomKey"
+        }
     }
 
-    private fun roomSummaryNotificationId(roomKey: String): Int {
-        return 3000 + (roomKey.hashCode() and 0x7FFF)
+    private fun roomSummaryNotificationId(
+        roomKey: String,
+        teamId: String = PLATFORM_MAIN_TEAM_ID
+    ): Int {
+        val composite = if (teamId == PLATFORM_MAIN_TEAM_ID) roomKey else "${teamId}_$roomKey"
+        return 3000 + (composite.hashCode() and 0x7FFF)
     }
 
     internal fun roomDisplayName(roomKey: String): String {

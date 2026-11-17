@@ -3,8 +3,6 @@ package com.example.ui.screens
 import android.widget.Toast
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -20,11 +18,12 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Block
@@ -33,7 +32,6 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Restore
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Send
@@ -57,8 +55,8 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.ScrollableTabRow
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Tab
 import androidx.compose.material3.Switch
+import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -76,34 +74,53 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.BlackseaRepository
+import com.example.model.PLATFORM_FOUNDER_EMAIL
+import com.example.model.PLATFORM_MAIN_TEAM_ID
 import com.example.model.PredefinedRoles
 import com.example.model.SupportTicketStatus
 import com.example.model.TeamAnnouncement
+import com.example.model.TeamInfo
+import com.example.model.TeamMembership
 import com.example.model.TeamType
 import com.example.model.UserProfile
 import com.example.model.UserStatus
 import com.example.ui.components.AdminSupportTab
 import com.example.ui.components.RoleBadge
 import com.example.ui.components.TeamBadge
-import com.example.ui.components.UserRolesRow
 import com.example.ui.theme.ElectricBlue
 import com.example.ui.theme.PhoenixAmber
 import com.example.ui.theme.blackseaColors
 import com.example.util.AppMessages
 import com.example.util.sanitizeUserErrorMessage
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
+
+enum class AdminSection(val key: String, val label: String) {
+    MEMBERS("members", "Üyeler"),
+    APPROVALS("approvals", "Onaylar"),
+    BROADCAST("broadcast", "Bildirim Gönder"),
+    ANNOUNCEMENTS("announcements", "Duyurular"),
+    TEAM_INFO("team_info", "Takım Bilgileri"),
+    SUPPORT("support", "Destek"),
+    TEAM_APPLICATIONS("team_applications", "Takım Başvuruları"),
+    PLATFORM_TEAMS("platform_teams", "Platform Takımları"),
+    UPDATES("updates", "Uygulama Güncellemesi")
+}
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun AdminScreen(
     repository: BlackseaRepository,
     currentUserProfile: UserProfile?,
+    activeTeam: TeamInfo = TeamInfo.mainBlackseaTeam(),
+    isPlatformAdmin: Boolean = false,
     updateManager: com.example.update.AppUpdateManager? = null,
-    initialTabIndex: Int = 0,
+    initialSectionKey: String = "members",
     onShowUpdateDialog: (com.example.update.AppReleaseInfo) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
@@ -111,31 +128,60 @@ fun AdminScreen(
     val scope = rememberCoroutineScope()
     val ext = MaterialTheme.blackseaColors
 
-    val allUsers by repository.observeAllUsers().collectAsState(initial = emptyList())
-    val announcements by repository.observeAnnouncements().collectAsState(initial = emptyList())
-    val supportTickets by repository.observeAllSupportTickets().collectAsState(initial = emptyList())
+    val activeTeamId = activeTeam.id.ifBlank { PLATFORM_MAIN_TEAM_ID }
+    val isBsrPlatformAdminSession = (activeTeamId == PLATFORM_MAIN_TEAM_ID && isPlatformAdmin)
+
+    val teamMemberships by repository.observeTeamMemberships(activeTeamId).collectAsState(initial = emptyList())
+    val announcements by repository.observeAnnouncements(activeTeamId).collectAsState(initial = emptyList())
+    val supportTickets by repository.observeAllSupportTickets(activeTeamId).collectAsState(initial = emptyList())
+
+    val pendingTeamApplications by remember(isBsrPlatformAdminSession) {
+        if (isBsrPlatformAdminSession) repository.observePendingTeamApplications() else flowOf(emptyList())
+    }.collectAsState(initial = emptyList())
+    val allPlatformTeams by remember(isBsrPlatformAdminSession) {
+        if (isBsrPlatformAdminSession) repository.observeAllTeamsForPlatformAdmin() else flowOf(emptyList())
+    }.collectAsState(initial = emptyList())
+
     val openSupportCount = remember(supportTickets) {
         supportTickets.count { SupportTicketStatus.normalize(it.status) != SupportTicketStatus.RESOLVED }
     }
 
-    val pendingUsers = allUsers.filter { UserStatus.isPending(it.status) }
-    val approvedUsers = allUsers.filter { UserStatus.isActive(it.status) }
-    val restrictedUsers = allUsers.filter { UserStatus.isRevoked(it.status) || UserStatus.isRejected(it.status) }
+    val pendingMembers = teamMemberships.filter { it.isPending() }
+    val approvedMembers = teamMemberships.filter { it.isActive() }
+    val restrictedMembers = teamMemberships.filter { it.isRevoked() || it.isRejected() }
     val currentUid = currentUserProfile?.userId?.ifBlank { currentUserProfile.id }.orEmpty()
 
-    fun isProtectedUser(user: UserProfile): Boolean {
-        val targetId = user.userId.ifBlank { user.id }
+    fun isProtectedMember(member: TeamMembership): Boolean {
+        val targetId = member.userId
         return (currentUid.isNotBlank() && targetId == currentUid) ||
-            user.email.equals("filim3290@gmail.com", ignoreCase = true)
+            (activeTeamId == PLATFORM_MAIN_TEAM_ID && member.userEmail.equals(PLATFORM_FOUNDER_EMAIL, ignoreCase = true))
     }
 
-    var selectedTabIndex by remember { mutableIntStateOf(initialTabIndex.coerceIn(0, 5)) }
-    val tabs = remember {
-        listOf("Kullanıcılar", "Onaylar", "Bildirim Gönder", "Duyurular", "Uygulama Güncellemesi", "Destek")
+    val sections = remember(isBsrPlatformAdminSession) {
+        buildList {
+            add(AdminSection.MEMBERS)
+            add(AdminSection.APPROVALS)
+            add(AdminSection.BROADCAST)
+            add(AdminSection.ANNOUNCEMENTS)
+            add(AdminSection.TEAM_INFO)
+            add(AdminSection.SUPPORT)
+            if (isBsrPlatformAdminSession) {
+                add(AdminSection.TEAM_APPLICATIONS)
+                add(AdminSection.PLATFORM_TEAMS)
+                add(AdminSection.UPDATES)
+            }
+        }
     }
-    LaunchedEffect(initialTabIndex) {
-        if (initialTabIndex in tabs.indices) {
-            selectedTabIndex = initialTabIndex
+
+    var selectedTabIndex by remember(sections) {
+        mutableIntStateOf(
+            sections.indexOfFirst { it.key == initialSectionKey }.takeIf { it >= 0 } ?: 0
+        )
+    }
+    LaunchedEffect(initialSectionKey, sections) {
+        val idx = sections.indexOfFirst { it.key == initialSectionKey }
+        if (idx >= 0) {
+            selectedTabIndex = idx
         }
     }
 
@@ -145,9 +191,9 @@ fun AdminScreen(
     var isSendingBroadcast by remember { mutableStateOf(false) }
 
     // Edit Member & Account Action Dialog State
-    var memberToEdit by remember { mutableStateOf<UserProfile?>(null) }
-    var userToRevoke by remember { mutableStateOf<UserProfile?>(null) }
-    var userToDelete by remember { mutableStateOf<UserProfile?>(null) }
+    var memberToEdit by remember { mutableStateOf<TeamMembership?>(null) }
+    var memberToRevoke by remember { mutableStateOf<TeamMembership?>(null) }
+    var memberToRemove by remember { mutableStateOf<TeamMembership?>(null) }
     var announcementToDelete by remember { mutableStateOf<TeamAnnouncement?>(null) }
     var isPerformingUserAction by remember { mutableStateOf(false) }
     var showNewAnnouncementDialog by remember { mutableStateOf(false) }
@@ -176,51 +222,61 @@ fun AdminScreen(
                         modifier = Modifier.size(24.dp)
                     )
                     Text(
-                        text = "Yönetici & Rol Paneli",
-                        fontSize = 18.sp,
+                        text = "${activeTeam.name} • Yönetici Paneli",
+                        fontSize = 17.sp,
                         fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onSurface
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
-                    text = "Üyelerin gerçek isimlerini, ekiplerini, özel rollerini, erişim yetkilerini ve hesap durumlarını yönetin.",
+                    text = if (isBsrPlatformAdminSession) {
+                        "Takım üyelerini, duyuruları ve yeni takım oluşturma başvurularını buradan yönetebilirsiniz."
+                    } else {
+                        "${activeTeam.name} üyelerini, alt ekiplerini, duyurularını ve destek taleplerini yönetin."
+                    },
                     fontSize = 12.sp,
                     color = ext.textSecondary
                 )
             }
         }
 
-        // Tabs
+        // Dynamic Tabs
+        val safeSelectedIndex = selectedTabIndex.coerceIn(0, (sections.size - 1).coerceAtLeast(0))
         ScrollableTabRow(
-            selectedTabIndex = selectedTabIndex,
+            selectedTabIndex = safeSelectedIndex,
             edgePadding = 16.dp,
             containerColor = MaterialTheme.colorScheme.surface
         ) {
-            tabs.forEachIndexed { index, title ->
+            sections.forEachIndexed { index, section ->
                 Tab(
-                    selected = selectedTabIndex == index,
+                    selected = safeSelectedIndex == index,
                     onClick = { selectedTabIndex = index },
                     text = {
-                        val count = when (index) {
-                            0 -> " (${approvedUsers.size})"
-                            1 -> if (pendingUsers.isNotEmpty()) " (${pendingUsers.size})" else ""
-                            5 -> if (openSupportCount > 0) " ($openSupportCount)" else ""
+                        val badge = when (section) {
+                            AdminSection.MEMBERS -> " (${approvedMembers.size})"
+                            AdminSection.APPROVALS -> if (pendingMembers.isNotEmpty()) " (${pendingMembers.size})" else ""
+                            AdminSection.SUPPORT -> if (openSupportCount > 0) " ($openSupportCount)" else ""
+                            AdminSection.TEAM_APPLICATIONS -> if (pendingTeamApplications.isNotEmpty()) " (${pendingTeamApplications.size})" else ""
+                            AdminSection.PLATFORM_TEAMS -> " (${allPlatformTeams.size})"
                             else -> ""
                         }
                         Text(
-                            text = "$title$count",
-                            fontWeight = if (selectedTabIndex == index) FontWeight.Bold else FontWeight.Normal,
-                            color = if (selectedTabIndex == index) ext.accentBlue else ext.textMuted
+                            text = "${section.label}$badge",
+                            fontWeight = if (safeSelectedIndex == index) FontWeight.Bold else FontWeight.Normal,
+                            color = if (safeSelectedIndex == index) ext.accentBlue else ext.textMuted
                         )
                     }
                 )
             }
         }
 
-        when (selectedTabIndex) {
-            0 -> {
-                // Approved & Restricted Members List
+        val currentSection = sections.getOrElse(safeSelectedIndex) { AdminSection.MEMBERS }
+
+        when (currentSection) {
+            AdminSection.MEMBERS -> {
                 LazyColumn(
                     modifier = Modifier
                         .fillMaxSize()
@@ -228,13 +284,24 @@ fun AdminScreen(
                     contentPadding = PaddingValues(vertical = 16.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
+                    if (approvedMembers.isEmpty()) {
+                        item {
+                            Box(
+                                modifier = Modifier.fillMaxWidth().padding(top = 36.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text("Bu takımda henüz onaylı üye bulunmuyor.", color = ext.textMuted, fontSize = 13.sp)
+                            }
+                        }
+                    }
+
                     itemsIndexed(
-                        items = approvedUsers,
-                        key = { index, u -> "active_${u.userId.ifBlank { u.id }}_$index" }
-                    ) { _, user ->
-                        val protected = isProtectedUser(user)
-                        val targetUid = user.userId.ifBlank { user.id }
-                        val memberRoles = user.roles.ifEmpty { listOf(user.role) }.filter { it.isNotBlank() }.distinct()
+                        items = approvedMembers,
+                        key = { index, m -> "active_${m.userId}_$index" }
+                    ) { _, member ->
+                        val protected = isProtectedMember(member)
+                        val memberRoles = member.roles.ifEmpty { listOf(member.role) }.filter { it.isNotBlank() }.distinct()
+                        val displayName = member.userName.ifBlank { member.userEmail.substringBefore("@").ifBlank { "Takım Üyesi" } }
                         Card(
                             modifier = Modifier.fillMaxWidth(),
                             shape = RoundedCornerShape(14.dp),
@@ -260,7 +327,7 @@ fun AdminScreen(
                                     ) {
                                         Box(contentAlignment = Alignment.Center) {
                                             Text(
-                                                text = user.getFullName().take(1).uppercase(),
+                                                text = displayName.take(1).uppercase(),
                                                 fontWeight = FontWeight.Bold,
                                                 color = ext.accentBlue,
                                                 fontSize = 16.sp
@@ -270,7 +337,7 @@ fun AdminScreen(
 
                                     Column(modifier = Modifier.weight(1f)) {
                                         Text(
-                                            text = user.getFullName(),
+                                            text = displayName,
                                             fontWeight = FontWeight.Bold,
                                             fontSize = 15.sp,
                                             color = MaterialTheme.colorScheme.onSurface,
@@ -278,7 +345,7 @@ fun AdminScreen(
                                             overflow = TextOverflow.Ellipsis
                                         )
                                         Text(
-                                            text = "${user.email} • @${user.username.ifBlank { "bsr_uye" }}",
+                                            text = member.userEmail,
                                             fontSize = 11.sp,
                                             color = ext.textMuted,
                                             maxLines = 1,
@@ -305,7 +372,7 @@ fun AdminScreen(
                                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                                     verticalArrangement = Arrangement.spacedBy(6.dp)
                                 ) {
-                                    TeamBadge(teamName = user.team)
+                                    TeamBadge(teamName = member.subTeam.ifBlank { TeamType.GENERAL.displayName })
                                     memberRoles.forEach { role ->
                                         RoleBadge(role = role)
                                     }
@@ -317,7 +384,7 @@ fun AdminScreen(
                                     verticalArrangement = Arrangement.spacedBy(8.dp)
                                 ) {
                                     OutlinedButton(
-                                        onClick = { memberToEdit = user },
+                                        onClick = { memberToEdit = member },
                                         shape = RoundedCornerShape(8.dp),
                                         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
                                         modifier = Modifier.heightIn(min = 38.dp)
@@ -329,61 +396,46 @@ fun AdminScreen(
                                             modifier = Modifier.size(15.dp)
                                         )
                                         Spacer(modifier = Modifier.width(5.dp))
-                                        Text(
-                                            text = "Düzenle",
-                                            fontSize = 12.sp,
-                                            fontWeight = FontWeight.SemiBold,
-                                            color = ext.accentBlue
-                                        )
+                                        Text("Düzenle", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = ext.accentBlue)
                                     }
 
                                     if (!protected) {
                                         OutlinedButton(
-                                            onClick = { userToRevoke = user },
+                                            onClick = { memberToRevoke = member },
                                             shape = RoundedCornerShape(8.dp),
                                             border = BorderStroke(1.dp, ext.amberText.copy(alpha = 0.45f)),
                                             contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
                                             modifier = Modifier
                                                 .heightIn(min = 38.dp)
-                                                .testTag("revoke_user_$targetUid")
+                                                .testTag("revoke_user_${member.userId}")
                                         ) {
                                             Icon(
                                                 imageVector = Icons.Default.Block,
-                                                contentDescription = "Erişimi Kaldır",
+                                                contentDescription = "Takım Erişimini Kaldır",
                                                 tint = ext.amberText,
                                                 modifier = Modifier.size(15.dp)
                                             )
                                             Spacer(modifier = Modifier.width(5.dp))
-                                            Text(
-                                                text = "Erişimi Kaldır",
-                                                fontSize = 12.sp,
-                                                fontWeight = FontWeight.SemiBold,
-                                                color = ext.amberText
-                                            )
+                                            Text("Askıya Al", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = ext.amberText)
                                         }
 
                                         OutlinedButton(
-                                            onClick = { userToDelete = user },
+                                            onClick = { memberToRemove = member },
                                             shape = RoundedCornerShape(8.dp),
                                             border = BorderStroke(1.dp, ext.dangerText.copy(alpha = 0.45f)),
                                             contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
                                             modifier = Modifier
                                                 .heightIn(min = 38.dp)
-                                                .testTag("delete_user_$targetUid")
+                                                .testTag("delete_user_${member.userId}")
                                         ) {
                                             Icon(
                                                 imageVector = Icons.Default.Delete,
-                                                contentDescription = "Kullanıcıyı Sil",
+                                                contentDescription = "Takımdan Çıkar",
                                                 tint = ext.dangerText,
                                                 modifier = Modifier.size(15.dp)
                                             )
                                             Spacer(modifier = Modifier.width(5.dp))
-                                            Text(
-                                                text = "Sil",
-                                                fontSize = 12.sp,
-                                                fontWeight = FontWeight.SemiBold,
-                                                color = ext.dangerText
-                                            )
+                                            Text("Çıkar", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = ext.dangerText)
                                         }
                                     }
                                 }
@@ -391,11 +443,11 @@ fun AdminScreen(
                         }
                     }
 
-                    if (restrictedUsers.isNotEmpty()) {
+                    if (restrictedMembers.isNotEmpty()) {
                         item {
                             Spacer(modifier = Modifier.height(8.dp))
                             Text(
-                                text = "Erişimi Kaldırılan / Reddedilen Kullanıcılar (${restrictedUsers.size})",
+                                text = "Erişimi Askıya Alınan / Reddedilenler (${restrictedMembers.size})",
                                 fontSize = 13.sp,
                                 fontWeight = FontWeight.Bold,
                                 color = ext.dangerText,
@@ -404,10 +456,11 @@ fun AdminScreen(
                         }
 
                         itemsIndexed(
-                            items = restrictedUsers,
-                            key = { index, u -> "restricted_${u.userId.ifBlank { u.id }}_$index" }
-                        ) { _, user ->
-                            val isRevoked = UserStatus.isRevoked(user.status)
+                            items = restrictedMembers,
+                            key = { index, m -> "restricted_${m.userId}_$index" }
+                        ) { _, member ->
+                            val isRevoked = member.isRevoked()
+                            val displayName = member.userName.ifBlank { member.userEmail.substringBefore("@") }
                             Card(
                                 modifier = Modifier.fillMaxWidth(),
                                 shape = RoundedCornerShape(12.dp),
@@ -422,24 +475,12 @@ fun AdminScreen(
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
                                         Column(modifier = Modifier.weight(1f)) {
-                                            Text(
-                                                text = user.getFullName(),
-                                                fontWeight = FontWeight.Bold,
-                                                fontSize = 15.sp,
-                                                color = MaterialTheme.colorScheme.onSurface
-                                            )
-                                            Text(
-                                                text = "${user.email} • @${user.username.ifBlank { "bsr_uye" }}",
-                                                fontSize = 11.sp,
-                                                color = ext.textMuted
-                                            )
+                                            Text(text = displayName, fontWeight = FontWeight.Bold, fontSize = 15.sp, color = MaterialTheme.colorScheme.onSurface)
+                                            Text(text = member.userEmail, fontSize = 11.sp, color = ext.textMuted)
                                         }
-                                        Surface(
-                                            shape = RoundedCornerShape(6.dp),
-                                            color = ext.dangerContainer
-                                        ) {
+                                        Surface(shape = RoundedCornerShape(6.dp), color = ext.dangerContainer) {
                                             Text(
-                                                text = if (isRevoked) "Erişim Kaldırıldı" else "Reddedildi",
+                                                text = if (isRevoked) "Askıda" else "Reddedildi",
                                                 fontSize = 10.sp,
                                                 fontWeight = FontWeight.Bold,
                                                 color = ext.dangerText,
@@ -455,16 +496,8 @@ fun AdminScreen(
                                         horizontalArrangement = Arrangement.End,
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
-                                        OutlinedButton(
-                                            onClick = { userToDelete = user },
-                                            shape = RoundedCornerShape(8.dp)
-                                        ) {
-                                            Icon(
-                                                imageVector = Icons.Default.Delete,
-                                                contentDescription = null,
-                                                tint = ext.dangerText,
-                                                modifier = Modifier.size(16.dp)
-                                            )
+                                        OutlinedButton(onClick = { memberToRemove = member }, shape = RoundedCornerShape(8.dp)) {
+                                            Icon(imageVector = Icons.Default.Delete, contentDescription = null, tint = ext.dangerText, modifier = Modifier.size(16.dp))
                                             Spacer(modifier = Modifier.width(4.dp))
                                             Text("Sil", color = ext.dangerText, fontSize = 12.sp)
                                         }
@@ -474,26 +507,22 @@ fun AdminScreen(
                                         Button(
                                             onClick = {
                                                 scope.launch {
-                                                    try {
-                                                        repository.updateUserRolesAndTeam(
-                                                            targetUserId = user.userId.ifBlank { user.id },
-                                                            team = user.team,
-                                                            roles = user.roles.ifEmpty { listOf(PredefinedRoles.getDefaultTeamRole(user.team)) },
-                                                            status = UserStatus.APPROVED.value
-                                                        )
-                                                        Toast.makeText(context, "${user.getFullName()} erişimi geri verildi.", Toast.LENGTH_SHORT).show()
-                                                    } catch (ce: CancellationException) {
-                                                        throw ce
-                                                    } catch (e: Exception) {
-                                                        Toast.makeText(context, sanitizeUserErrorMessage(e), Toast.LENGTH_SHORT).show()
+                                                    val res = repository.updateMembershipRolesAndStatus(
+                                                        team = activeTeam,
+                                                        targetUserId = member.userId,
+                                                        subTeam = member.subTeam,
+                                                        roles = member.roles.ifEmpty { listOf(PredefinedRoles.getDefaultTeamRole(member.subTeam)) },
+                                                        status = UserStatus.ACTIVE.value
+                                                    )
+                                                    if (res.isSuccess) {
+                                                        Toast.makeText(context, "$displayName erişimi geri verildi.", Toast.LENGTH_SHORT).show()
+                                                    } else {
+                                                        Toast.makeText(context, sanitizeUserErrorMessage(res.exceptionOrNull()), Toast.LENGTH_SHORT).show()
                                                     }
                                                 }
                                             },
                                             shape = RoundedCornerShape(8.dp),
-                                            colors = ButtonDefaults.buttonColors(
-                                                containerColor = ext.emeraldSolid,
-                                                contentColor = Color.White
-                                            )
+                                            colors = ButtonDefaults.buttonColors(containerColor = ext.emeraldSolid, contentColor = Color.White)
                                         ) {
                                             Icon(imageVector = Icons.Default.Restore, contentDescription = null, modifier = Modifier.size(16.dp))
                                             Spacer(modifier = Modifier.width(4.dp))
@@ -507,8 +536,7 @@ fun AdminScreen(
                 }
             }
 
-            1 -> {
-                // Pending Approvals
+            AdminSection.APPROVALS -> {
                 LazyColumn(
                     modifier = Modifier
                         .fillMaxSize()
@@ -516,16 +544,14 @@ fun AdminScreen(
                     contentPadding = PaddingValues(vertical = 16.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    if (pendingUsers.isEmpty()) {
+                    if (pendingMembers.isEmpty()) {
                         item {
                             Box(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(top = 40.dp),
+                                modifier = Modifier.fillMaxWidth().padding(top = 40.dp),
                                 contentAlignment = Alignment.Center
                             ) {
                                 Text(
-                                    text = "Onay bekleyen yeni üye kaydı bulunmuyor.",
+                                    text = "${activeTeam.name} için onay bekleyen katılma başvurusu bulunmuyor.",
                                     color = ext.textMuted,
                                     fontSize = 14.sp
                                 )
@@ -534,9 +560,10 @@ fun AdminScreen(
                     }
 
                     itemsIndexed(
-                        items = pendingUsers,
-                        key = { index, u -> "${u.userId.ifBlank { u.id }}_$index" }
-                    ) { _, user ->
+                        items = pendingMembers,
+                        key = { index, m -> "pending_${m.userId}_$index" }
+                    ) { _, member ->
+                        val displayName = member.userName.ifBlank { member.userEmail.substringBefore("@") }
                         Card(
                             modifier = Modifier.fillMaxWidth(),
                             shape = RoundedCornerShape(12.dp),
@@ -555,7 +582,7 @@ fun AdminScreen(
                                 ) {
                                     Column(modifier = Modifier.weight(1f)) {
                                         Text(
-                                            text = user.getFullName(),
+                                            text = displayName,
                                             fontWeight = FontWeight.Bold,
                                             fontSize = 15.sp,
                                             color = MaterialTheme.colorScheme.onSurface,
@@ -563,7 +590,7 @@ fun AdminScreen(
                                             overflow = TextOverflow.Ellipsis
                                         )
                                         Text(
-                                            text = "${user.email} • @${user.username.ifBlank { "bsr_uye" }}",
+                                            text = member.userEmail,
                                             fontSize = 12.sp,
                                             color = ext.textMuted,
                                             maxLines = 1,
@@ -587,9 +614,24 @@ fun AdminScreen(
                                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                                     verticalArrangement = Arrangement.spacedBy(6.dp)
                                 ) {
-                                    TeamBadge(teamName = user.team)
-                                    user.roles.filter { it.isNotBlank() }.distinct().forEach { role ->
+                                    TeamBadge(teamName = member.subTeam.ifBlank { TeamType.GENERAL.displayName })
+                                    member.roles.filter { it.isNotBlank() }.distinct().forEach { role ->
                                         RoleBadge(role = role)
+                                    }
+                                }
+
+                                if (member.joinNote.isNotBlank()) {
+                                    Surface(
+                                        shape = RoundedCornerShape(8.dp),
+                                        color = MaterialTheme.colorScheme.surfaceVariant,
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Text(
+                                            text = "Başvuru Notu: ${member.joinNote}",
+                                            fontSize = 12.sp,
+                                            color = ext.textSecondary,
+                                            modifier = Modifier.padding(10.dp)
+                                        )
                                     }
                                 }
 
@@ -598,12 +640,8 @@ fun AdminScreen(
                                     horizontalArrangement = Arrangement.End,
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    IconButton(onClick = { userToDelete = user }) {
-                                        Icon(
-                                            imageVector = Icons.Default.Delete,
-                                            contentDescription = "Başvuruyu Sil",
-                                            tint = ext.dangerText
-                                        )
+                                    IconButton(onClick = { memberToRemove = member }) {
+                                        Icon(imageVector = Icons.Default.Delete, contentDescription = "Başvuruyu Sil", tint = ext.dangerText)
                                     }
 
                                     Spacer(modifier = Modifier.width(4.dp))
@@ -611,18 +649,17 @@ fun AdminScreen(
                                     OutlinedButton(
                                         onClick = {
                                             scope.launch {
-                                                try {
-                                                    repository.updateUserRolesAndTeam(
-                                                        targetUserId = user.userId.ifBlank { user.id },
-                                                        team = user.team,
-                                                        roles = user.roles,
-                                                        status = UserStatus.REJECTED.value
-                                                    )
-                                                    Toast.makeText(context, "Kullanıcı başvurusu reddedildi", Toast.LENGTH_SHORT).show()
-                                                } catch (ce: CancellationException) {
-                                                    throw ce
-                                                } catch (e: Exception) {
-                                                    Toast.makeText(context, sanitizeUserErrorMessage(e), Toast.LENGTH_SHORT).show()
+                                                val res = repository.updateMembershipRolesAndStatus(
+                                                    team = activeTeam,
+                                                    targetUserId = member.userId,
+                                                    subTeam = member.subTeam,
+                                                    roles = member.roles,
+                                                    status = UserStatus.REJECTED.value
+                                                )
+                                                if (res.isSuccess) {
+                                                    Toast.makeText(context, "Katılma başvurusu reddedildi", Toast.LENGTH_SHORT).show()
+                                                } else {
+                                                    Toast.makeText(context, sanitizeUserErrorMessage(res.exceptionOrNull()), Toast.LENGTH_SHORT).show()
                                                 }
                                             }
                                         },
@@ -638,26 +675,22 @@ fun AdminScreen(
                                     Button(
                                         onClick = {
                                             scope.launch {
-                                                try {
-                                                    repository.updateUserRolesAndTeam(
-                                                        targetUserId = user.userId.ifBlank { user.id },
-                                                        team = user.team,
-                                                        roles = user.roles.ifEmpty { listOf(PredefinedRoles.getDefaultTeamRole(user.team)) },
-                                                        status = UserStatus.APPROVED.value
-                                                    )
-                                                    Toast.makeText(context, "Kullanıcı onaylandı!", Toast.LENGTH_SHORT).show()
-                                                } catch (ce: CancellationException) {
-                                                    throw ce
-                                                } catch (e: Exception) {
-                                                    Toast.makeText(context, sanitizeUserErrorMessage(e), Toast.LENGTH_SHORT).show()
+                                                val res = repository.updateMembershipRolesAndStatus(
+                                                    team = activeTeam,
+                                                    targetUserId = member.userId,
+                                                    subTeam = member.subTeam,
+                                                    roles = member.roles.ifEmpty { listOf(PredefinedRoles.getDefaultTeamRole(member.subTeam)) },
+                                                    status = UserStatus.ACTIVE.value
+                                                )
+                                                if (res.isSuccess) {
+                                                    Toast.makeText(context, "$displayName takıma kabul edildi!", Toast.LENGTH_SHORT).show()
+                                                } else {
+                                                    Toast.makeText(context, sanitizeUserErrorMessage(res.exceptionOrNull()), Toast.LENGTH_SHORT).show()
                                                 }
                                             }
                                         },
                                         shape = RoundedCornerShape(8.dp),
-                                        colors = ButtonDefaults.buttonColors(
-                                            containerColor = ext.accentBlueSolid,
-                                            contentColor = Color.White
-                                        )
+                                        colors = ButtonDefaults.buttonColors(containerColor = ext.accentBlueSolid, contentColor = Color.White)
                                     ) {
                                         Icon(imageVector = Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp))
                                         Spacer(modifier = Modifier.width(4.dp))
@@ -670,8 +703,7 @@ fun AdminScreen(
                 }
             }
 
-            2 -> {
-                // Send Broadcast Notification to Entire Team
+            AdminSection.BROADCAST -> {
                 LazyColumn(
                     modifier = Modifier
                         .fillMaxSize()
@@ -711,13 +743,13 @@ fun AdminScreen(
                                     }
                                     Column {
                                         Text(
-                                            text = "Herkese Bildirim Gönder",
-                                            fontSize = 16.sp,
+                                            text = "${activeTeam.name} Üyelerine Bildirim Gönder",
+                                            fontSize = 15.sp,
                                             fontWeight = FontWeight.Bold,
                                             color = MaterialTheme.colorScheme.onSurface
                                         )
                                         Text(
-                                            text = "Tüm takım üyelerine anlık bildirim ve sistem duyurusu iletilir.",
+                                            text = "Yalnızca ${activeTeam.name} üyelerine anlık bildirim ve takım duyurusu iletilir.",
                                             fontSize = 12.sp,
                                             color = ext.textSecondary
                                         )
@@ -738,10 +770,8 @@ fun AdminScreen(
                                     value = broadcastMessage,
                                     onValueChange = { broadcastMessage = it },
                                     label = { Text("Bildirim Metni / Açıklama") },
-                                    placeholder = { Text("Örn: Yarın saat 15:30'da tüm ekipler robot test sahasında toplanacaktır.") },
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .height(130.dp),
+                                    placeholder = { Text("Örn: Yarın saat 15:30'da tüm ekipler test sahasında toplanacaktır.") },
+                                    modifier = Modifier.fillMaxWidth().height(130.dp),
                                     shape = RoundedCornerShape(10.dp),
                                     maxLines = 5
                                 )
@@ -758,11 +788,13 @@ fun AdminScreen(
                                                 repository.sendBroadcastNotification(
                                                     title = broadcastTitle.trim(),
                                                     message = broadcastMessage.trim(),
-                                                    senderName = currentUserProfile?.getFullName() ?: "Yönetici"
+                                                    senderName = currentUserProfile?.getFullName() ?: "Yönetici",
+                                                    teamId = activeTeamId,
+                                                    teamName = activeTeam.name
                                                 )
                                                 broadcastTitle = ""
                                                 broadcastMessage = ""
-                                                Toast.makeText(context, "Bildirim tüm takıma başarıyla gönderildi!", Toast.LENGTH_LONG).show()
+                                                Toast.makeText(context, "Bildirim ${activeTeam.name} üyelerine gönderildi!", Toast.LENGTH_LONG).show()
                                             } catch (ce: CancellationException) {
                                                 throw ce
                                             } catch (e: Exception) {
@@ -772,26 +804,17 @@ fun AdminScreen(
                                             }
                                         }
                                     },
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .height(48.dp),
-                                    colors = ButtonDefaults.buttonColors(
-                                        containerColor = ext.accentBlueSolid,
-                                        contentColor = Color.White
-                                    ),
+                                    modifier = Modifier.fillMaxWidth().height(48.dp),
+                                    colors = ButtonDefaults.buttonColors(containerColor = ext.accentBlueSolid, contentColor = Color.White),
                                     shape = RoundedCornerShape(10.dp),
                                     enabled = !isSendingBroadcast
                                 ) {
                                     if (isSendingBroadcast) {
-                                        CircularProgressIndicator(
-                                            color = Color.White,
-                                            modifier = Modifier.size(20.dp),
-                                            strokeWidth = 2.dp
-                                        )
+                                        CircularProgressIndicator(color = Color.White, modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
                                     } else {
                                         Icon(imageVector = Icons.Default.Send, contentDescription = null, modifier = Modifier.size(18.dp))
                                         Spacer(modifier = Modifier.width(8.dp))
-                                        Text("Tüm Takıma Bildirimi Gönder", fontWeight = FontWeight.Bold)
+                                        Text("Takıma Bildirimi Gönder", fontWeight = FontWeight.Bold)
                                     }
                                 }
                             }
@@ -800,8 +823,7 @@ fun AdminScreen(
                 }
             }
 
-            3 -> {
-                // Announcements Section
+            AdminSection.ANNOUNCEMENTS -> {
                 Column(
                     modifier = Modifier
                         .fillMaxSize()
@@ -811,10 +833,7 @@ fun AdminScreen(
                     Button(
                         onClick = { showNewAnnouncementDialog = true },
                         modifier = Modifier.fillMaxWidth(),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = ext.accentBlueSolid,
-                            contentColor = Color.White
-                        ),
+                        colors = ButtonDefaults.buttonColors(containerColor = ext.accentBlueSolid, contentColor = Color.White),
                         shape = RoundedCornerShape(10.dp)
                     ) {
                         Icon(imageVector = Icons.Default.Campaign, contentDescription = null)
@@ -845,9 +864,7 @@ fun AdminScreen(
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
                                         Text(text = announcement.title, fontWeight = FontWeight.Bold, fontSize = 15.sp, color = MaterialTheme.colorScheme.onSurface)
-                                        IconButton(
-                                            onClick = { announcementToDelete = announcement }
-                                        ) {
+                                        IconButton(onClick = { announcementToDelete = announcement }) {
                                             Icon(imageVector = Icons.Default.Delete, contentDescription = "Duyuruyu Sil", tint = ext.dangerText)
                                         }
                                     }
@@ -860,8 +877,37 @@ fun AdminScreen(
                 }
             }
 
-            4 -> {
-                // Tab 4: Uygulama Güncellemesi (Clean release management)
+            AdminSection.TEAM_INFO -> {
+                TeamInfoEditorTab(
+                    activeTeam = activeTeam,
+                    repository = repository
+                )
+            }
+
+            AdminSection.SUPPORT -> {
+                AdminSupportTab(
+                    tickets = supportTickets,
+                    repository = repository,
+                    currentUserProfile = currentUserProfile,
+                    teamId = activeTeamId,
+                    teamName = activeTeam.name
+                )
+            }
+
+            AdminSection.TEAM_APPLICATIONS -> {
+                TeamApplicationsTab(
+                    pendingApplications = pendingTeamApplications,
+                    repository = repository
+                )
+            }
+
+            AdminSection.PLATFORM_TEAMS -> {
+                PlatformTeamsOverviewTab(
+                    teams = allPlatformTeams
+                )
+            }
+
+            AdminSection.UPDATES -> {
                 val mgr = updateManager ?: remember { com.example.update.AppUpdateManager(context) }
                 var latestRelease by remember { mutableStateOf<com.example.update.AppReleaseInfo?>(null) }
                 var isChecking by remember { mutableStateOf(false) }
@@ -916,10 +962,7 @@ fun AdminScreen(
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Text("Mevcut Uygulama Sürümü", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurface)
-                                    Surface(
-                                        shape = RoundedCornerShape(6.dp),
-                                        color = ext.accentBlueContainer
-                                    ) {
+                                    Surface(shape = RoundedCornerShape(6.dp), color = ext.accentBlueContainer) {
                                         Text(
                                             text = "v${mgr.getCurrentVersionName()}",
                                             color = ext.accentBlue,
@@ -983,17 +1026,10 @@ fun AdminScreen(
                                     enabled = !isChecking,
                                     modifier = Modifier.fillMaxWidth().height(44.dp),
                                     shape = RoundedCornerShape(10.dp),
-                                    colors = ButtonDefaults.buttonColors(
-                                        containerColor = ext.accentBlueSolid,
-                                        contentColor = Color.White
-                                    )
+                                    colors = ButtonDefaults.buttonColors(containerColor = ext.accentBlueSolid, contentColor = Color.White)
                                 ) {
                                     if (isChecking) {
-                                        CircularProgressIndicator(
-                                            modifier = Modifier.size(18.dp),
-                                            color = Color.White,
-                                            strokeWidth = 2.dp
-                                        )
+                                        CircularProgressIndicator(modifier = Modifier.size(18.dp), color = Color.White, strokeWidth = 2.dp)
                                     } else {
                                         Text("Güncellemeleri Kontrol Et", fontWeight = FontWeight.Bold, fontSize = 13.sp)
                                     }
@@ -1003,10 +1039,7 @@ fun AdminScreen(
                                     onClick = { showBroadcastUpdateDialog = true },
                                     modifier = Modifier.fillMaxWidth().height(42.dp),
                                     shape = RoundedCornerShape(10.dp),
-                                    colors = ButtonDefaults.buttonColors(
-                                        containerColor = PhoenixAmber,
-                                        contentColor = Color.Black
-                                    )
+                                    colors = ButtonDefaults.buttonColors(containerColor = PhoenixAmber, contentColor = Color.Black)
                                 ) {
                                     Text("Yeni Sürüm Duyurusu Gönder", fontSize = 12.sp, fontWeight = FontWeight.Bold)
                                 }
@@ -1056,12 +1089,7 @@ fun AdminScreen(
                                         border = BorderStroke(1.dp, ext.cardBorder),
                                         modifier = Modifier.fillMaxWidth()
                                     ) {
-                                        Text(
-                                            text = rel.changelog,
-                                            fontSize = 12.sp,
-                                            color = ext.textSecondary,
-                                            modifier = Modifier.padding(10.dp)
-                                        )
+                                        Text(text = rel.changelog, fontSize = 12.sp, color = ext.textSecondary, modifier = Modifier.padding(10.dp))
                                     }
 
                                     Spacer(modifier = Modifier.height(4.dp))
@@ -1070,10 +1098,7 @@ fun AdminScreen(
                                         onClick = { onShowUpdateDialog(rel) },
                                         modifier = Modifier.fillMaxWidth().height(42.dp),
                                         shape = RoundedCornerShape(10.dp),
-                                        colors = ButtonDefaults.buttonColors(
-                                            containerColor = ext.emeraldSolid,
-                                            contentColor = Color.White
-                                        )
+                                        colors = ButtonDefaults.buttonColors(containerColor = ext.emeraldSolid, contentColor = Color.White)
                                     ) {
                                         Text("Güncelle", fontWeight = FontWeight.Bold)
                                     }
@@ -1083,38 +1108,29 @@ fun AdminScreen(
                     }
                 }
             }
-
-            5 -> {
-                AdminSupportTab(
-                    tickets = supportTickets,
-                    repository = repository,
-                    currentUserProfile = currentUserProfile
-                )
-            }
         }
     }
 
     // Comprehensive Member & Role Management Dialog
     if (memberToEdit != null) {
-        val user = memberToEdit!!
+        val member = memberToEdit!!
         EditMemberRolesDialog(
-            user = user,
+            member = member,
             onDismiss = { memberToEdit = null },
-            onSave = { newTeam, updatedRoles ->
+            onSave = { newSubTeam, updatedRoles ->
                 scope.launch {
-                    try {
-                        repository.updateUserRolesAndTeam(
-                            targetUserId = user.userId.ifBlank { user.id },
-                            team = newTeam,
-                            roles = updatedRoles,
-                            status = user.status
-                        )
+                    val res = repository.updateMembershipRolesAndStatus(
+                        team = activeTeam,
+                        targetUserId = member.userId,
+                        subTeam = newSubTeam,
+                        roles = updatedRoles,
+                        status = member.status
+                    )
+                    if (res.isSuccess) {
                         memberToEdit = null
-                        Toast.makeText(context, "${user.getFullName()} güncellendi", Toast.LENGTH_SHORT).show()
-                    } catch (ce: CancellationException) {
-                        throw ce
-                    } catch (e: Exception) {
-                        Toast.makeText(context, sanitizeUserErrorMessage(e), Toast.LENGTH_SHORT).show()
+                        Toast.makeText(context, "${member.userName.ifBlank { "Üye" }} güncellendi", Toast.LENGTH_SHORT).show()
+                    } else {
+                        Toast.makeText(context, sanitizeUserErrorMessage(res.exceptionOrNull()), Toast.LENGTH_SHORT).show()
                     }
                 }
             }
@@ -1132,7 +1148,9 @@ fun AdminScreen(
                             title = title,
                             content = content,
                             authorName = currentUserProfile?.getFullName() ?: "Yönetici",
-                            isPinned = isPinned
+                            isPinned = isPinned,
+                            teamId = activeTeamId,
+                            teamName = activeTeam.name
                         )
                         showNewAnnouncementDialog = false
                         Toast.makeText(context, "Duyuru yayınlandı!", Toast.LENGTH_SHORT).show()
@@ -1146,28 +1164,26 @@ fun AdminScreen(
         )
     }
 
-    // Broadcast Update Dialog
+    // Broadcast Update Dialog (Platform Admin Only)
     if (showBroadcastUpdateDialog) {
         val mgr = updateManager ?: remember { com.example.update.AppUpdateManager(context) }
         val currentVerName = remember { mgr.getCurrentVersionName() }
         val nextVerCode = remember { mgr.getCurrentVersionCode() + 1 }
         var vName by remember { mutableStateOf(currentVerName) }
         var vTitle by remember { mutableStateOf("Blacksea Robotics v$currentVerName Yayında") }
-        var vChangelog by remember { mutableStateOf("• Görsel ve video önizleme sistemi eklendi\n• Otomatik uygulama güncelleme sistemi geliştirildi\n• Kararlılık iyileştirmeleri") }
+        var vChangelog by remember { mutableStateOf("• Çoklu takım platformu desteği eklendi\n• Otomatik uygulama güncelleme sistemi geliştirildi\n• Kararlılık iyileştirmeleri") }
         var isForce by remember { mutableStateOf(false) }
         var isBroadcasting by remember { mutableStateOf(false) }
 
         AlertDialog(
             onDismissRequest = { if (!isBroadcasting) showBroadcastUpdateDialog = false },
-            title = {
-                Text("Yeni Sürüm Duyurusu Gönder", fontWeight = FontWeight.Bold, fontSize = 16.sp)
-            },
+            title = { Text("Yeni Sürüm Duyurusu Gönder", fontWeight = FontWeight.Bold, fontSize = 16.sp) },
             text = {
                 Column(
                     modifier = Modifier.verticalScroll(rememberScrollState()),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    Text("Tüm takım üyelerine yeni sürüm bildirimini ve değişiklik notlarını iletir.", fontSize = 12.sp, color = ext.textSecondary)
+                    Text("Tüm platform üyelerine yeni sürüm bildirimini ve değişiklik notlarını iletir.", fontSize = 12.sp, color = ext.textSecondary)
 
                     OutlinedTextField(
                         value = vName,
@@ -1240,10 +1256,7 @@ fun AdminScreen(
                         }
                     },
                     enabled = !isBroadcasting && vName.isNotBlank(),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = PhoenixAmber,
-                        contentColor = Color.Black
-                    )
+                    colors = ButtonDefaults.buttonColors(containerColor = PhoenixAmber, contentColor = Color.Black)
                 ) {
                     if (isBroadcasting) {
                         CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.Black)
@@ -1260,104 +1273,98 @@ fun AdminScreen(
         )
     }
 
-    // Revoke User Access Confirmation Dialog
-    if (userToRevoke != null) {
-        val target = userToRevoke!!
+    // Revoke Team Membership Confirmation Dialog
+    if (memberToRevoke != null) {
+        val target = memberToRevoke!!
+        val displayName = target.userName.ifBlank { target.userEmail }
         AlertDialog(
-            onDismissRequest = { if (!isPerformingUserAction) userToRevoke = null },
-            title = { Text("Uygulama Erişimini Kaldır", fontWeight = FontWeight.Bold) },
+            onDismissRequest = { if (!isPerformingUserAction) memberToRevoke = null },
+            title = { Text("Takım Erişimini Askıya Al", fontWeight = FontWeight.Bold) },
             text = {
                 Text(
-                    "${target.getFullName()} kullanıcısının uygulama erişimi kaldırılacak ve aktif oturumu kapatılacaktır. Daha sonra isterseniz erişimi geri verebilirsiniz.",
+                    "$displayName kullanıcısının ${activeTeam.name} erişimi askıya alınacaktır. Daha sonra isterseniz erişimi geri verebilirsiniz.",
                     color = ext.textSecondary
                 )
             },
             confirmButton = {
                 Button(
                     onClick = {
-                        val targetId = target.userId.ifBlank { target.id }
                         isPerformingUserAction = true
                         scope.launch {
                             try {
-                                repository.revokeUserAccess(targetId)
-                                Toast.makeText(context, "${target.getFullName()} erişimi kaldırıldı.", Toast.LENGTH_SHORT).show()
-                                userToRevoke = null
-                            } catch (ce: CancellationException) {
-                                throw ce
-                            } catch (e: Exception) {
-                                Toast.makeText(context, sanitizeUserErrorMessage(e), Toast.LENGTH_SHORT).show()
+                                val res = repository.revokeTeamMembership(activeTeam, target.userId)
+                                if (res.isSuccess) {
+                                    Toast.makeText(context, "$displayName erişimi askıya alındı.", Toast.LENGTH_SHORT).show()
+                                    memberToRevoke = null
+                                } else {
+                                    Toast.makeText(context, sanitizeUserErrorMessage(res.exceptionOrNull()), Toast.LENGTH_SHORT).show()
+                                }
                             } finally {
                                 isPerformingUserAction = false
                             }
                         }
                     },
                     enabled = !isPerformingUserAction,
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = ext.dangerSolid,
-                        contentColor = Color.White
-                    )
+                    colors = ButtonDefaults.buttonColors(containerColor = ext.dangerSolid, contentColor = Color.White)
                 ) {
                     if (isPerformingUserAction) {
                         CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.White, strokeWidth = 2.dp)
                     } else {
-                        Text("Erişimi Kaldır", fontWeight = FontWeight.Bold)
+                        Text("Askıya Al", fontWeight = FontWeight.Bold)
                     }
                 }
             },
             dismissButton = {
-                TextButton(onClick = { userToRevoke = null }, enabled = !isPerformingUserAction) {
+                TextButton(onClick = { memberToRevoke = null }, enabled = !isPerformingUserAction) {
                     Text("Vazgeç")
                 }
             }
         )
     }
 
-    // Delete User Account Confirmation Dialog
-    if (userToDelete != null) {
-        val target = userToDelete!!
+    // Remove Member From Team Confirmation Dialog
+    if (memberToRemove != null) {
+        val target = memberToRemove!!
+        val displayName = target.userName.ifBlank { target.userEmail }
         AlertDialog(
-            onDismissRequest = { if (!isPerformingUserAction) userToDelete = null },
-            title = { Text("Kullanıcıyı Sil", fontWeight = FontWeight.Bold, color = ext.dangerText) },
+            onDismissRequest = { if (!isPerformingUserAction) memberToRemove = null },
+            title = { Text("Üyeyi Takımdan Çıkar", fontWeight = FontWeight.Bold, color = ext.dangerText) },
             text = {
                 Text(
-                    "${target.getFullName()} (${target.email}) hesabı sistemden kalıcı olarak silinecek ve kullanıcının uygulama erişimi derhal sonlandırılacaktır. Devam etmek istiyor musunuz?",
+                    "$displayName (${target.userEmail}) kullanıcısının ${activeTeam.name} üyeliği silinecektir. Devam etmek istiyor musunuz?",
                     color = ext.textSecondary
                 )
             },
             confirmButton = {
                 Button(
                     onClick = {
-                        val targetId = target.userId.ifBlank { target.id }
                         isPerformingUserAction = true
                         scope.launch {
                             try {
-                                repository.deleteUserAccount(targetId)
-                                Toast.makeText(context, "${target.getFullName()} silindi.", Toast.LENGTH_SHORT).show()
-                                userToDelete = null
-                            } catch (ce: CancellationException) {
-                                throw ce
-                            } catch (e: Exception) {
-                                Toast.makeText(context, sanitizeUserErrorMessage(e), Toast.LENGTH_SHORT).show()
+                                val res = repository.removeTeamMembership(activeTeam, target.userId)
+                                if (res.isSuccess) {
+                                    Toast.makeText(context, "$displayName takımdan çıkarıldı.", Toast.LENGTH_SHORT).show()
+                                    memberToRemove = null
+                                } else {
+                                    Toast.makeText(context, sanitizeUserErrorMessage(res.exceptionOrNull()), Toast.LENGTH_SHORT).show()
+                                }
                             } finally {
                                 isPerformingUserAction = false
                             }
                         }
                     },
                     enabled = !isPerformingUserAction,
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = ext.dangerSolid,
-                        contentColor = Color.White
-                    )
+                    colors = ButtonDefaults.buttonColors(containerColor = ext.dangerSolid, contentColor = Color.White)
                 ) {
                     if (isPerformingUserAction) {
                         CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.White, strokeWidth = 2.dp)
                     } else {
-                        Text("Kullanıcıyı Sil", fontWeight = FontWeight.Bold)
+                        Text("Takımdan Çıkar", fontWeight = FontWeight.Bold)
                     }
                 }
             },
             dismissButton = {
-                TextButton(onClick = { userToDelete = null }, enabled = !isPerformingUserAction) {
+                TextButton(onClick = { memberToRemove = null }, enabled = !isPerformingUserAction) {
                     Text("Vazgeç")
                 }
             }
@@ -1382,7 +1389,7 @@ fun AdminScreen(
                         isPerformingUserAction = true
                         scope.launch {
                             try {
-                                repository.deleteAnnouncement(targetAnnouncement.id)
+                                repository.deleteAnnouncement(targetAnnouncement.id, teamId = activeTeamId)
                                 announcementToDelete = null
                                 Toast.makeText(context, "Duyuru silindi.", Toast.LENGTH_SHORT).show()
                             } catch (ce: CancellationException) {
@@ -1395,10 +1402,7 @@ fun AdminScreen(
                         }
                     },
                     enabled = !isPerformingUserAction,
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = ext.dangerSolid,
-                        contentColor = Color.White
-                    ),
+                    colors = ButtonDefaults.buttonColors(containerColor = ext.dangerSolid, contentColor = Color.White),
                     modifier = Modifier.testTag("confirm_delete_announcement_button")
                 ) {
                     if (isPerformingUserAction) {
@@ -1409,10 +1413,7 @@ fun AdminScreen(
                 }
             },
             dismissButton = {
-                TextButton(
-                    onClick = { announcementToDelete = null },
-                    enabled = !isPerformingUserAction
-                ) {
+                TextButton(onClick = { announcementToDelete = null }, enabled = !isPerformingUserAction) {
                     Text("Vazgeç")
                 }
             }
@@ -1423,16 +1424,17 @@ fun AdminScreen(
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun EditMemberRolesDialog(
-    user: UserProfile,
+    member: TeamMembership,
     onDismiss: () -> Unit,
     onSave: (newTeam: String, updatedRoles: List<String>) -> Unit
 ) {
-    var selectedTeam by remember { mutableStateOf(user.team) }
-    var currentRoles by remember { mutableStateOf(user.roles.ifEmpty { listOf(user.role) }) }
+    var selectedTeam by remember { mutableStateOf(member.subTeam.ifBlank { TeamType.GENERAL.displayName }) }
+    var currentRoles by remember { mutableStateOf(member.roles.ifEmpty { listOf(member.role.ifBlank { "Takım Üyesi" }) }) }
     var customRoleInput by remember { mutableStateOf("") }
     var teamMenuExpanded by remember { mutableStateOf(false) }
 
     val teams = listOf(
+        TeamType.GENERAL.displayName,
         TeamType.MANAGEMENT.displayName,
         TeamType.SOFTWARE.displayName,
         TeamType.MECHANIC.displayName,
@@ -1460,13 +1462,15 @@ fun EditMemberRolesDialog(
         onDismissRequest = onDismiss,
         title = {
             Column {
-                Text(user.getFullName(), fontWeight = FontWeight.Bold, fontSize = 17.sp)
-                Text(user.email, fontSize = 11.sp, color = ext.textMuted)
+                Text(member.userName.ifBlank { member.userEmail }, fontWeight = FontWeight.Bold, fontSize = 17.sp)
+                Text(member.userEmail, fontSize = 11.sp, color = ext.textMuted)
             }
         },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                // Team Selector
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
                 ExposedDropdownMenuBox(
                     expanded = teamMenuExpanded,
                     onExpandedChange = { teamMenuExpanded = !teamMenuExpanded },
@@ -1476,7 +1480,7 @@ fun EditMemberRolesDialog(
                         value = selectedTeam,
                         onValueChange = {},
                         readOnly = true,
-                        label = { Text("Ekip") },
+                        label = { Text("Alt Ekip") },
                         trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = teamMenuExpanded) },
                         modifier = Modifier.fillMaxWidth().menuAnchor(),
                         shape = RoundedCornerShape(10.dp)
@@ -1498,7 +1502,6 @@ fun EditMemberRolesDialog(
                     }
                 }
 
-                // Current Active Roles
                 Text("Mevcut Roller:", fontWeight = FontWeight.Bold, fontSize = 13.sp)
                 FlowRow(
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -1525,13 +1528,12 @@ fun EditMemberRolesDialog(
                     }
                 }
 
-                // Add Predefined Role
                 Text("Hızlı Rol Ekle:", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = ext.textMuted)
                 FlowRow(
                     horizontalArrangement = Arrangement.spacedBy(4.dp),
                     verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
-                    quickRoles.filter { !currentRoles.contains(it) }.take(6).forEach { role ->
+                    quickRoles.filter { !currentRoles.contains(it) }.take(8).forEach { role ->
                         FilterChip(
                             selected = false,
                             onClick = { currentRoles = currentRoles + role },
@@ -1541,7 +1543,6 @@ fun EditMemberRolesDialog(
                     }
                 }
 
-                // Custom Role Input
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
@@ -1573,10 +1574,7 @@ fun EditMemberRolesDialog(
         confirmButton = {
             Button(
                 onClick = { onSave(selectedTeam, currentRoles.ifEmpty { listOf(PredefinedRoles.getDefaultTeamRole(selectedTeam)) }) },
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = ext.accentBlueSolid,
-                    contentColor = Color.White
-                )
+                colors = ButtonDefaults.buttonColors(containerColor = ext.accentBlueSolid, contentColor = Color.White)
             ) {
                 Text("Kaydet")
             }
@@ -1645,10 +1643,7 @@ fun NewAnnouncementDialog(
                     }
                 },
                 enabled = title.isNotBlank() && content.isNotBlank(),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = ElectricBlue,
-                    contentColor = Color.White
-                )
+                colors = ButtonDefaults.buttonColors(containerColor = ElectricBlue, contentColor = Color.White)
             ) {
                 Text("Yayınla")
             }

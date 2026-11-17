@@ -5,20 +5,23 @@ import android.content.Context
 import android.content.ContextWrapper
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -30,28 +33,21 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.Block
+import androidx.compose.material.icons.filled.AddCircleOutline
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.DeleteForever
 import androidx.compose.material.icons.filled.Email
-import androidx.compose.material.icons.filled.ExitToApp
-import androidx.compose.material.icons.filled.HourglassTop
+import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.Lock
-import androidx.compose.material.icons.filled.Person
-import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Security
-import androidx.compose.material3.AlertDialog
+import androidx.compose.material.icons.filled.RocketLaunch
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.ExposedDropdownMenuBox
-import androidx.compose.material3.ExposedDropdownMenuDefaults
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -67,9 +63,11 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
@@ -85,14 +83,12 @@ import androidx.credentials.GetCredentialRequest
 import androidx.credentials.exceptions.GetCredentialCancellationException
 import com.example.R
 import com.example.data.BlackseaRepository
-import com.example.model.PredefinedRoles
-import com.example.model.TeamType
-import com.example.model.UserProfile
-import com.example.model.UserStatus
-import com.example.notifications.TeamNotificationDispatcher
+import com.example.model.COMPETITION_PRESETS
+import com.example.model.TEAM_ACCENT_COLORS
+import com.example.model.TeamLogoPreset
 import com.example.ui.components.BlackseaLogo
-import com.example.ui.components.TeamBadge
-import com.example.ui.theme.ElectricBlue
+import com.example.ui.components.parseTeamColor
+import com.example.ui.components.teamLogoPresetIcon
 import com.example.ui.theme.PhoenixAmber
 import com.example.ui.theme.blackseaColors
 import com.example.util.AppMessages
@@ -234,7 +230,6 @@ fun appSignOut(
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AuthScreen(
     repository: BlackseaRepository,
@@ -248,21 +243,12 @@ fun AuthScreen(
     var authUser by remember { mutableStateOf(Firebase.auth.currentUser) }
     var isLoading by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
-    var userProfile by remember { mutableStateOf<UserProfile?>(null) }
-    var checkingProfile by remember { mutableStateOf(false) }
-    var isFirstSystemAdmin by remember { mutableStateOf(false) }
-    var showDeleteStep1 by remember { mutableStateOf(false) }
-    var showDeleteStep2 by remember { mutableStateOf(false) }
-    var isDeletingAccount by remember { mutableStateOf(false) }
 
-    // Real Identity Form Inputs
-    var firstName by remember { mutableStateOf("") }
-    var lastName by remember { mutableStateOf("") }
-    var username by remember { mutableStateOf("") }
-    var selectedTeam by remember { mutableStateOf(TeamType.SOFTWARE.displayName) }
-    var teamMenuExpanded by remember { mutableStateOf(false) }
+    // Dedicated "Kendi Ekibini Oluştur" onboarding flow state
+    var isCreateTeamFlow by rememberSaveable { mutableStateOf(false) }
+    var isPreparingAccount by remember { mutableStateOf(false) }
+    var teamSubmissionSuccess by rememberSaveable { mutableStateOf(false) }
 
-    // Keep authUser in sync with FirebaseAuth
     DisposableEffect(Unit) {
         val listener = FirebaseAuth.AuthStateListener { auth ->
             authUser = auth.currentUser
@@ -273,58 +259,36 @@ fun AuthScreen(
         }
     }
 
-    LaunchedEffect(authUser?.uid) {
-        val currentUid = authUser?.uid
-        isFirstSystemAdmin = if (currentUid == null) {
-            false
+    // Standard Google Sign-In auto-onboards global /users/{uid} and opens Team Hub immediately
+    LaunchedEffect(authUser?.uid, isCreateTeamFlow, teamSubmissionSuccess) {
+        val user = authUser ?: return@LaunchedEffect
+        if (isCreateTeamFlow || teamSubmissionSuccess) return@LaunchedEffect
+
+        isPreparingAccount = true
+        errorMessage = null
+        val res = repository.ensureBaseUserProfileOnGoogleSignIn(
+            userId = user.uid,
+            email = user.email.orEmpty(),
+            displayName = user.displayName.orEmpty(),
+            photoUrl = user.photoUrl?.toString().orEmpty()
+        )
+        isPreparingAccount = false
+        if (res.isSuccess) {
+            onAuthSuccess()
         } else {
-            authUser?.email.equals("filim3290@gmail.com", ignoreCase = true) ||
-                repository.isSystemEmptyForNewUser(excludeUserId = currentUid)
+            errorMessage = sanitizeUserErrorMessage(
+                res.exceptionOrNull() ?: IllegalStateException("Hesap oluşturulamadı."),
+                "Hesap hazırlanırken bir sorun oluştu."
+            )
         }
     }
 
-    // Observe user profile in real-time whenever authUser changes
-    LaunchedEffect(authUser?.uid) {
-        val currentUid = authUser?.uid
-        if (currentUid == null) {
-            checkingProfile = false
-            userProfile = null
-        } else {
-            checkingProfile = true
-            repository.observeUserProfile(currentUid).collect { profile ->
-                userProfile = profile
-                checkingProfile = false
-
-                if (profile == null || (profile.firstName.isBlank() && profile.lastName.isBlank())) {
-                    // Pre-fill form from Google account if not yet set
-                    val gName = authUser?.displayName ?: ""
-                    val parts = gName.trim().split(" ")
-                    if (parts.size >= 2) {
-                        firstName = parts.dropLast(1).joinToString(" ")
-                        lastName = parts.last()
-                    } else if (parts.size == 1) {
-                        firstName = parts[0]
-                    }
-                    username = (authUser?.email?.substringBefore("@") ?: "").lowercase()
-                } else {
-                    val isSuperAdmin = profile.isSuperAdmin ||
-                        authUser?.email.equals("filim3290@gmail.com", ignoreCase = true)
-                    // If approved or active, enter the main app!
-                    if (UserStatus.isActive(profile.status) || isSuperAdmin) {
-                        onAuthSuccess()
-                    }
-                }
-            }
-        }
-    }
-
-    // Handle back button on secondary steps
-    if (authUser != null) {
+    if (authUser != null && (isCreateTeamFlow || teamSubmissionSuccess)) {
         BackHandler {
+            teamSubmissionSuccess = false
+            isCreateTeamFlow = false
             appSignOut(credentialManager, scope) {
                 authUser = null
-                userProfile = null
-                checkingProfile = false
             }
         }
     }
@@ -332,12 +296,10 @@ fun AuthScreen(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(
-                Brush.verticalGradient(colors = ext.authGradientColors)
-            )
+            .background(Brush.verticalGradient(colors = ext.authGradientColors))
             .systemBarsPadding()
             .imePadding()
-            .padding(24.dp)
+            .padding(20.dp)
             .testTag("auth_screen"),
         contentAlignment = Alignment.Center
     ) {
@@ -348,21 +310,21 @@ fun AuthScreen(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center
         ) {
-            BlackseaLogo(size = 96)
+            BlackseaLogo(size = 88)
 
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(14.dp))
 
             Text(
                 text = "BLACKSEA ROBOTICS",
                 color = MaterialTheme.colorScheme.onBackground,
-                fontSize = 24.sp,
+                fontSize = 23.sp,
                 fontWeight = FontWeight.Black,
                 letterSpacing = 1.2.sp,
                 textAlign = TextAlign.Center
             )
 
             Text(
-                text = "Ünye Fen Lisesi Robotik Takımı",
+                text = "Çoklu Takım & Proje Platformu",
                 color = ext.textSecondary,
                 fontSize = 14.sp,
                 fontWeight = FontWeight.Medium,
@@ -377,953 +339,794 @@ fun AuthScreen(
                 border = BorderStroke(1.dp, ext.amberText.copy(alpha = 0.25f))
             ) {
                 Text(
-                    text = "ONE TEAM. ONE VISION. ONE ROBOT.",
+                    text = "TEKNOFEST • ROBOTİK • YAZILIM • MÜHENDİSLİK",
                     color = ext.amberText,
-                    fontSize = 12.sp,
+                    fontSize = 11.sp,
                     fontWeight = FontWeight.ExtraBold,
-                    letterSpacing = 0.8.sp,
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                    letterSpacing = 0.6.sp,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp)
                 )
             }
 
-            Spacer(modifier = Modifier.height(28.dp))
+            Spacer(modifier = Modifier.height(24.dp))
 
-            if (checkingProfile) {
-                // Loading state while verifying identity with cloud database
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(20.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                    border = BorderStroke(1.dp, ext.cardBorder),
-                    elevation = CardDefaults.cardElevation(defaultElevation = if (ext.isDark) 0.dp else 4.dp)
-                ) {
-                    Column(
-                        modifier = Modifier.padding(28.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally
+            when {
+                isPreparingAccount -> {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(20.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                        border = BorderStroke(1.dp, ext.cardBorder),
+                        elevation = CardDefaults.cardElevation(defaultElevation = if (ext.isDark) 0.dp else 4.dp)
                     ) {
-                        CircularProgressIndicator(color = ext.accentBlue, modifier = Modifier.size(36.dp), strokeWidth = 3.dp)
-                        Spacer(modifier = Modifier.height(16.dp))
-                        Text(
-                            text = "Ekip Üyeliği Doğrulanıyor...",
-                            color = MaterialTheme.colorScheme.onSurface,
-                            fontSize = 15.sp,
-                            fontWeight = FontWeight.Bold
-                        )
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(
-                            text = "Bilgileriniz kontrol ediliyor, lütfen bekleyin",
-                            color = ext.textSecondary,
-                            fontSize = 12.sp
-                        )
-                    }
-                }
-            } else if (authUser == null) {
-                // STEP 1: Google Login Screen
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(20.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                    border = BorderStroke(1.dp, ext.cardBorder),
-                    elevation = CardDefaults.cardElevation(defaultElevation = if (ext.isDark) 0.dp else 4.dp)
-                ) {
-                    Column(
-                        modifier = Modifier.padding(24.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        Text(
-                            text = "Ekip Platformu Girişi",
-                            color = MaterialTheme.colorScheme.onSurface,
-                            fontSize = 18.sp,
-                            fontWeight = FontWeight.Bold
-                        )
-
-                        Spacer(modifier = Modifier.height(8.dp))
-
-                        Text(
-                            text = "Ünye Fen Lisesi Robotik Takımı üyeleriyle aynı platformda buluşun ve anlık iletişim kurun.",
-                            color = ext.textSecondary,
-                            fontSize = 13.sp,
-                            textAlign = TextAlign.Center
-                        )
-
-                        Spacer(modifier = Modifier.height(24.dp))
-
-                        if (errorMessage != null) {
-                            Text(
-                                text = errorMessage ?: "",
-                                color = ext.dangerText,
-                                fontSize = 13.sp,
-                                textAlign = TextAlign.Center,
-                                modifier = Modifier.padding(bottom = 12.dp)
-                            )
-                        }
-
-                        Button(
-                            onClick = {
-                                isLoading = true
-                                errorMessage = null
-                                onGoogleSignInClicked(
-                                    context = context,
-                                    credentialManager = credentialManager,
-                                    onAuthSuccess = {
-                                        isLoading = false
-                                        authUser = Firebase.auth.currentUser
-                                    },
-                                    onAuthError = { err ->
-                                        isLoading = false
-                                        errorMessage = err
-                                    },
-                                    scope = scope,
-                                    onAuthCancelled = { isLoading = false }
-                                )
-                            },
-                            enabled = !isLoading,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(52.dp)
-                                .testTag("google_sign_in_button"),
-                            shape = RoundedCornerShape(14.dp),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = ext.accentBlueSolid,
-                                contentColor = Color.White
-                            )
+                        Column(
+                            modifier = Modifier.padding(28.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
                         ) {
-                            if (isLoading) {
-                                CircularProgressIndicator(
-                                    modifier = Modifier.size(24.dp),
-                                    color = Color.White,
-                                    strokeWidth = 2.dp
-                                )
-                            } else {
-                                Icon(imageVector = Icons.Default.Lock, contentDescription = null, modifier = Modifier.size(18.dp))
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text(
-                                    text = "Google ile Giriş Yap",
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 15.sp
-                                )
-                            }
-                        }
-                    }
-                }
-            } else if (userProfile == null || (userProfile?.firstName.isNullOrBlank() && userProfile?.lastName.isNullOrBlank())) {
-                // STEP 2: New Member Real Identity Registration Form
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(20.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                    border = BorderStroke(1.dp, ext.cardBorder),
-                    elevation = CardDefaults.cardElevation(defaultElevation = if (ext.isDark) 0.dp else 4.dp)
-                ) {
-                    Column(
-                        modifier = Modifier.padding(22.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        // Header with Back button
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            IconButton(
-                                onClick = {
-                                    appSignOut(credentialManager, scope) {
-                                        authUser = null
-                                        userProfile = null
-                                    }
-                                },
-                                modifier = Modifier.size(36.dp)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                                    contentDescription = "Geri Dön",
-                                    tint = ext.textSecondary
-                                )
-                            }
-                            Spacer(modifier = Modifier.width(6.dp))
+                            CircularProgressIndicator(color = ext.accentBlue, modifier = Modifier.size(36.dp), strokeWidth = 3.dp)
+                            Spacer(modifier = Modifier.height(16.dp))
                             Text(
-                                text = "Gerçek Takım Kimliği Kaydı",
+                                text = "Hesabınız Hazırlanıyor...",
                                 color = MaterialTheme.colorScheme.onSurface,
-                                fontSize = 17.sp,
+                                fontSize = 15.sp,
                                 fontWeight = FontWeight.Bold
                             )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = "Aktif takımlar yükleniyor, lütfen bekleyin",
+                                color = ext.textSecondary,
+                                fontSize = 12.sp
+                            )
                         }
+                    }
+                }
 
-                        // Signed in email pill
-                        Surface(
-                            shape = RoundedCornerShape(8.dp),
-                            color = MaterialTheme.colorScheme.surfaceVariant,
-                            border = BorderStroke(1.dp, ext.cardBorder),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(vertical = 10.dp)
+                authUser == null -> {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(20.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                        border = BorderStroke(1.dp, ext.cardBorder),
+                        elevation = CardDefaults.cardElevation(defaultElevation = if (ext.isDark) 0.dp else 4.dp)
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(24.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
                         ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.SpaceBetween
-                            ) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                ) {
-                                    Icon(imageVector = Icons.Default.Email, contentDescription = null, tint = ext.accentBlue, modifier = Modifier.size(14.dp))
-                                    Text(
-                                        text = authUser?.email ?: "",
-                                        color = MaterialTheme.colorScheme.onSurface,
-                                        fontSize = 12.sp,
-                                        fontWeight = FontWeight.Medium
-                                    )
-                                }
+                            Text(
+                                text = "Platforma Giriş Yap",
+                                color = MaterialTheme.colorScheme.onSurface,
+                                fontSize = 18.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+
+                            Spacer(modifier = Modifier.height(8.dp))
+
+                            Text(
+                                text = "Google hesabınızla giriş yaparak takımları inceleyip katılabilir veya okulunuz/projeniz için kendi ekibinizi oluşturabilirsiniz.",
+                                color = ext.textSecondary,
+                                fontSize = 13.sp,
+                                textAlign = TextAlign.Center,
+                                lineHeight = 18.sp
+                            )
+
+                            Spacer(modifier = Modifier.height(20.dp))
+
+                            if (errorMessage != null) {
                                 Text(
-                                    text = "Değiştir",
-                                    color = ext.accentBlue,
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    modifier = Modifier.clickable {
-                                        appSignOut(credentialManager, scope) {
-                                            authUser = null
-                                            userProfile = null
-                                        }
-                                    }
+                                    text = errorMessage.orEmpty(),
+                                    color = ext.dangerText,
+                                    fontSize = 12.sp,
+                                    textAlign = TextAlign.Center,
+                                    modifier = Modifier.padding(bottom = 12.dp)
                                 )
                             }
-                        }
 
-                        Text(
-                            text = "Mesajlarda ve fikirlerde gerçek adınız ve soyadınız kullanılacaktır.",
-                            color = ext.textSecondary,
-                            fontSize = 12.sp,
-                            textAlign = TextAlign.Center
-                        )
-
-                        Spacer(modifier = Modifier.height(16.dp))
-
-                        // Ad ve Soyad
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(10.dp)
-                        ) {
-                            OutlinedTextField(
-                                value = firstName,
-                                onValueChange = { firstName = it },
-                                label = { Text("Ad") },
-                                placeholder = { Text("Örn: Mehmet İlker") },
-                                modifier = Modifier.weight(1f).testTag("first_name_input"),
-                                shape = RoundedCornerShape(12.dp)
-                            )
-
-                            OutlinedTextField(
-                                value = lastName,
-                                onValueChange = { lastName = it },
-                                label = { Text("Soyad") },
-                                placeholder = { Text("Örn: Baş") },
-                                modifier = Modifier.weight(1f).testTag("last_name_input"),
-                                shape = RoundedCornerShape(12.dp)
-                            )
-                        }
-
-                        Spacer(modifier = Modifier.height(12.dp))
-
-                        // Kullanıcı Adı
-                        OutlinedTextField(
-                            value = username,
-                            onValueChange = { username = it },
-                            label = { Text("Kullanıcı Adı") },
-                            placeholder = { Text("Örn: ilker_bas") },
-                            modifier = Modifier.fillMaxWidth().testTag("username_input"),
-                            shape = RoundedCornerShape(12.dp)
-                        )
-
-                        Spacer(modifier = Modifier.height(12.dp))
-
-                        // Ekip Seçimi
-                        ExposedDropdownMenuBox(
-                            expanded = teamMenuExpanded,
-                            onExpandedChange = { teamMenuExpanded = !teamMenuExpanded },
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            OutlinedTextField(
-                                value = selectedTeam,
-                                onValueChange = {},
-                                readOnly = true,
-                                label = { Text("Ekip Seçimi") },
-                                trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = teamMenuExpanded) },
-                                modifier = Modifier.fillMaxWidth().menuAnchor().testTag("team_dropdown"),
-                                shape = RoundedCornerShape(12.dp)
-                            )
-
-                            ExposedDropdownMenu(
-                                expanded = teamMenuExpanded,
-                                onDismissRequest = { teamMenuExpanded = false }
-                            ) {
-                                listOf(
-                                    TeamType.MANAGEMENT,
-                                    TeamType.SOFTWARE,
-                                    TeamType.MECHANIC,
-                                    TeamType.PR
-                                ).forEach { team ->
-                                    DropdownMenuItem(
-                                        text = { TeamBadge(teamName = team.displayName) },
-                                        onClick = {
-                                            selectedTeam = team.displayName
-                                            teamMenuExpanded = false
-                                        }
-                                    )
-                                }
-                            }
-                        }
-
-                        if (isFirstSystemAdmin) {
-                            Surface(
-                                shape = RoundedCornerShape(10.dp),
-                                color = ext.emeraldSolid.copy(alpha = 0.14f),
-                                border = BorderStroke(1.dp, ext.emeraldText.copy(alpha = 0.35f)),
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(bottom = 12.dp)
-                            ) {
-                                Row(
-                                    modifier = Modifier.padding(10.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.Security,
-                                        contentDescription = null,
-                                        tint = ext.emeraldText,
-                                        modifier = Modifier.size(18.dp)
-                                    )
-                                    Text(
-                                        text = "Sistemde başka kullanıcı yok. İlk kullanıcı olarak otomatik Yönetici yetkisiyle doğrudan giriş yapacaksınız.",
-                                        fontSize = 11.sp,
-                                        fontWeight = FontWeight.SemiBold,
-                                        color = ext.emeraldText,
-                                        lineHeight = 15.sp
-                                    )
-                                }
-                            }
-                        }
-
-                        if (errorMessage != null) {
-                            Spacer(modifier = Modifier.height(10.dp))
-                            Text(
-                                text = errorMessage ?: "",
-                                color = MaterialTheme.colorScheme.error,
-                                fontSize = 12.sp,
-                                textAlign = TextAlign.Center
-                            )
-                        }
-
-                        Spacer(modifier = Modifier.height(20.dp))
-
-                        Button(
-                            onClick = {
-                                val current = authUser ?: return@Button
-                                val uid = current.uid
-                                val email = current.email ?: ""
-                                val photoUrl = current.photoUrl?.toString() ?: ""
-
-                                val trimmedFirst = firstName.trim()
-                                val trimmedLast = lastName.trim()
-
-                                if (trimmedFirst.isBlank() || trimmedLast.isBlank()) {
-                                    errorMessage = "Lütfen gerçek adınızı ve soyadınızı giriniz."
-                                    return@Button
-                                }
-
-                                scope.launch {
+                            Button(
+                                onClick = {
+                                    isCreateTeamFlow = false
                                     isLoading = true
                                     errorMessage = null
-                                    try {
-                                        val defaultRole = PredefinedRoles.getDefaultTeamRole(selectedTeam)
-                                        val createdProfile = repository.createOrUpdateUserProfile(
-                                            userId = uid,
-                                            firstName = trimmedFirst,
-                                            lastName = trimmedLast,
-                                            username = username.trim().ifBlank { "${trimmedFirst.lowercase()}_${trimmedLast.lowercase()}" },
-                                            email = email,
-                                            team = selectedTeam,
-                                            roles = listOf(defaultRole),
-                                            photoUrl = photoUrl
-                                        )
-                                        TeamNotificationDispatcher.recordUserJoinTimestampIfMissing(context, uid)
-
-                                        val isSuperAdmin = createdProfile.isSuperAdmin ||
-                                            email.equals("filim3290@gmail.com", ignoreCase = true)
-                                        if (isSuperAdmin || UserStatus.isActive(createdProfile.status)) {
-                                            try {
-                                                repository.ensureDefaultRoomsExist()
-                                            } catch (_: Exception) {
-                                            }
-                                            onAuthSuccess()
-                                        } else {
-                                            // Regular new user: status is "pending".
-                                            // Transition immediately to Pending Approval Screen!
-                                            userProfile = createdProfile
-                                            Toast.makeText(context, "Kaydınız alındı! Yönetici onayı bekleniyor.", Toast.LENGTH_LONG).show()
-                                        }
-                                    } catch (ce: CancellationException) {
-                                        throw ce
-                                    } catch (e: Exception) {
-                                        logDebugError("Auth", "Save profile failed", e)
-                                        errorMessage = sanitizeUserErrorMessage(e, "Profil kaydedilemedi. Lütfen tekrar deneyin.")
-                                    } finally {
-                                        isLoading = false
-                                    }
+                                    onGoogleSignInClicked(
+                                        context = context,
+                                        credentialManager = credentialManager,
+                                        onAuthSuccess = {
+                                            isLoading = false
+                                            authUser = Firebase.auth.currentUser
+                                        },
+                                        onAuthError = { err ->
+                                            isLoading = false
+                                            errorMessage = err
+                                        },
+                                        scope = scope,
+                                        onAuthCancelled = { isLoading = false }
+                                    )
+                                },
+                                enabled = !isLoading,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(52.dp)
+                                    .testTag("google_sign_in_button"),
+                                shape = RoundedCornerShape(14.dp),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = ext.accentBlueSolid,
+                                    contentColor = Color.White
+                                )
+                            ) {
+                                if (isLoading && !isCreateTeamFlow) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(22.dp),
+                                        color = Color.White,
+                                        strokeWidth = 2.dp
+                                    )
+                                } else {
+                                    Icon(imageVector = Icons.Default.Lock, contentDescription = null, modifier = Modifier.size(18.dp))
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text(
+                                        text = "Google ile Giriş Yap",
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 15.sp
+                                    )
                                 }
-                            },
-                            enabled = !isLoading,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(50.dp)
-                                .testTag("save_profile_button"),
-                            shape = RoundedCornerShape(14.dp),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = ext.accentBlueSolid,
-                                contentColor = Color.White
-                            )
-                        ) {
-                            if (isLoading) {
-                                CircularProgressIndicator(color = Color.White, modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
-                            } else {
+                            }
+
+                            Spacer(modifier = Modifier.height(14.dp))
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                HorizontalDivider(modifier = Modifier.weight(1f), color = ext.cardBorder)
                                 Text(
-                                    text = if (isFirstSystemAdmin) "Yönetici Olarak Başlat" else "Ekip Profilini Oluştur ve Başvur",
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 15.sp
+                                    text = "  veya  ",
+                                    fontSize = 12.sp,
+                                    color = ext.textMuted
                                 )
+                                HorizontalDivider(modifier = Modifier.weight(1f), color = ext.cardBorder)
                             }
-                        }
 
-                        Spacer(modifier = Modifier.height(10.dp))
+                            Spacer(modifier = Modifier.height(14.dp))
 
-                        TextButton(
-                            onClick = {
-                                appSignOut(credentialManager, scope) {
-                                    authUser = null
-                                    userProfile = null
+                            OutlinedButton(
+                                onClick = {
+                                    isCreateTeamFlow = true
+                                    isLoading = true
+                                    errorMessage = null
+                                    onGoogleSignInClicked(
+                                        context = context,
+                                        credentialManager = credentialManager,
+                                        onAuthSuccess = {
+                                            isLoading = false
+                                            authUser = Firebase.auth.currentUser
+                                        },
+                                        onAuthError = { err ->
+                                            isLoading = false
+                                            isCreateTeamFlow = false
+                                            errorMessage = err
+                                        },
+                                        scope = scope,
+                                        onAuthCancelled = {
+                                            isLoading = false
+                                            isCreateTeamFlow = false
+                                        }
+                                    )
+                                },
+                                enabled = !isLoading,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(52.dp)
+                                    .testTag("create_team_entry_button"),
+                                shape = RoundedCornerShape(14.dp),
+                                border = BorderStroke(1.5.dp, ext.amberText.copy(alpha = 0.65f))
+                            ) {
+                                if (isLoading && isCreateTeamFlow) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(22.dp),
+                                        color = ext.amberText,
+                                        strokeWidth = 2.dp
+                                    )
+                                } else {
+                                    Icon(
+                                        imageVector = Icons.Default.AddCircleOutline,
+                                        contentDescription = null,
+                                        tint = ext.amberText,
+                                        modifier = Modifier.size(19.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text(
+                                        text = "Kendi Ekibini Oluştur",
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 15.sp,
+                                        color = ext.amberText
+                                    )
                                 }
                             }
-                        ) {
-                            Icon(imageVector = Icons.Default.ExitToApp, contentDescription = null, tint = ext.textSecondary, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("Farklı Bir Google Hesabı Kullan", color = ext.textSecondary, fontSize = 13.sp)
+
+                            Spacer(modifier = Modifier.height(8.dp))
+
+                            Text(
+                                text = "Yeni takım başvuruları e-posta hesabınıza bağlanır ve BlackSea Robotics yöneticilerinin onayından sonra aktif olur.",
+                                color = ext.textMuted,
+                                fontSize = 11.sp,
+                                textAlign = TextAlign.Center,
+                                lineHeight = 16.sp
+                            )
                         }
                     }
                 }
-            } else if (UserStatus.isPending(userProfile?.status)) {
-                // STEP 3: Pending Approval Screen for New Users
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(20.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                    border = BorderStroke(1.dp, ext.cardBorder),
-                    elevation = CardDefaults.cardElevation(defaultElevation = if (ext.isDark) 0.dp else 4.dp)
-                ) {
-                    Column(
-                        modifier = Modifier.padding(24.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally
+
+                teamSubmissionSuccess -> {
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("team_application_submitted_card"),
+                        shape = RoundedCornerShape(20.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                        border = BorderStroke(1.dp, ext.cardBorder),
+                        elevation = CardDefaults.cardElevation(defaultElevation = if (ext.isDark) 0.dp else 4.dp)
                     ) {
-                        Surface(
-                            shape = CircleShape,
-                            color = PhoenixAmber.copy(alpha = 0.18f),
-                            modifier = Modifier.size(64.dp)
+                        Column(
+                            modifier = Modifier.padding(24.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(12.dp)
                         ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Icon(
-                                    imageVector = Icons.Default.HourglassTop,
-                                    contentDescription = null,
-                                    tint = ext.amberText,
-                                    modifier = Modifier.size(36.dp)
+                            Surface(
+                                shape = CircleShape,
+                                color = ext.emeraldSolid.copy(alpha = 0.16f),
+                                modifier = Modifier.size(64.dp)
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Icon(
+                                        imageVector = Icons.Default.CheckCircle,
+                                        contentDescription = null,
+                                        tint = ext.emeraldText,
+                                        modifier = Modifier.size(36.dp)
+                                    )
+                                }
+                            }
+
+                            Text(
+                                text = "Başvurunuz Alındı!",
+                                color = MaterialTheme.colorScheme.onSurface,
+                                fontSize = 19.sp,
+                                fontWeight = FontWeight.Bold,
+                                textAlign = TextAlign.Center
+                            )
+
+                            Text(
+                                text = "Takım oluşturma başvurunuz BlackSea Robotics yöneticilerine gönderildi.",
+                                color = ext.textSecondary,
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                textAlign = TextAlign.Center,
+                                lineHeight = 20.sp
+                            )
+
+                            Text(
+                                text = "Başvurunuz onaylandığında bildirim alacaksınız ve ekibinizin bağımsız çalışma alanı otomatik olarak açılacaktır. Bu arada diğer takımlara da göz atabilirsiniz.",
+                                color = ext.textMuted,
+                                fontSize = 12.sp,
+                                textAlign = TextAlign.Center,
+                                lineHeight = 18.sp
+                            )
+
+                            Spacer(modifier = Modifier.height(6.dp))
+
+                            Button(
+                                onClick = {
+                                    teamSubmissionSuccess = false
+                                    isCreateTeamFlow = false
+                                    onAuthSuccess()
+                                },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(48.dp)
+                                    .testTag("go_to_team_hub_after_apply_button"),
+                                shape = RoundedCornerShape(12.dp),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = ext.accentBlueSolid,
+                                    contentColor = Color.White
                                 )
+                            ) {
+                                Icon(imageVector = Icons.Default.Groups, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Takımlar Ekranına Geç", fontWeight = FontWeight.Bold)
                             }
                         }
+                    }
+                }
 
-                        Spacer(modifier = Modifier.height(14.dp))
+                isCreateTeamFlow -> {
+                    TeamCreationApplicationCard(
+                        repository = repository,
+                        connectedEmail = authUser?.email.orEmpty(),
+                        defaultManagerName = authUser?.displayName.orEmpty(),
+                        founderPhotoUrl = authUser?.photoUrl?.toString().orEmpty(),
+                        onChangeAccountClick = {
+                            appSignOut(credentialManager, scope) {
+                                authUser = null
+                                isCreateTeamFlow = false
+                            }
+                        },
+                        onBackClick = {
+                            isCreateTeamFlow = false
+                            appSignOut(credentialManager, scope) {
+                                authUser = null
+                            }
+                        },
+                        onSubmitted = {
+                            teamSubmissionSuccess = true
+                        }
+                    )
+                }
 
-                        Text(
-                            text = "Yönetici Onayı Bekleniyor",
-                            color = MaterialTheme.colorScheme.onSurface,
-                            fontSize = 19.sp,
-                            fontWeight = FontWeight.Bold
-                        )
-
-                        Spacer(modifier = Modifier.height(8.dp))
-
-                        Text(
-                            text = "Merhaba ${userProfile?.getFullName()}! Ekip başvurunuz başarıyla alındı. Takım yöneticisi veya danışman öğretmeniniz üyeliğinizi onayladığında tüm odalara ve çalışma alanlarına otomatik erişiminiz açılacaktır.",
-                            color = ext.textSecondary,
-                            fontSize = 13.sp,
-                            textAlign = TextAlign.Center,
-                            lineHeight = 19.sp
-                        )
-
-                        Spacer(modifier = Modifier.height(16.dp))
-
-                        // Member details pill
-                        Surface(
-                            shape = RoundedCornerShape(12.dp),
-                            color = MaterialTheme.colorScheme.surfaceVariant,
-                            border = BorderStroke(1.dp, ext.cardBorder),
-                            modifier = Modifier.fillMaxWidth()
+                else -> {
+                    // Fallback error state if account initialization failed after sign-in
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(20.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                        border = BorderStroke(1.dp, ext.cardBorder)
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(24.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(12.dp)
                         ) {
-                            Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween
-                                ) {
-                                    Text("Başvuran:", fontSize = 12.sp, color = ext.textMuted)
-                                    Text(userProfile?.getFullName() ?: "", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
-                                }
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween
-                                ) {
-                                    Text("Ekip:", fontSize = 12.sp, color = ext.textMuted)
-                                    Text(userProfile?.team ?: "", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = ext.accentBlue)
-                                }
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween
-                                ) {
-                                    Text("E-posta:", fontSize = 12.sp, color = ext.textMuted)
-                                    Text(userProfile?.email ?: "", fontSize = 12.sp, color = ext.textSecondary)
-                                }
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween
-                                ) {
-                                    Text("Durum:", fontSize = 12.sp, color = ext.textMuted)
-                                    Text("⏳ Onay Bekliyor", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = ext.amberText)
-                                }
-                            }
-                        }
-
-                        Spacer(modifier = Modifier.height(20.dp))
-
-                        Button(
-                            onClick = {
-                                val currentUid = authUser?.uid ?: return@Button
-                                scope.launch {
-                                    isLoading = true
-                                    val profile = repository.getUserProfile(currentUid)
-                                    isLoading = false
-                                    if (profile != null) {
-                                        userProfile = profile
-                                        if (UserStatus.isActive(profile.status)) {
-                                            Toast.makeText(context, "Üyeliğiniz onaylandı! Hoş geldiniz.", Toast.LENGTH_SHORT).show()
+                            Text(
+                                text = errorMessage ?: "Bağlantı doğrulanamadı.",
+                                color = ext.dangerText,
+                                fontSize = 13.sp,
+                                textAlign = TextAlign.Center
+                            )
+                            Button(
+                                onClick = {
+                                    val user = authUser ?: return@Button
+                                    scope.launch {
+                                        isPreparingAccount = true
+                                        val res = repository.ensureBaseUserProfileOnGoogleSignIn(
+                                            userId = user.uid,
+                                            email = user.email.orEmpty(),
+                                            displayName = user.displayName.orEmpty(),
+                                            photoUrl = user.photoUrl?.toString().orEmpty()
+                                        )
+                                        isPreparingAccount = false
+                                        if (res.isSuccess) {
                                             onAuthSuccess()
                                         } else {
-                                            Toast.makeText(context, "Henüz onaylanmadı. Yönetici onayı bekleniyor.", Toast.LENGTH_SHORT).show()
+                                            errorMessage = sanitizeUserErrorMessage(
+                                                res.exceptionOrNull() ?: IllegalStateException("Tekrar deneyin.")
+                                            )
                                         }
                                     }
-                                }
-                            },
-                            enabled = !isLoading,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(48.dp),
-                            shape = RoundedCornerShape(12.dp),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = ext.accentBlueSolid,
-                                contentColor = Color.White
-                            )
-                        ) {
-                            if (isLoading) {
-                                CircularProgressIndicator(color = Color.White, modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
-                            } else {
-                                Icon(imageVector = Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text("Onay Durumunu Kontrol Et", fontWeight = FontWeight.Bold)
+                                },
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(12.dp)
+                            ) {
+                                Text("Tekrar Dene", fontWeight = FontWeight.Bold)
                             }
-                        }
-
-                        Spacer(modifier = Modifier.height(10.dp))
-
-                        OutlinedButton(
-                            onClick = {
-                                appSignOut(credentialManager, scope) {
-                                    authUser = null
-                                    userProfile = null
+                            TextButton(
+                                onClick = {
+                                    appSignOut(credentialManager, scope) { authUser = null }
                                 }
-                            },
-                            modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(12.dp)
-                        ) {
-                            Icon(imageVector = Icons.Default.ExitToApp, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("Farklı Hesapla Giriş Yap / Çıkış")
-                        }
-
-                        TextButton(
-                            onClick = { showDeleteStep1 = true },
-                            colors = ButtonDefaults.textButtonColors(contentColor = ext.dangerText)
-                        ) {
-                            Icon(imageVector = Icons.Default.DeleteForever, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text("Hesabımı Kalıcı Olarak Sil", fontSize = 12.sp)
+                            ) {
+                                Text("Oturumu Kapat")
+                            }
                         }
                     }
-                }
-            } else if (UserStatus.isRevoked(userProfile?.status)) {
-                // Revoked Access Screen
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(20.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                    border = BorderStroke(1.dp, ext.cardBorder),
-                    elevation = CardDefaults.cardElevation(defaultElevation = if (ext.isDark) 0.dp else 4.dp)
-                ) {
-                    Column(
-                        modifier = Modifier.padding(24.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        Surface(
-                            shape = CircleShape,
-                            color = ext.dangerContainer,
-                            modifier = Modifier.size(64.dp)
-                        ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Icon(
-                                    imageVector = Icons.Default.Block,
-                                    contentDescription = null,
-                                    tint = ext.dangerText,
-                                    modifier = Modifier.size(36.dp)
-                                )
-                            }
-                        }
-
-                        Spacer(modifier = Modifier.height(14.dp))
-
-                        Text(
-                            text = "Uygulama Erişiminiz Kaldırıldı",
-                            color = MaterialTheme.colorScheme.onSurface,
-                            fontSize = 19.sp,
-                            fontWeight = FontWeight.Bold,
-                            textAlign = TextAlign.Center
-                        )
-
-                        Spacer(modifier = Modifier.height(8.dp))
-
-                        Text(
-                            text = "Sayın ${userProfile?.getFullName()}, takım yöneticisi uygulama erişiminizi kaldırdı. Tekrar erişim talebi gönderebilir veya farklı bir hesapla giriş yapabilirsiniz.",
-                            color = ext.textSecondary,
-                            fontSize = 13.sp,
-                            textAlign = TextAlign.Center,
-                            lineHeight = 19.sp
-                        )
-
-                        Spacer(modifier = Modifier.height(20.dp))
-
-                        Button(
-                            onClick = {
-                                val uid = authUser?.uid ?: return@Button
-                                scope.launch {
-                                    isLoading = true
-                                    try {
-                                        repository.reapplyForMembership(uid, userProfile?.team ?: "Genel Ekip")
-                                        val updated = repository.getUserProfile(uid)
-                                        userProfile = updated
-                                        Toast.makeText(context, "Yeniden erişim başvurunuz yöneticiye iletildi!", Toast.LENGTH_LONG).show()
-                                    } catch (ce: CancellationException) {
-                                        throw ce
-                                    } catch (e: Exception) {
-                                        logDebugError("Auth", "Reapply from revoked failed", e)
-                                        Toast.makeText(context, sanitizeUserErrorMessage(e, "Başvuru iletilemedi. Lütfen tekrar deneyin."), Toast.LENGTH_SHORT).show()
-                                    } finally {
-                                        isLoading = false
-                                    }
-                                }
-                            },
-                            enabled = !isLoading,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(48.dp)
-                                .testTag("revoked_reapply_button"),
-                            shape = RoundedCornerShape(12.dp),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = ext.accentBlueSolid,
-                                contentColor = Color.White
-                            )
-                        ) {
-                            if (isLoading) {
-                                CircularProgressIndicator(color = Color.White, modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
-                            } else {
-                                Icon(imageVector = Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text("Tekrar Erişim Başvurusu Yap", fontWeight = FontWeight.Bold)
-                            }
-                        }
-
-                        Spacer(modifier = Modifier.height(10.dp))
-
-                        OutlinedButton(
-                            onClick = {
-                                appSignOut(credentialManager, scope) {
-                                    authUser = null
-                                    userProfile = null
-                                }
-                            },
-                            modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(12.dp)
-                        ) {
-                            Icon(imageVector = Icons.Default.ExitToApp, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("Farklı Bir Hesapla Giriş Yap")
-                        }
-
-                        TextButton(
-                            onClick = { showDeleteStep1 = true },
-                            colors = ButtonDefaults.textButtonColors(contentColor = ext.dangerText)
-                        ) {
-                            Icon(imageVector = Icons.Default.DeleteForever, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text("Hesabımı Kalıcı Olarak Sil", fontSize = 12.sp)
-                        }
-                    }
-                }
-            } else if (UserStatus.isRejected(userProfile?.status)) {
-                // Rejected Screen
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(20.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                    border = BorderStroke(1.dp, ext.cardBorder),
-                    elevation = CardDefaults.cardElevation(defaultElevation = if (ext.isDark) 0.dp else 4.dp)
-                ) {
-                    Column(
-                        modifier = Modifier.padding(24.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        Surface(
-                            shape = CircleShape,
-                            color = ext.dangerContainer,
-                            modifier = Modifier.size(64.dp)
-                        ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Icon(
-                                    imageVector = Icons.Default.Close,
-                                    contentDescription = null,
-                                    tint = ext.dangerText,
-                                    modifier = Modifier.size(36.dp)
-                                )
-                            }
-                        }
-
-                        Spacer(modifier = Modifier.height(14.dp))
-
-                        Text(
-                            text = "Başvuru Onaylanmadı",
-                            color = MaterialTheme.colorScheme.onSurface,
-                            fontSize = 19.sp,
-                            fontWeight = FontWeight.Bold
-                        )
-
-                        Spacer(modifier = Modifier.height(8.dp))
-
-                        Text(
-                            text = "Sayın ${userProfile?.getFullName()}, ekip başvurunuz takım yönetimi tarafından onaylanmadı. Bilgilerinizi kontrol edip yeniden başvuru yapabilir veya farklı bir hesap seçebilirsiniz.",
-                            color = ext.textSecondary,
-                            fontSize = 13.sp,
-                            textAlign = TextAlign.Center
-                        )
-
-                        Spacer(modifier = Modifier.height(20.dp))
-
-                        Button(
-                            onClick = {
-                                val uid = authUser?.uid ?: return@Button
-                                scope.launch {
-                                    isLoading = true
-                                    try {
-                                        repository.reapplyForMembership(uid, userProfile?.team ?: "Genel Ekip")
-                                        val updated = repository.getUserProfile(uid)
-                                        userProfile = updated
-                                        Toast.makeText(context, "Yeniden başvurunuz yöneticiye iletildi!", Toast.LENGTH_LONG).show()
-                                    } catch (ce: CancellationException) {
-                                        throw ce
-                                    } catch (e: Exception) {
-                                        logDebugError("Auth", "Reapply failed", e)
-                                        Toast.makeText(context, sanitizeUserErrorMessage(e, "Başvuru iletilemedi. Lütfen tekrar deneyin."), Toast.LENGTH_SHORT).show()
-                                    } finally {
-                                        isLoading = false
-                                    }
-                                }
-                            },
-                            enabled = !isLoading,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(48.dp),
-                            shape = RoundedCornerShape(12.dp),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = ext.accentBlueSolid,
-                                contentColor = Color.White
-                            )
-                        ) {
-                            if (isLoading) {
-                                CircularProgressIndicator(color = Color.White, modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
-                            } else {
-                                Icon(imageVector = Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text("Tekrar Başvuru Yap", fontWeight = FontWeight.Bold)
-                            }
-                        }
-
-                        Spacer(modifier = Modifier.height(10.dp))
-
-                        OutlinedButton(
-                            onClick = {
-                                appSignOut(credentialManager, scope) {
-                                    authUser = null
-                                    userProfile = null
-                                }
-                            },
-                            modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(12.dp)
-                        ) {
-                            Icon(imageVector = Icons.Default.ExitToApp, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("Farklı Bir Hesapla Giriş Yap")
-                        }
-
-                        TextButton(
-                            onClick = { showDeleteStep1 = true },
-                            colors = ButtonDefaults.textButtonColors(contentColor = ext.dangerText)
-                        ) {
-                            Icon(imageVector = Icons.Default.DeleteForever, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text("Hesabımı Kalıcı Olarak Sil", fontSize = 12.sp)
-                        }
-                    }
-                }
-            } else {
-                // Active / Approved User -> Enter app immediately
-                LaunchedEffect(Unit) {
-                    onAuthSuccess()
                 }
             }
         }
     }
+}
 
-    if (showDeleteStep1) {
-        AlertDialog(
-            onDismissRequest = { showDeleteStep1 = false },
-            icon = {
-                Icon(
-                    imageVector = Icons.Default.DeleteForever,
-                    contentDescription = null,
-                    tint = ext.dangerText,
-                    modifier = Modifier.size(32.dp)
-                )
-            },
-            title = {
-                Text("Hesabınızı Silmek İstiyor musunuz?", fontWeight = FontWeight.Bold)
-            },
-            text = {
-                Text(
-                    "Hesabınız ve başvuru bilgileriniz silinecektir. Yanlışlıkla silmeyi önlemek için bir sonraki adımda tekrar onayınız istenecektir.",
-                    color = ext.textSecondary,
-                    fontSize = 13.sp,
-                    lineHeight = 19.sp
-                )
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        showDeleteStep1 = false
-                        showDeleteStep2 = true
-                    },
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = ext.dangerSolid,
-                        contentColor = Color.White
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+fun TeamCreationApplicationCard(
+    repository: BlackseaRepository,
+    connectedEmail: String,
+    defaultManagerName: String,
+    founderPhotoUrl: String,
+    onChangeAccountClick: (() -> Unit)? = null,
+    onBackClick: () -> Unit,
+    onSubmitted: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val ext = MaterialTheme.blackseaColors
+
+    var teamName by rememberSaveable { mutableStateOf("") }
+    var shortCode by rememberSaveable { mutableStateOf("") }
+    var competition by rememberSaveable { mutableStateOf("TEKNOFEST") }
+    var schoolName by rememberSaveable { mutableStateOf("") }
+    var city by rememberSaveable { mutableStateOf("") }
+    var description by rememberSaveable { mutableStateOf("") }
+    var motto by rememberSaveable { mutableStateOf("") }
+    var selectedLogoKey by rememberSaveable { mutableStateOf(TeamLogoPreset.ROCKET.key) }
+    var selectedColorHex by rememberSaveable { mutableStateOf(TEAM_ACCENT_COLORS.first()) }
+    var managerName by rememberSaveable(defaultManagerName) { mutableStateOf(defaultManagerName) }
+    var managerContact by rememberSaveable(connectedEmail) { mutableStateOf(connectedEmail) }
+    var isSubmitting by remember { mutableStateOf(false) }
+    var formError by remember { mutableStateOf<String?>(null) }
+
+    Card(
+        modifier = modifier
+            .fillMaxWidth()
+            .testTag("team_creation_form_card"),
+        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, ext.cardBorder),
+        elevation = CardDefaults.cardElevation(defaultElevation = if (ext.isDark) 0.dp else 4.dp)
+    ) {
+        Column(
+            modifier = Modifier.padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                IconButton(onClick = onBackClick, enabled = !isSubmitting) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                        contentDescription = "Geri",
+                        tint = ext.textSecondary
                     )
-                ) {
-                    Text("Devam Et", fontWeight = FontWeight.Bold)
                 }
-            },
-            dismissButton = {
-                TextButton(onClick = { showDeleteStep1 = false }) {
-                    Text("Vazgeç")
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "Kendi Ekibini Oluştur",
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Text(
+                        text = "BlackSea Robotics yönetici onayından sonra ekibiniz aktif olur",
+                        fontSize = 11.sp,
+                        color = ext.textMuted
+                    )
                 }
             }
-        )
-    }
 
-    if (showDeleteStep2) {
-        AlertDialog(
-            onDismissRequest = { if (!isDeletingAccount) showDeleteStep2 = false },
-            icon = {
-                Icon(
-                    imageVector = Icons.Default.DeleteForever,
-                    contentDescription = null,
-                    tint = ext.dangerText,
-                    modifier = Modifier.size(34.dp)
-                )
-            },
-            title = {
-                Text("Son Onay: Hesap Kalıcı Olarak Silinecek", fontWeight = FontWeight.Bold, color = ext.dangerText)
-            },
-            text = {
-                Text(
-                    "Bu işlem geri alınamaz! Onayladığınızda hesabınız kalıcı olarak silinecek ve giriş ekranına döndürüleceksiniz.",
-                    color = ext.textSecondary,
-                    fontSize = 13.sp,
-                    lineHeight = 19.sp
-                )
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        val uid = authUser?.uid ?: return@Button
-                        isDeletingAccount = true
-                        scope.launch {
-                            try {
-                                repository.deleteOwnAccount()
-                                TeamNotificationDispatcher.clearUserSyncState(context, uid)
-                                showDeleteStep2 = false
-                                appSignOut(credentialManager, scope) {
-                                    authUser = null
-                                    userProfile = null
-                                    checkingProfile = false
-                                    Toast.makeText(context, "Hesabınız kalıcı olarak silindi.", Toast.LENGTH_LONG).show()
-                                }
-                            } catch (ce: CancellationException) {
-                                throw ce
-                            } catch (e: Exception) {
-                                Toast.makeText(
-                                    context,
-                                    sanitizeUserErrorMessage(e, "Hesap silinemedi. Lütfen tekrar deneyin."),
-                                    Toast.LENGTH_LONG
-                                ).show()
-                            } finally {
-                                isDeletingAccount = false
-                            }
-                        }
-                    },
-                    enabled = !isDeletingAccount,
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = ext.dangerSolid,
-                        contentColor = Color.White
-                    )
+            // Verified Google account pill
+            Surface(
+                shape = RoundedCornerShape(10.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant,
+                border = BorderStroke(1.dp, ext.cardBorder),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    if (isDeletingAccount) {
-                        CircularProgressIndicator(
-                            color = Color.White,
-                            modifier = Modifier.size(18.dp),
-                            strokeWidth = 2.dp
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Icon(imageVector = Icons.Default.Email, contentDescription = null, tint = ext.accentBlue, modifier = Modifier.size(16.dp))
+                        Text(
+                            text = connectedEmail.ifBlank { "Bağlı Google Hesabı" },
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onSurface
                         )
-                    } else {
-                        Text("Evet, Hesabımı Sil", fontWeight = FontWeight.Bold)
+                    }
+                    if (onChangeAccountClick != null) {
+                        Text(
+                            text = "Değiştir",
+                            color = ext.accentBlue,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.clickable(enabled = !isSubmitting) { onChangeAccountClick() }
+                        )
                     }
                 }
-            },
-            dismissButton = {
-                TextButton(
-                    onClick = { showDeleteStep2 = false },
-                    enabled = !isDeletingAccount
-                ) {
-                    Text("İptal")
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                OutlinedTextField(
+                    value = teamName,
+                    onValueChange = { value ->
+                        teamName = value
+                        if (shortCode.isBlank() && value.trim().length >= 3) {
+                            val initials = value.trim().split(" ")
+                                .filter { it.isNotBlank() }
+                                .map { it.first().uppercaseChar() }
+                                .joinToString("")
+                            shortCode = initials.take(5).ifBlank { value.trim().take(3).uppercase() }
+                        }
+                    },
+                    label = { Text("Takım Adı *") },
+                    placeholder = { Text("Örn: Fatsa Robotik") },
+                    singleLine = true,
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier
+                        .weight(1.7f)
+                        .testTag("create_team_name_input")
+                )
+                OutlinedTextField(
+                    value = shortCode,
+                    onValueChange = { if (it.length <= 8) shortCode = it.uppercase() },
+                    label = { Text("Kısa Kod *") },
+                    placeholder = { Text("Örn: FRT") },
+                    singleLine = true,
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier
+                        .weight(1f)
+                        .testTag("create_team_code_input")
+                )
+            }
+
+            Text(
+                text = "Yarışma / Proje Alanı *",
+                fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                COMPETITION_PRESETS.forEach { preset ->
+                    FilterChip(
+                        selected = competition == preset,
+                        onClick = { competition = preset },
+                        label = { Text(preset, fontSize = 11.sp) },
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = ext.accentBlueContainer,
+                            selectedLabelColor = ext.accentBlue
+                        )
+                    )
                 }
             }
-        )
+            OutlinedTextField(
+                value = competition,
+                onValueChange = { competition = it },
+                label = { Text("Yarışma / Proje / Amaç *") },
+                placeholder = { Text("Örn: TEKNOFEST İnsansız Hava Aracı") },
+                singleLine = true,
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("create_team_competition_input")
+            )
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                OutlinedTextField(
+                    value = schoolName,
+                    onValueChange = { schoolName = it },
+                    label = { Text("Okul / Kurum Adı *") },
+                    placeholder = { Text("Örn: Ünye Fen Lisesi") },
+                    singleLine = true,
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier
+                        .weight(1.2f)
+                        .testTag("create_team_school_input")
+                )
+                OutlinedTextField(
+                    value = city,
+                    onValueChange = { city = it },
+                    label = { Text("Şehir *") },
+                    placeholder = { Text("Örn: Ordu") },
+                    singleLine = true,
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier
+                        .weight(0.9f)
+                        .testTag("create_team_city_input")
+                )
+            }
+
+            OutlinedTextField(
+                value = description,
+                onValueChange = { if (it.length <= 450) description = it },
+                label = { Text("Takım Hakkında Kısa Açıklama *") },
+                placeholder = { Text("Takımınızın hedefini, odaklandığı teknoloji ve projeleri kısaca anlatın...") },
+                minLines = 3,
+                maxLines = 5,
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("create_team_description_input")
+            )
+
+            OutlinedTextField(
+                value = motto,
+                onValueChange = { if (it.length <= 100) motto = it },
+                label = { Text("Takım Sloganı / Motto (Opsiyonel)") },
+                placeholder = { Text("Örn: Geleceği Kodlayan Ekip") },
+                singleLine = true,
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier.fillMaxWidth()
+            )
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                OutlinedTextField(
+                    value = managerName,
+                    onValueChange = { managerName = it },
+                    label = { Text("Takım Yöneticisi Adı *") },
+                    placeholder = { Text("Ad Soyad") },
+                    singleLine = true,
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier
+                        .weight(1f)
+                        .testTag("create_team_manager_name_input")
+                )
+                OutlinedTextField(
+                    value = managerContact,
+                    onValueChange = { managerContact = it },
+                    label = { Text("İletişim Bilgisi *") },
+                    placeholder = { Text("Tel veya E-posta") },
+                    singleLine = true,
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier
+                        .weight(1f)
+                        .testTag("create_team_manager_contact_input")
+                )
+            }
+
+            // Logo & Accent Color Customization
+            Text(
+                text = "Takım Sembolü ve Rengi",
+                fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                TeamLogoPreset.entries
+                    .filter { it != TeamLogoPreset.BSR_PHOENIX }
+                    .forEach { preset ->
+                        val isSelected = selectedLogoKey == preset.key
+                        val accent = parseTeamColor(selectedColorHex)
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = if (isSelected) accent.copy(alpha = 0.18f) else MaterialTheme.colorScheme.surfaceVariant,
+                            border = BorderStroke(if (isSelected) 1.5.dp else 1.dp, if (isSelected) accent else ext.cardBorder),
+                            modifier = Modifier.clickable { selectedLogoKey = preset.key }
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(5.dp)
+                            ) {
+                                Icon(
+                                    imageVector = teamLogoPresetIcon(preset.key),
+                                    contentDescription = preset.label,
+                                    tint = if (isSelected) accent else ext.textSecondary,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Text(
+                                    text = preset.label,
+                                    fontSize = 11.sp,
+                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                    color = if (isSelected) accent else ext.textSecondary
+                                )
+                            }
+                        }
+                    }
+            }
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                TEAM_ACCENT_COLORS.forEach { hex ->
+                    val color = parseTeamColor(hex)
+                    val selected = selectedColorHex.equals(hex, ignoreCase = true)
+                    Box(
+                        modifier = Modifier
+                            .size(34.dp)
+                            .clip(CircleShape)
+                            .background(color)
+                            .border(
+                                width = if (selected) 2.5.dp else 1.dp,
+                                color = if (selected) MaterialTheme.colorScheme.onSurface else Color.White.copy(alpha = 0.4f),
+                                shape = CircleShape
+                            )
+                            .clickable { selectedColorHex = hex },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        if (selected) {
+                            Icon(
+                                imageVector = Icons.Default.Check,
+                                contentDescription = "Seçili Renk",
+                                tint = Color.White,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+                    }
+                }
+            }
+
+            if (formError != null) {
+                Text(
+                    text = formError.orEmpty(),
+                    color = ext.dangerText,
+                    fontSize = 12.sp,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+
+            Button(
+                onClick = {
+                    val code = shortCode.trim().ifBlank {
+                        teamName.trim().split(" ").filter { it.isNotBlank() }
+                            .map { it.first().uppercaseChar() }
+                            .joinToString("")
+                            .take(4)
+                    }
+                    isSubmitting = true
+                    formError = null
+                    scope.launch {
+                        val res = repository.submitTeamCreationRequest(
+                            name = teamName,
+                            shortCode = code,
+                            competition = competition,
+                            schoolName = schoolName,
+                            city = city,
+                            description = description,
+                            motto = motto,
+                            logoKey = selectedLogoKey,
+                            accentColorHex = selectedColorHex,
+                            managerName = managerName,
+                            managerContact = managerContact,
+                            founderEmail = connectedEmail,
+                            founderPhotoUrl = founderPhotoUrl
+                        )
+                        isSubmitting = false
+                        if (res.isSuccess) {
+                            Toast.makeText(
+                                context,
+                                "Takım oluşturma başvurunuz BlackSea Robotics yöneticilerine gönderildi.",
+                                Toast.LENGTH_LONG
+                            ).show()
+                            onSubmitted()
+                        } else {
+                            formError = sanitizeUserErrorMessage(
+                                res.exceptionOrNull() ?: IllegalStateException("Başvuru gönderilemedi.")
+                            )
+                        }
+                    }
+                },
+                enabled = !isSubmitting,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 50.dp)
+                    .testTag("submit_team_creation_button"),
+                shape = RoundedCornerShape(14.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = ext.accentBlueSolid,
+                    contentColor = Color.White
+                )
+            ) {
+                if (isSubmitting) {
+                    CircularProgressIndicator(color = Color.White, modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                } else {
+                    Icon(imageVector = Icons.Default.RocketLaunch, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Takım Başvurusunu Gönder", fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                }
+            }
+        }
     }
 }

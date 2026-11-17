@@ -111,20 +111,30 @@ import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Locale
 
+import com.example.model.PLATFORM_MAIN_TEAM_ID
+import com.example.model.TeamInfo
+
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun IdeasScreen(
     repository: BlackseaRepository,
     currentUserProfile: UserProfile?,
+    activeTeam: TeamInfo = TeamInfo.mainBlackseaTeam(),
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val ext = MaterialTheme.blackseaColors
 
+    val activeTeamId = activeTeam.id.ifBlank { PLATFORM_MAIN_TEAM_ID }
+    val activeTeamName = activeTeam.name.ifBlank { "BlackSea Robotics" }
+
     var selectedRoomFilter by remember { mutableStateOf("all") }
 
-    val ideas by repository.observeIdeas(if (selectedRoomFilter == "all") null else selectedRoomFilter).collectAsState(initial = emptyList())
+    val ideas by repository.observeIdeas(
+        roomId = if (selectedRoomFilter == "all") null else selectedRoomFilter,
+        teamId = activeTeamId
+    ).collectAsState(initial = emptyList())
 
     // Dialog state
     var showCreateDialog by remember { mutableStateOf(false) }
@@ -409,7 +419,7 @@ fun IdeasScreen(
                                             onToggleLike = {
                                                 scope.launch {
                                                     try {
-                                                        repository.toggleLikeIdea(idea.id, idea.likes)
+                                                        repository.toggleLikeIdea(idea.id, idea.likes, teamId = activeTeamId)
                                                     } catch (ce: CancellationException) {
                                                         throw ce
                                                     } catch (e: Exception) {
@@ -491,6 +501,7 @@ fun IdeasScreen(
     if (showCreateDialog) {
         CreateIdeaDialog(
             repository = repository,
+            activeTeamId = activeTeamId,
             onDismiss = { showCreateDialog = false },
             onSubmit = { title, desc, cat, room, uploadResult ->
                 scope.launch {
@@ -513,7 +524,9 @@ fun IdeasScreen(
                             fileSize = uploadResult?.fileSize ?: 0L,
                             thumbnailUrl = uploadResult?.thumbnailUrl ?: "",
                             storagePath = uploadResult?.storagePath ?: "",
-                            mediaDurationMs = uploadResult?.mediaDurationMs ?: 0L
+                            mediaDurationMs = uploadResult?.mediaDurationMs ?: 0L,
+                            teamId = activeTeamId,
+                            teamName = activeTeamName
                         )
                         showCreateDialog = false
                         Toast.makeText(context, "Fikriniz takımla paylaşıldı!", Toast.LENGTH_SHORT).show()
@@ -537,7 +550,7 @@ fun IdeasScreen(
             onSave = { newStatus ->
                 scope.launch {
                     try {
-                        repository.updateIdeaCategory(idea.id, newStatus)
+                        repository.updateIdeaCategory(idea.id, newStatus, teamId = activeTeamId, teamName = activeTeamName)
                         ideaToChangeStatus = null
                         Toast.makeText(context, "Fikir durumu güncellendi: $newStatus", Toast.LENGTH_SHORT).show()
                     } catch (ce: CancellationException) {
@@ -566,7 +579,7 @@ fun IdeasScreen(
                         ideaToDelete = null
                         scope.launch {
                             try {
-                                repository.deleteIdea(targetIdea.id)
+                                repository.deleteIdea(targetIdea.id, teamId = activeTeamId)
                                 Toast.makeText(context, "Fikir silindi", Toast.LENGTH_SHORT).show()
                             } catch (ce: CancellationException) {
                                 throw ce
@@ -600,6 +613,8 @@ fun IdeasScreen(
             repository = repository,
             currentUserProfile = currentUserProfile,
             isAdmin = isAdminOrLeader,
+            activeTeamId = activeTeamId,
+            activeTeamName = activeTeamName,
             onDismiss = { activeIdeaForComments = null }
         )
     }
@@ -609,6 +624,7 @@ fun IdeasScreen(
 @Composable
 fun CreateIdeaDialog(
     repository: BlackseaRepository,
+    activeTeamId: String = PLATFORM_MAIN_TEAM_ID,
     onDismiss: () -> Unit,
     onSubmit: (title: String, desc: String, category: String, room: String, attachment: FileUploadResult?) -> Unit
 ) {
@@ -860,10 +876,11 @@ fun CreateIdeaDialog(
                             isUploading = true
                             uploadError = null
                             try {
+                                val prefix = if (activeTeamId == PLATFORM_MAIN_TEAM_ID) "" else "teams/$activeTeamId/"
                                 val res = repository.uploadFile(
                                     context = context,
                                     uri = uri,
-                                    folder = "ideas_attachments/$selectedRoom",
+                                    folder = "${prefix}ideas_attachments/$selectedRoom",
                                     onProgress = { uploadProgress = it }
                                 )
                                 isUploading = false
@@ -960,10 +977,12 @@ fun IdeaCommentsBottomSheet(
     repository: BlackseaRepository,
     currentUserProfile: UserProfile?,
     isAdmin: Boolean,
+    activeTeamId: String = PLATFORM_MAIN_TEAM_ID,
+    activeTeamName: String = "BlackSea Robotics",
     onDismiss: () -> Unit
 ) {
     val scope = rememberCoroutineScope()
-    val comments by repository.observeIdeaComments(idea.id).collectAsState(initial = emptyList())
+    val comments by repository.observeIdeaComments(idea.id, teamId = activeTeamId).collectAsState(initial = emptyList())
     var commentText by remember { mutableStateOf("") }
     var commentToDelete by remember { mutableStateOf<com.example.model.IdeaComment?>(null) }
     val sheetState = rememberModalBottomSheetState()
@@ -1088,7 +1107,9 @@ fun IdeaCommentsBottomSheet(
                                         ideaId = idea.id,
                                         text = textToSend,
                                         authorName = realName,
-                                        authorRoles = roles
+                                        authorRoles = roles,
+                                        teamId = activeTeamId,
+                                        teamName = activeTeamName
                                     )
                                 } catch (ce: CancellationException) {
                                     throw ce
@@ -1124,7 +1145,7 @@ fun IdeaCommentsBottomSheet(
                         commentToDelete = null
                         scope.launch {
                             try {
-                                repository.deleteIdeaComment(idea.id, targetComment.id)
+                                repository.deleteIdeaComment(idea.id, targetComment.id, teamId = activeTeamId)
                                 Toast.makeText(context, "Yorum silindi", Toast.LENGTH_SHORT).show()
                             } catch (ce: CancellationException) {
                                 throw ce

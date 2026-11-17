@@ -12,8 +12,9 @@ import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import com.example.data.BlackseaRepository
-import com.example.data.shouldUserReceiveNotification
-import com.example.model.TeamNotification
+import com.example.model.PLATFORM_FOUNDER_EMAIL
+import com.example.model.PLATFORM_MAIN_TEAM_ID
+import com.example.model.TeamMembership
 import com.example.model.UserStatus
 import com.example.update.AppReleaseInfo
 import com.example.update.AppUpdateManager
@@ -116,34 +117,57 @@ class BackgroundNotificationWorker(
         val updateManager = AppUpdateManager(applicationContext)
         var shouldRetry = false
 
-        // 1. Sync Firestore notifications independently if signed in
+        // 1. Sync Firestore notifications independently if signed in (multi-team isolated queries)
         val currentUser = Firebase.auth.currentUser
         if (currentUser != null) {
             try {
                 val profile = repository.getUserProfile(currentUser.uid)
-                val isSuperAdmin = profile?.isSuperAdmin == true ||
-                    currentUser.email.equals("filim3290@gmail.com", ignoreCase = true)
+                val isPlatformAdmin = profile?.isPlatformManagerAccount() == true ||
+                    currentUser.email.equals(PLATFORM_FOUNDER_EMAIL, ignoreCase = true)
 
-                if (profile != null && (UserStatus.isActive(profile.status) || isSuperAdmin)) {
-                    val isManager = profile.isManagerAccount()
-                    val joinMs = profile.createdAt?.toDate()?.time
-                        ?: TeamNotificationDispatcher.getUserJoinTimestampMs(applicationContext, currentUser.uid)
-
-                    val snapshot = try {
-                        repository.db.collection("notifications").get(Source.SERVER).await()
+                if (profile != null || isPlatformAdmin) {
+                    val membershipSnap = try {
+                        repository.db.collection("team_memberships")
+                            .whereEqualTo("userId", currentUser.uid)
+                            .get(Source.SERVER)
+                            .await()
                     } catch (_: Exception) {
-                        repository.db.collection("notifications").get().await()
+                        repository.db.collection("team_memberships")
+                            .whereEqualTo("userId", currentUser.uid)
+                            .get()
+                            .await()
                     }
-                    val allNotifications = snapshot.toObjects(TeamNotification::class.java)
-                    val filtered = allNotifications.filter { notif ->
-                        shouldUserReceiveNotification(
-                            notif = notif,
+                    val membershipsByTeam = membershipSnap.toObjects(TeamMembership::class.java)
+                        .filter { it.teamId.isNotBlank() }
+                        .associateBy { it.teamId }
+                        .toMutableMap()
+
+                    if (profile != null && !membershipsByTeam.containsKey(PLATFORM_MAIN_TEAM_ID) &&
+                        (isPlatformAdmin || (profile.activeTeamId.isBlank() && UserStatus.isActive(profile.status) && profile.roles.any { it != "Takım Üyesi" }))
+                    ) {
+                        membershipsByTeam[PLATFORM_MAIN_TEAM_ID] = TeamMembership(
+                            id = "${PLATFORM_MAIN_TEAM_ID}_${currentUser.uid}",
+                            teamId = PLATFORM_MAIN_TEAM_ID,
                             userId = currentUser.uid,
-                            isManager = isManager,
-                            userTeam = profile.team,
-                            userCreatedAtMs = joinMs
+                            userName = profile.getFullName(),
+                            userEmail = profile.email,
+                            subTeam = profile.team,
+                            role = profile.role,
+                            roles = profile.roles,
+                            status = UserStatus.ACTIVE.value,
+                            isTeamAdmin = profile.isManagerAccount() || isPlatformAdmin
                         )
                     }
+
+                    val joinMs = profile?.createdAt?.toDate()?.time
+                        ?: TeamNotificationDispatcher.getUserJoinTimestampMs(applicationContext, currentUser.uid)
+
+                    val filtered = repository.fetchNotificationsOnceForUser(
+                        userId = currentUser.uid,
+                        membershipsByTeam = membershipsByTeam,
+                        isPlatformAdmin = isPlatformAdmin,
+                        userCreatedAtMs = joinMs
+                    ).orEmpty()
 
                     TeamNotificationDispatcher.processNotifications(
                         context = applicationContext,

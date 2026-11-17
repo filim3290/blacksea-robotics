@@ -5,6 +5,7 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -24,11 +25,13 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.DeleteForever
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.ExitToApp
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.LocationOn
+import androidx.compose.material.icons.filled.Logout
 import androidx.compose.material.icons.filled.School
 import androidx.compose.material.icons.filled.Security
+import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -63,26 +66,31 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.credentials.CredentialManager
 import com.example.data.BlackseaRepository
-import com.example.model.PredefinedRoles
+import com.example.model.TeamInfo
+import com.example.model.TeamMembership
 import com.example.model.TeamType
 import com.example.model.UserProfile
-import com.example.ui.components.BlackseaLogo
-import com.example.ui.components.RoleBadge
 import com.example.ui.components.TeamBadge
+import com.example.ui.components.TeamLogoBadge
+import com.example.ui.components.UserRolesRow
+import com.example.ui.components.parseTeamColor
 import com.example.ui.theme.blackseaColors
 import com.example.util.AppMessages
 import com.example.util.sanitizeUserErrorMessage
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun ProfileScreen(
     currentUserProfile: UserProfile?,
+    activeTeam: TeamInfo = TeamInfo.mainBlackseaTeam(),
+    activeMembership: TeamMembership? = null,
     repository: BlackseaRepository? = null,
     updateManager: com.example.update.AppUpdateManager? = null,
     onShowUpdateDialog: (com.example.update.AppReleaseInfo) -> Unit = {},
     onNavigateToAdmin: () -> Unit = {},
+    onSwitchTeam: () -> Unit = {},
     onSignOut: () -> Unit,
     onAccountDeleted: () -> Unit = onSignOut,
     modifier: Modifier = Modifier
@@ -93,11 +101,21 @@ fun ProfileScreen(
     val credentialManager = remember { CredentialManager.create(context) }
     var showEditDialog by remember { mutableStateOf(false) }
     var showSignOutConfirmation by remember { mutableStateOf(false) }
+    var showLeaveTeamConfirmation by remember { mutableStateOf(false) }
+    var isLeavingTeam by remember { mutableStateOf(false) }
     var showDeleteStep1 by remember { mutableStateOf(false) }
     var showDeleteStep2 by remember { mutableStateOf(false) }
     var isDeletingAccount by remember { mutableStateOf(false) }
 
-    val isAdmin = currentUserProfile?.isManagerAccount() == true
+    val isAdmin = currentUserProfile?.isManagerAccount() == true || activeMembership?.isManagerInTeam() == true
+    val activeSubTeam = activeMembership?.subTeam?.ifBlank { currentUserProfile?.team }
+        ?: (currentUserProfile?.team ?: TeamType.GENERAL.displayName)
+    val activeRoles = activeMembership?.roles?.ifEmpty { currentUserProfile?.roles.orEmpty() }
+        ?: currentUserProfile?.roles.orEmpty().ifEmpty { listOf(currentUserProfile?.role ?: "Takım Üyesi") }
+    val teamAccent = parseTeamColor(activeTeam.accentColorHex, ext.accentBlue)
+    val canLeaveCurrentTeam = repository != null &&
+        activeMembership != null &&
+        !(activeTeam.isMainTeam && currentUserProfile?.isPlatformManagerAccount() == true)
 
     Column(
         modifier = modifier
@@ -167,14 +185,12 @@ fun ProfileScreen(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    TeamBadge(teamName = currentUserProfile?.team ?: "Yazılım Ekibi")
+                    TeamBadge(teamName = activeSubTeam)
                 }
 
                 Spacer(modifier = Modifier.height(8.dp))
 
-                com.example.ui.components.UserRolesRow(
-                    roles = currentUserProfile?.roles.orEmpty().ifEmpty { listOf(currentUserProfile?.role ?: "Üye") }
-                )
+                UserRolesRow(roles = activeRoles)
 
                 if (repository != null && currentUserProfile != null) {
                     Spacer(modifier = Modifier.height(14.dp))
@@ -209,7 +225,7 @@ fun ProfileScreen(
             }
         }
 
-        // Team & Platform Info
+        // Active Team & Switcher Card
         Card(
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(16.dp),
@@ -221,69 +237,139 @@ fun ProfileScreen(
                 modifier = Modifier.padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                Text(
-                    text = "Takım Bilgileri",
-                    fontSize = 15.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
-
                 Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.School,
-                        contentDescription = null,
-                        tint = ext.accentBlue,
-                        modifier = Modifier.size(20.dp)
-                    )
-                    Column {
-                        Text(text = "Kurum / Okul", fontSize = 11.sp, color = ext.textMuted)
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        TeamLogoBadge(team = activeTeam, size = 44)
+                        Column {
+                            Text(
+                                text = "Aktif Çalışma Takımı",
+                                fontSize = 11.sp,
+                                color = ext.textMuted
+                            )
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Text(
+                                    text = activeTeam.name.ifBlank { "BlackSea Robotics" },
+                                    fontSize = 15.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                if (activeTeam.shortCode.isNotBlank()) {
+                                    Surface(
+                                        shape = RoundedCornerShape(6.dp),
+                                        color = teamAccent.copy(alpha = 0.14f)
+                                    ) {
+                                        Text(
+                                            text = activeTeam.shortCode,
+                                            color = teamAccent,
+                                            fontSize = 10.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if (activeTeam.schoolName.isNotBlank() || activeTeam.city.isNotBlank()) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.School,
+                            contentDescription = null,
+                            tint = teamAccent,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Column {
+                            Text(text = "Kurum / Okul ve Şehir", fontSize = 11.sp, color = ext.textMuted)
+                            Text(
+                                text = listOf(activeTeam.schoolName, activeTeam.city).filter { it.isNotBlank() }.joinToString(" • "),
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                        }
+                    }
+                }
+
+                if (activeTeam.competition.isNotBlank()) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.LocationOn,
+                            contentDescription = null,
+                            tint = ext.amberText,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Column {
+                            Text(text = "Yarışma / Alan", fontSize = 11.sp, color = ext.textMuted)
+                            Text(
+                                text = activeTeam.competition,
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                        }
+                    }
+                }
+
+                val bannerQuote = activeTeam.motto.ifBlank { activeTeam.description }
+                if (bannerQuote.isNotBlank()) {
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant,
+                        border = BorderStroke(1.dp, ext.cardBorder),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
                         Text(
-                            text = "Ünye Fen Lisesi Robotik Takımı",
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            color = MaterialTheme.colorScheme.onSurface
+                            text = bannerQuote,
+                            color = ext.amberText,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.padding(vertical = 10.dp, horizontal = 12.dp)
                         )
                     }
                 }
 
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Info,
-                        contentDescription = null,
-                        tint = ext.amberText,
-                        modifier = Modifier.size(20.dp)
-                    )
-                    Column {
-                        Text(text = "Resmi Takım Adı", fontSize = 11.sp, color = ext.textMuted)
-                        Text(
-                            text = "BLACKSEA ROBOTICS (BSR)",
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-                    }
-                }
-
-                Surface(
+                OutlinedButton(
+                    onClick = onSwitchTeam,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(44.dp)
+                        .testTag("profile_switch_team_button"),
                     shape = RoundedCornerShape(10.dp),
-                    color = MaterialTheme.colorScheme.surfaceVariant,
-                    border = BorderStroke(1.dp, ext.cardBorder),
-                    modifier = Modifier.fillMaxWidth()
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = teamAccent)
                 ) {
-                    Text(
-                        text = "\"ONE TEAM. ONE VISION. ONE ROBOT.\"",
-                        color = ext.amberText,
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.Bold,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier.padding(vertical = 10.dp)
-                    )
+                    Icon(imageVector = Icons.Default.SwapHoriz, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Takım Değiştir / Tüm Takımlar", fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                }
+
+                if (canLeaveCurrentTeam) {
+                    TextButton(
+                        onClick = { showLeaveTeamConfirmation = true },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("leave_team_button"),
+                        colors = ButtonDefaults.textButtonColors(contentColor = ext.dangerText)
+                    ) {
+                        Icon(imageVector = Icons.Default.Logout, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Bu Takımdan Ayrıl", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                    }
                 }
             }
         }
@@ -407,7 +493,7 @@ fun ProfileScreen(
                         )
                     ) {
                         if (isCheckingUpdate) {
-                            androidx.compose.material3.CircularProgressIndicator(
+                            CircularProgressIndicator(
                                 modifier = Modifier.size(18.dp),
                                 color = Color.White,
                                 strokeWidth = 2.dp
@@ -457,6 +543,8 @@ fun ProfileScreen(
 
         com.example.ui.components.HelpAndSupportCenterCard(
             currentUserProfile = currentUserProfile,
+            teamId = activeTeam.id,
+            teamName = activeTeam.name,
             repository = repository,
             updateManager = mgr
         )
@@ -471,7 +559,7 @@ fun ProfileScreen(
                 text = {
                     if (isLoadingHistory) {
                         Box(modifier = Modifier.fillMaxWidth().height(140.dp), contentAlignment = Alignment.Center) {
-                            androidx.compose.material3.CircularProgressIndicator(color = ext.accentBlue)
+                            CircularProgressIndicator(color = ext.accentBlue)
                         }
                     } else if (releaseHistory.isEmpty()) {
                         Text("Henüz yayınlanmış bir sürüm geçmişi bulunamadı.", fontSize = 13.sp, color = ext.textSecondary)
@@ -534,18 +622,14 @@ fun ProfileScreen(
 
         // Sign Out Button
         OutlinedButton(
-            onClick = {
-                showSignOutConfirmation = true
-            },
+            onClick = { showSignOutConfirmation = true },
             modifier = Modifier
                 .fillMaxWidth()
                 .height(48.dp)
                 .testTag("sign_out_button"),
             shape = RoundedCornerShape(12.dp),
             border = BorderStroke(1.dp, ext.dangerText.copy(alpha = 0.45f)),
-            colors = ButtonDefaults.outlinedButtonColors(
-                contentColor = ext.dangerText
-            )
+            colors = ButtonDefaults.outlinedButtonColors(contentColor = ext.dangerText)
         ) {
             Icon(
                 imageVector = Icons.Default.ExitToApp,
@@ -567,9 +651,7 @@ fun ProfileScreen(
                     .fillMaxWidth()
                     .height(48.dp)
                     .testTag("delete_own_account_button"),
-                colors = ButtonDefaults.textButtonColors(
-                    contentColor = ext.dangerText
-                )
+                colors = ButtonDefaults.textButtonColors(contentColor = ext.dangerText)
             ) {
                 Icon(
                     imageVector = Icons.Default.DeleteForever,
@@ -590,9 +672,59 @@ fun ProfileScreen(
         Spacer(modifier = Modifier.height(8.dp))
 
         Text(
-            text = "BLACKSEA ROBOTICS Platformu • v${mgr.getCurrentVersionName()}",
+            text = "${activeTeam.name.uppercase()} • BlackSea Robotics Platformu v${mgr.getCurrentVersionName()}",
             fontSize = 11.sp,
-            color = ext.textMuted
+            color = ext.textMuted,
+            textAlign = TextAlign.Center
+        )
+    }
+
+    if (showLeaveTeamConfirmation && repository != null) {
+        AlertDialog(
+            onDismissRequest = { if (!isLeavingTeam) showLeaveTeamConfirmation = false },
+            title = { Text("${activeTeam.name} Takımından Ayrıl", fontWeight = FontWeight.Bold) },
+            text = {
+                Text(
+                    "Bu takımdan ayrılmak istediğinize emin misiniz? Yeniden katılmak için daha sonra tekrar başvuru gönderebilirsiniz.",
+                    color = ext.textSecondary,
+                    fontSize = 13.sp
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        isLeavingTeam = true
+                        scope.launch {
+                            val res = repository.leaveTeam(activeTeam.id)
+                            isLeavingTeam = false
+                            if (res.isSuccess) {
+                                showLeaveTeamConfirmation = false
+                                Toast.makeText(context, "${activeTeam.name} takımından ayrıldınız.", Toast.LENGTH_SHORT).show()
+                                onSwitchTeam()
+                            } else {
+                                Toast.makeText(
+                                    context,
+                                    sanitizeUserErrorMessage(res.exceptionOrNull()),
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            }
+                        }
+                    },
+                    enabled = !isLeavingTeam,
+                    colors = ButtonDefaults.buttonColors(containerColor = ext.dangerSolid, contentColor = Color.White)
+                ) {
+                    if (isLeavingTeam) {
+                        CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.White, strokeWidth = 2.dp)
+                    } else {
+                        Text("Takımdan Ayrıl", fontWeight = FontWeight.Bold)
+                    }
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showLeaveTeamConfirmation = false }, enabled = !isLeavingTeam) {
+                    Text("Vazgeç")
+                }
+            }
         )
     }
 
@@ -612,7 +744,7 @@ fun ProfileScreen(
             },
             text = {
                 Text(
-                    "Hesabınız ve üyelik profiliniz sistemden silinecektir. Yanlışlıkla silmeyi önlemek için bir sonraki adımda tekrar onayınız istenecektir.",
+                    "Hesabınız ve tüm takım üyelikleriniz sistemden silinecektir. Yanlışlıkla silmeyi önlemek için bir sonraki adımda tekrar onayınız istenecektir.",
                     color = ext.textSecondary,
                     fontSize = 13.sp,
                     lineHeight = 19.sp
@@ -661,7 +793,7 @@ fun ProfileScreen(
             },
             text = {
                 Text(
-                    "Bu işlem geri alınamaz! Onayladığınızda Blacksea Robotics hesabınız kalıcı olarak silinecek ve oturumunuz kapatılacaktır. Emin misiniz?",
+                    "Bu işlem geri alınamaz! Onayladığınızda platform hesabınız kalıcı olarak silinecek ve oturumunuz kapatılacaktır. Emin misiniz?",
                     color = ext.textSecondary,
                     fontSize = 13.sp,
                     lineHeight = 19.sp
@@ -758,7 +890,7 @@ fun ProfileScreen(
         var editFirstName by remember { mutableStateOf(currentUserProfile.firstName) }
         var editLastName by remember { mutableStateOf(currentUserProfile.lastName) }
         var editUsername by remember { mutableStateOf(currentUserProfile.username) }
-        var editTeam by remember { mutableStateOf(currentUserProfile.team) }
+        var editTeam by remember { mutableStateOf(activeSubTeam) }
         var teamExpanded by remember { mutableStateOf(false) }
 
         AlertDialog(
@@ -801,7 +933,7 @@ fun ProfileScreen(
                             value = editTeam,
                             onValueChange = {},
                             readOnly = true,
-                            label = { Text("Ekip") },
+                            label = { Text("Takım İçi Alt Ekip") },
                             trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = teamExpanded) },
                             modifier = Modifier.fillMaxWidth().menuAnchor(),
                             shape = RoundedCornerShape(10.dp)
@@ -812,6 +944,7 @@ fun ProfileScreen(
                             onDismissRequest = { teamExpanded = false }
                         ) {
                             listOf(
+                                TeamType.GENERAL,
                                 TeamType.MANAGEMENT,
                                 TeamType.SOFTWARE,
                                 TeamType.MECHANIC,
@@ -834,16 +967,25 @@ fun ProfileScreen(
                     onClick = {
                         val trimmedFirst = editFirstName.trim()
                         val trimmedLast = editLastName.trim()
+                        val uid = currentUserProfile.userId.ifBlank { currentUserProfile.id }
                         if (trimmedFirst.isNotBlank() && trimmedLast.isNotBlank()) {
                             scope.launch {
                                 try {
                                     repository.updateOwnProfile(
-                                        userId = currentUserProfile.userId.ifBlank { currentUserProfile.id },
+                                        userId = uid,
                                         firstName = trimmedFirst,
                                         lastName = trimmedLast,
                                         username = editUsername.trim(),
                                         team = editTeam
                                     )
+                                    if (activeMembership != null) {
+                                        repository.updateMyTeamMembershipProfile(
+                                            teamId = activeTeam.id,
+                                            userId = uid,
+                                            displayName = "$trimmedFirst $trimmedLast",
+                                            subTeam = editTeam
+                                        )
+                                    }
                                     showEditDialog = false
                                     Toast.makeText(context, "Profil güncellendi!", Toast.LENGTH_SHORT).show()
                                 } catch (ce: CancellationException) {

@@ -103,15 +103,30 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.R
 import com.example.data.BlackseaRepository
+import com.example.model.PLATFORM_FOUNDER_EMAIL
+import com.example.model.PLATFORM_MAIN_TEAM_ID
+import com.example.model.TeamInfo
+import com.example.model.TeamMembership
 import com.example.model.UserProfile
+import com.example.model.UserStatus
+import com.example.model.withTeamContext
 import com.example.ui.components.BlackseaLogo
+import com.example.ui.components.TeamLogoBadge
+import com.example.ui.components.parseTeamColor
 import com.example.ui.screens.AdminScreen
 import com.example.ui.screens.FilesScreen
 import com.example.ui.screens.HomeScreen
 import com.example.ui.screens.IdeasScreen
 import com.example.ui.screens.ProfileScreen
 import com.example.ui.screens.RoomsScreen
+import com.example.ui.screens.TeamHubScreen
 import com.example.ui.theme.blackseaColors
+import androidx.compose.material.icons.filled.SwapHoriz
+import androidx.compose.runtime.key
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.text.style.TextOverflow
+import com.google.firebase.Firebase
+import com.google.firebase.auth.auth
 
 enum class NavItem(val route: String, val title: String) {
     HOME("home", "Ana Sayfa"),
@@ -137,16 +152,110 @@ fun MainScreen(
 ) {
     val context = LocalContext.current
     val ext = MaterialTheme.blackseaColors
-    val currentUserProfile by repository.observeUserProfile(currentUserId).collectAsState(initial = null)
-    var currentTab by remember { mutableStateOf(NavItem.HOME) }
-    var selectedRoomIdForNavigation by remember { mutableStateOf("general") }
-    var adminInitialTab by remember { mutableIntStateOf(0) }
     val scope = rememberCoroutineScope()
 
-    val isAdmin = currentUserProfile?.isManagerAccount() == true
+    val currentUserProfile by repository.observeUserProfile(currentUserId).collectAsState(initial = null)
+    val approvedTeams by repository.observeApprovedTeams().collectAsState(initial = emptyList())
+    val myMemberships by repository.observeMyMemberships(currentUserId).collectAsState(initial = emptyList())
+    val myTeamApplications by repository.observeMyTeamApplications(currentUserId).collectAsState(initial = emptyList())
 
-    fun navigateForNotification(type: String, roomId: String) {
-        when (type.lowercase()) {
+    val isPlatformAdmin = remember(currentUserProfile) {
+        currentUserProfile?.isPlatformManagerAccount() == true ||
+            Firebase.auth.currentUser?.email.equals(PLATFORM_FOUNDER_EMAIL, ignoreCase = true)
+    }
+
+    LaunchedEffect(currentUserId, currentUserProfile?.email, isPlatformAdmin) {
+        val p = currentUserProfile ?: return@LaunchedEffect
+        repository.migrateLegacyUserToMainTeamMembershipIfNeeded(p)
+        if (isPlatformAdmin) {
+            repository.ensureMainTeamExists()
+        }
+    }
+
+    val membershipsByTeam = remember(myMemberships, currentUserProfile, isPlatformAdmin) {
+        val map = myMemberships.associateBy { it.teamId }.toMutableMap()
+        val p = currentUserProfile
+        if (p != null && isPlatformAdmin && !map.containsKey(PLATFORM_MAIN_TEAM_ID)) {
+            val uid = p.userId.ifBlank { p.id }.ifBlank { currentUserId }
+            map[PLATFORM_MAIN_TEAM_ID] = TeamMembership(
+                id = "${PLATFORM_MAIN_TEAM_ID}_$uid",
+                teamId = PLATFORM_MAIN_TEAM_ID,
+                userId = uid,
+                userName = p.getFullName(),
+                userEmail = p.email,
+                userPhotoUrl = p.photoUrl,
+                subTeam = p.team,
+                role = p.role,
+                roles = p.roles,
+                status = UserStatus.ACTIVE.value,
+                isTeamAdmin = true
+            )
+        }
+        map
+    }
+
+    val activeTeamIds = remember(membershipsByTeam, isPlatformAdmin) {
+        val set = membershipsByTeam.values.filter { it.isActive() }.map { it.teamId }.toMutableSet()
+        if (isPlatformAdmin) set.add(PLATFORM_MAIN_TEAM_ID)
+        set.toSet()
+    }
+
+    var activeTeamId by rememberSaveable(currentUserId) { mutableStateOf<String?>(null) }
+    var currentTab by remember { mutableStateOf(NavItem.HOME) }
+    var selectedRoomIdForNavigation by remember { mutableStateOf("general") }
+    var adminInitialSection by remember { mutableStateOf("members") }
+
+    // Ensure removed/revoked membership safely exits the closed workspace back to Team Hub
+    LaunchedEffect(activeTeamId, activeTeamIds, myMemberships, isPlatformAdmin) {
+        val selected = activeTeamId ?: return@LaunchedEffect
+        if (selected !in activeTeamIds && !(selected == PLATFORM_MAIN_TEAM_ID && isPlatformAdmin)) {
+            if (myMemberships.isNotEmpty() || !isPlatformAdmin) {
+                activeTeamId = null
+                currentTab = NavItem.HOME
+            }
+        }
+    }
+
+    fun navigateForNotification(type: String, roomId: String, targetTeamId: String) {
+        val lower = type.lowercase()
+        when (lower) {
+            "team_application_pending" -> {
+                if (isPlatformAdmin) {
+                    activeTeamId = PLATFORM_MAIN_TEAM_ID
+                    adminInitialSection = "team_applications"
+                    currentTab = NavItem.ADMIN
+                } else {
+                    activeTeamId = null
+                }
+                return
+            }
+            "team_application_rejected" -> {
+                activeTeamId = null
+                return
+            }
+            "team_application_approved" -> {
+                if (targetTeamId.isNotBlank() && targetTeamId in activeTeamIds) {
+                    activeTeamId = targetTeamId
+                    currentTab = NavItem.HOME
+                } else {
+                    activeTeamId = null
+                }
+                return
+            }
+        }
+
+        val effectiveTeam = targetTeamId.ifBlank { activeTeamId ?: PLATFORM_MAIN_TEAM_ID }
+        if (effectiveTeam !in activeTeamIds) {
+            activeTeamId = null
+            return
+        }
+
+        activeTeamId = effectiveTeam
+        val targetMembership = membershipsByTeam[effectiveTeam]
+        val isManagerInTarget = targetMembership?.isManagerInTeam() == true ||
+            (effectiveTeam == PLATFORM_MAIN_TEAM_ID && isPlatformAdmin)
+
+        when (lower) {
             "message" -> {
                 selectedRoomIdForNavigation = roomId.ifBlank { "general" }
                 currentTab = NavItem.ROOMS
@@ -154,16 +263,16 @@ fun MainScreen(
             "file" -> currentTab = NavItem.FILES
             "idea", "comment" -> currentTab = NavItem.IDEAS
             "member_pending" -> {
-                if (isAdmin) {
-                    adminInitialTab = 1
+                if (isManagerInTarget) {
+                    adminInitialSection = "approvals"
                     currentTab = NavItem.ADMIN
                 } else {
                     currentTab = NavItem.HOME
                 }
             }
             "support_ticket" -> {
-                if (isAdmin) {
-                    adminInitialTab = 5
+                if (isManagerInTarget) {
+                    adminInitialSection = "support"
                     currentTab = NavItem.ADMIN
                 } else {
                     currentTab = NavItem.PROFILE
@@ -174,17 +283,15 @@ fun MainScreen(
         }
     }
 
-    LaunchedEffect(notificationNavEvent?.nonce, currentUserProfile) {
+    LaunchedEffect(notificationNavEvent?.nonce, currentUserProfile, activeTeamIds) {
         val event = notificationNavEvent ?: return@LaunchedEffect
         if (currentUserProfile == null) return@LaunchedEffect
         if (!event.openUpdateDialog && event.type.isNotBlank()) {
-            navigateForNotification(event.type, event.roomId)
+            navigateForNotification(event.type, event.roomId, event.teamId)
             onConsumeNotificationNav()
         }
     }
 
-    // Team-targeted notifications (General + User's Team + Broadcasts + Ideas + New Members + Updates)
-    // Filter out historical shared notifications created before this member joined
     val effectiveJoinMs = remember(currentUserId, currentUserProfile?.createdAt) {
         val profileTs = currentUserProfile?.createdAt?.toDate()?.time ?: 0L
         if (profileTs > 0L) {
@@ -194,24 +301,26 @@ fun MainScreen(
             TeamNotificationDispatcher.getUserJoinTimestampMs(context, currentUserId)
         }
     }
+
     val notifications by remember(
         currentUserId,
-        isAdmin,
-        currentUserProfile?.team,
+        membershipsByTeam,
+        isPlatformAdmin,
         effectiveJoinMs,
         currentUserProfile != null
     ) {
         if (currentUserProfile == null) {
             flowOf(emptyList())
         } else {
-            repository.observeNotifications(
+            repository.observeNotificationsForUser(
                 userId = currentUserId,
-                isManager = isAdmin,
-                userTeam = currentUserProfile?.team ?: "",
+                membershipsByTeam = membershipsByTeam,
+                isPlatformAdmin = isPlatformAdmin,
                 userCreatedAtMs = effectiveJoinMs
             )
         }
     }.collectAsState(initial = emptyList())
+
     val visibleNotifications = remember(notifications, updateManager) {
         notifications.filterNot { notif ->
             updateManager?.isNotificationUpdateObsolete(
@@ -231,385 +340,525 @@ fun MainScreen(
     }
     var showNotificationsDialog by remember { mutableStateOf(false) }
 
-    // BackHandler: When on sub-screens, navigate back to Home
-    BackHandler(enabled = currentTab != NavItem.HOME) {
-        currentTab = NavItem.HOME
+    val activeTeamIdNonNull = activeTeamId
+    if (activeTeamIdNonNull == null) {
+        TeamHubScreen(
+            currentUserId = currentUserId,
+            currentUserProfile = currentUserProfile,
+            approvedTeams = approvedTeams,
+            myMemberships = myMemberships,
+            myTeamApplications = myTeamApplications,
+            repository = repository,
+            notifications = visibleNotifications,
+            availableUpdate = availableUpdate,
+            locallyReadIds = locallyReadIds,
+            unreadNotificationsCount = unreadNotificationsCount,
+            hasUnreadUpdate = hasUnreadUpdate,
+            isPlatformAdmin = isPlatformAdmin,
+            onMarkAsRead = { notifId ->
+                locallyReadIds = locallyReadIds + notifId
+                val target = visibleNotifications.firstOrNull { it.id == notifId }
+                val isShared = target != null && target.recipientUserId != currentUserId
+                scope.launch {
+                    repository.markNotificationAsRead(notifId, currentUserId, isShared = isShared)
+                }
+            },
+            onMarkAllAsRead = {
+                if (availableUpdate != null) {
+                    readUpdateTag = availableUpdate.tagName
+                }
+                val allIds = visibleNotifications.map { it.id }.filter { it.isNotBlank() }.toSet()
+                val personalIds = visibleNotifications
+                    .filter { it.recipientUserId == currentUserId && it.id.isNotBlank() }
+                    .map { it.id }
+                    .toSet()
+                locallyReadIds = locallyReadIds + allIds
+                scope.launch {
+                    repository.markAllNotificationsAsRead(
+                        userId = currentUserId,
+                        notificationIds = allIds.toList(),
+                        personalNotificationIds = personalIds
+                    )
+                }
+            },
+            onNotificationClick = { notif ->
+                navigateForNotification(notif.type, notif.targetRoomId, notif.effectiveTeamId())
+            },
+            onShowUpdateDialog = onShowUpdateDialog,
+            onReadUpdateClick = { tag -> readUpdateTag = tag },
+            onEnterTeam = { selectedTeamId ->
+                activeTeamId = selectedTeamId
+                currentTab = NavItem.HOME
+                selectedRoomIdForNavigation = "general"
+                scope.launch {
+                    repository.setActiveTeamId(currentUserId, selectedTeamId)
+                    repository.ensureDefaultRoomsExist(selectedTeamId)
+                }
+            },
+            onOpenPlatformAdminReview = if (isPlatformAdmin) {
+                {
+                    activeTeamId = PLATFORM_MAIN_TEAM_ID
+                    adminInitialSection = "team_applications"
+                    currentTab = NavItem.ADMIN
+                }
+            } else null,
+            onSignOut = onSignOut,
+            onAccountDeleted = onAccountDeleted
+        )
+        return
     }
 
-    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
-        val isWideScreen = maxWidth >= 600.dp
+    val activeTeam = remember(approvedTeams, activeTeamIdNonNull) {
+        approvedTeams.firstOrNull { it.id == activeTeamIdNonNull }
+            ?: if (activeTeamIdNonNull == PLATFORM_MAIN_TEAM_ID) TeamInfo.mainBlackseaTeam()
+            else TeamInfo(id = activeTeamIdNonNull, name = "Takım Alanı", shortCode = "TKM")
+    }
+    val activeMembership = membershipsByTeam[activeTeamIdNonNull]
+    val effectiveProfile = remember(currentUserProfile, activeTeamIdNonNull, activeMembership) {
+        currentUserProfile?.withTeamContext(activeTeamIdNonNull, activeMembership)
+    }
+    val isAdmin = remember(activeMembership, isPlatformAdmin, activeTeamIdNonNull) {
+        activeMembership?.isManagerInTeam() == true ||
+            (activeTeamIdNonNull == PLATFORM_MAIN_TEAM_ID && isPlatformAdmin)
+    }
+    val teamAccent = parseTeamColor(activeTeam.accentColorHex, ext.accentBlue)
 
-        if (isWideScreen) {
-            // Adaptive Tablet / Desktop Layout with Navigation Rail
-            Row(modifier = Modifier.fillMaxSize()) {
-                NavigationRail(
-                    containerColor = MaterialTheme.colorScheme.surface,
-                    header = {
-                        Column(
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            modifier = Modifier.padding(vertical = 12.dp)
-                        ) {
-                            BlackseaLogo(size = 40)
-                            Spacer(modifier = Modifier.height(4.dp))
-                            Text(
-                                text = "BSR",
-                                color = ext.accentBlue,
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.Black
-                            )
-                        }
-                    },
-                    modifier = Modifier.fillMaxHeight().testTag("adaptive_navigation_rail")
-                ) {
-                    val railColors = NavigationRailItemDefaults.colors(
-                        selectedIconColor = ext.accentBlue,
-                        selectedTextColor = ext.accentBlue,
-                        unselectedIconColor = ext.textMuted,
-                        unselectedTextColor = ext.textMuted,
-                        indicatorColor = ext.accentBlueContainer
-                    )
-
-                    NavigationRailItem(
-                        selected = currentTab == NavItem.HOME,
-                        onClick = { currentTab = NavItem.HOME },
-                        icon = { Icon(Icons.Default.Home, contentDescription = "Ana Sayfa") },
-                        label = { Text("Ana Sayfa", fontSize = 11.sp) },
-                        colors = railColors,
-                        modifier = Modifier.testTag("nav_rail_home")
-                    )
-
-                    NavigationRailItem(
-                        selected = currentTab == NavItem.ROOMS,
-                        onClick = { currentTab = NavItem.ROOMS },
-                        icon = { Icon(Icons.Default.ChatBubble, contentDescription = "Odalar") },
-                        label = { Text("Odalar", fontSize = 11.sp) },
-                        colors = railColors,
-                        modifier = Modifier.testTag("nav_rail_rooms")
-                    )
-
-                    NavigationRailItem(
-                        selected = currentTab == NavItem.IDEAS,
-                        onClick = { currentTab = NavItem.IDEAS },
-                        icon = { Icon(Icons.Default.Lightbulb, contentDescription = "Fikirler") },
-                        label = { Text("Fikirler", fontSize = 11.sp) },
-                        colors = railColors,
-                        modifier = Modifier.testTag("nav_rail_ideas")
-                    )
-
-                    NavigationRailItem(
-                        selected = currentTab == NavItem.FILES,
-                        onClick = { currentTab = NavItem.FILES },
-                        icon = { Icon(Icons.Default.Folder, contentDescription = "Dosyalar") },
-                        label = { Text("Dosyalar", fontSize = 11.sp) },
-                        colors = railColors,
-                        modifier = Modifier.testTag("nav_rail_files")
-                    )
-
-                    if (isAdmin) {
-                        NavigationRailItem(
-                            selected = currentTab == NavItem.ADMIN,
-                            onClick = {
-                                adminInitialTab = 0
-                                currentTab = NavItem.ADMIN
-                            },
-                            icon = { Icon(Icons.Default.Security, contentDescription = "Yönetici") },
-                            label = { Text("Yönetici", fontSize = 11.sp) },
-                            colors = NavigationRailItemDefaults.colors(
-                                selectedIconColor = ext.adminRedText,
-                                selectedTextColor = ext.adminRedText,
-                                unselectedIconColor = ext.textMuted,
-                                unselectedTextColor = ext.textMuted,
-                                indicatorColor = ext.adminRedSolid.copy(alpha = 0.14f)
-                            ),
-                            modifier = Modifier.testTag("nav_rail_admin")
-                        )
-                    }
-
-                    Spacer(modifier = Modifier.weight(1f))
-
-                    NavigationRailItem(
-                        selected = currentTab == NavItem.PROFILE,
-                        onClick = { currentTab = NavItem.PROFILE },
-                        icon = { Icon(Icons.Default.Person, contentDescription = "Profil") },
-                        label = { Text("Profil", fontSize = 11.sp) },
-                        colors = railColors,
-                        modifier = Modifier.testTag("nav_rail_profile")
-                    )
-                }
-
-                Box(
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxHeight()
-                        .statusBarsPadding()
-                        .navigationBarsPadding()
-                        .consumeWindowInsets(WindowInsets.navigationBars)
-                ) {
-                    ScreenContent(
-                        currentTab = currentTab,
-                        repository = repository,
-                        currentUserProfile = currentUserProfile,
-                        updateManager = updateManager,
-                        adminInitialTab = adminInitialTab,
-                        onShowUpdateDialog = onShowUpdateDialog,
-                        selectedRoomIdForNavigation = selectedRoomIdForNavigation,
-                        onNavigateToRoom = { roomId ->
-                            selectedRoomIdForNavigation = roomId
-                            currentTab = NavItem.ROOMS
-                        },
-                        onNavigateToIdeas = { currentTab = NavItem.IDEAS },
-                        onNavigateToFiles = { currentTab = NavItem.FILES },
-                        onNavigateToAdmin = {
-                            adminInitialTab = 0
-                            currentTab = NavItem.ADMIN
-                        },
-                        onSignOut = onSignOut,
-                        onAccountDeleted = onAccountDeleted
-                    )
-                }
-            }
+    // BackHandler: When on sub-tabs, return to HOME; when on HOME, return to TeamHubScreen
+    BackHandler {
+        if (currentTab != NavItem.HOME) {
+            currentTab = NavItem.HOME
         } else {
-            // Standard Mobile Layout with TopAppBar and NavigationBar
-            Scaffold(
-                topBar = {
-                    CenterAlignedTopAppBar(
-                        title = {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier.testTag("app_top_bar_title")
-                            ) {
-                                BlackseaLogo(size = 32)
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text(
-                                    text = "BLACKSEA ROBOTICS",
-                                    fontSize = 15.sp,
-                                    fontWeight = FontWeight.Black,
-                                    letterSpacing = 0.5.sp,
-                                    color = MaterialTheme.colorScheme.onSurface
-                                )
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Surface(
-                                    shape = RoundedCornerShape(4.dp),
-                                    color = ext.accentBlueContainer
-                                ) {
-                                    Text(
-                                        text = "BSR",
-                                        color = ext.accentBlue,
-                                        fontSize = 9.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
-                                    )
-                                }
-                            }
-                        },
-                        actions = {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(4.dp),
-                                modifier = Modifier.padding(end = 6.dp)
-                            ) {
-                                IconButton(
-                                    onClick = { showNotificationsDialog = true },
-                                    modifier = Modifier.testTag("top_bar_notifications_button")
-                                ) {
-                                    BadgedBox(
-                                        badge = {
-                                            if (unreadNotificationsCount > 0) {
-                                                Badge(
-                                                    containerColor = ext.dangerSolid,
-                                                    contentColor = Color.White
-                                                ) {
-                                                    Text(
-                                                        text = if (unreadNotificationsCount > 9) "9+" else "$unreadNotificationsCount",
-                                                        fontSize = 10.sp
-                                                    )
-                                                }
-                                            }
-                                        }
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Default.Notifications,
-                                            contentDescription = "Takım Bildirimleri",
-                                            tint = if (unreadNotificationsCount > 0) ext.accentBlue else ext.textMuted
-                                        )
-                                    }
-                                }
+            activeTeamId = null
+        }
+    }
 
-                                if (isAdmin) {
-                                    Surface(
-                                        shape = RoundedCornerShape(20.dp),
-                                        color = if (currentTab == NavItem.ADMIN) ext.adminRedSolid else ext.adminRedSolid.copy(alpha = 0.14f),
-                                        border = if (!ext.isDark && currentTab != NavItem.ADMIN) {
-                                            BorderStroke(1.dp, ext.adminRedSolid.copy(alpha = 0.25f))
-                                        } else null,
-                                        modifier = Modifier
-                                            .clickable {
-                                                adminInitialTab = 0
-                                                currentTab = if (currentTab == NavItem.ADMIN) NavItem.HOME else NavItem.ADMIN
-                                            }
-                                            .testTag("top_bar_admin_button")
-                                    ) {
-                                        Row(
-                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.spacedBy(4.dp)
-                                        ) {
-                                            Icon(
-                                                imageVector = Icons.Default.Security,
-                                                contentDescription = "Yönetici Paneli",
-                                                tint = if (currentTab == NavItem.ADMIN) Color.White else ext.adminRedText,
-                                                modifier = Modifier.size(15.dp)
-                                            )
-                                            Text(
-                                                text = "Yönetici",
-                                                color = if (currentTab == NavItem.ADMIN) Color.White else ext.adminRedText,
-                                                fontSize = 11.sp,
-                                                fontWeight = FontWeight.Bold
-                                            )
-                                        }
+    key(currentUserId, activeTeamIdNonNull) {
+        BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+            val isWideScreen = maxWidth >= 600.dp
+
+            if (isWideScreen) {
+                // Adaptive Tablet / Desktop Layout with Navigation Rail
+                Row(modifier = Modifier.fillMaxSize()) {
+                    NavigationRail(
+                        containerColor = MaterialTheme.colorScheme.surface,
+                        header = {
+                            Column(
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                modifier = Modifier
+                                    .clickable {
+                                        activeTeamId = null
+                                        currentTab = NavItem.HOME
                                     }
-                                }
+                                    .padding(vertical = 12.dp, horizontal = 6.dp)
+                            ) {
+                                TeamLogoBadge(team = activeTeam, size = 40)
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    text = activeTeam.shortCode.ifBlank { activeTeam.name.take(4).uppercase() },
+                                    color = teamAccent,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Black,
+                                    maxLines = 1
+                                )
+                                Text(
+                                    text = "Takımlar",
+                                    color = ext.textMuted,
+                                    fontSize = 9.sp,
+                                    fontWeight = FontWeight.SemiBold
+                                )
                             }
                         },
-                        colors = TopAppBarDefaults.centerAlignedTopAppBarColors(
-                            containerColor = MaterialTheme.colorScheme.surface
-                        )
-                    )
-                },
-                bottomBar = {
-                    val navBarColors = NavigationBarItemDefaults.colors(
-                        selectedIconColor = ext.accentBlue,
-                        selectedTextColor = ext.accentBlue,
-                        unselectedIconColor = ext.textMuted,
-                        unselectedTextColor = ext.textMuted,
-                        indicatorColor = ext.accentBlueContainer
-                    )
-                    NavigationBar(
-                        containerColor = MaterialTheme.colorScheme.surface,
-                        tonalElevation = if (ext.isDark) 8.dp else 2.dp
+                        modifier = Modifier.fillMaxHeight().testTag("adaptive_navigation_rail")
                     ) {
-                        NavigationBarItem(
+                        val railColors = NavigationRailItemDefaults.colors(
+                            selectedIconColor = ext.accentBlue,
+                            selectedTextColor = ext.accentBlue,
+                            unselectedIconColor = ext.textMuted,
+                            unselectedTextColor = ext.textMuted,
+                            indicatorColor = ext.accentBlueContainer
+                        )
+
+                        NavigationRailItem(
                             selected = currentTab == NavItem.HOME,
                             onClick = { currentTab = NavItem.HOME },
                             icon = { Icon(Icons.Default.Home, contentDescription = "Ana Sayfa") },
                             label = { Text("Ana Sayfa", fontSize = 11.sp) },
-                            colors = navBarColors,
-                            modifier = Modifier.testTag("nav_home")
+                            colors = railColors,
+                            modifier = Modifier.testTag("nav_rail_home")
                         )
 
-                        NavigationBarItem(
+                        NavigationRailItem(
                             selected = currentTab == NavItem.ROOMS,
                             onClick = { currentTab = NavItem.ROOMS },
                             icon = { Icon(Icons.Default.ChatBubble, contentDescription = "Odalar") },
                             label = { Text("Odalar", fontSize = 11.sp) },
-                            colors = navBarColors,
-                            modifier = Modifier.testTag("nav_rooms")
+                            colors = railColors,
+                            modifier = Modifier.testTag("nav_rail_rooms")
                         )
 
-                        NavigationBarItem(
+                        NavigationRailItem(
                             selected = currentTab == NavItem.IDEAS,
                             onClick = { currentTab = NavItem.IDEAS },
                             icon = { Icon(Icons.Default.Lightbulb, contentDescription = "Fikirler") },
                             label = { Text("Fikirler", fontSize = 11.sp) },
-                            colors = navBarColors,
-                            modifier = Modifier.testTag("nav_ideas")
+                            colors = railColors,
+                            modifier = Modifier.testTag("nav_rail_ideas")
                         )
 
-                        NavigationBarItem(
+                        NavigationRailItem(
                             selected = currentTab == NavItem.FILES,
                             onClick = { currentTab = NavItem.FILES },
                             icon = { Icon(Icons.Default.Folder, contentDescription = "Dosyalar") },
                             label = { Text("Dosyalar", fontSize = 11.sp) },
-                            colors = navBarColors,
-                            modifier = Modifier.testTag("nav_files")
+                            colors = railColors,
+                            modifier = Modifier.testTag("nav_rail_files")
                         )
 
-                        NavigationBarItem(
+                        if (isAdmin) {
+                            NavigationRailItem(
+                                selected = currentTab == NavItem.ADMIN,
+                                onClick = {
+                                    adminInitialSection = "members"
+                                    currentTab = NavItem.ADMIN
+                                },
+                                icon = { Icon(Icons.Default.Security, contentDescription = "Yönetici") },
+                                label = { Text("Yönetici", fontSize = 11.sp) },
+                                colors = NavigationRailItemDefaults.colors(
+                                    selectedIconColor = ext.adminRedText,
+                                    selectedTextColor = ext.adminRedText,
+                                    unselectedIconColor = ext.textMuted,
+                                    unselectedTextColor = ext.textMuted,
+                                    indicatorColor = ext.adminRedSolid.copy(alpha = 0.14f)
+                                ),
+                                modifier = Modifier.testTag("nav_rail_admin")
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.weight(1f))
+
+                        NavigationRailItem(
                             selected = currentTab == NavItem.PROFILE,
                             onClick = { currentTab = NavItem.PROFILE },
                             icon = { Icon(Icons.Default.Person, contentDescription = "Profil") },
                             label = { Text("Profil", fontSize = 11.sp) },
-                            colors = navBarColors,
-                            modifier = Modifier.testTag("nav_profile")
+                            colors = railColors,
+                            modifier = Modifier.testTag("nav_rail_profile")
+                        )
+                    }
+
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxHeight()
+                            .statusBarsPadding()
+                            .navigationBarsPadding()
+                            .consumeWindowInsets(WindowInsets.navigationBars)
+                    ) {
+                        ScreenContent(
+                            currentTab = currentTab,
+                            repository = repository,
+                            activeTeam = activeTeam,
+                            activeMembership = activeMembership,
+                            currentUserProfile = effectiveProfile,
+                            isPlatformAdmin = isPlatformAdmin,
+                            updateManager = updateManager,
+                            adminInitialSection = adminInitialSection,
+                            onShowUpdateDialog = onShowUpdateDialog,
+                            selectedRoomIdForNavigation = selectedRoomIdForNavigation,
+                            onNavigateToRoom = { roomId ->
+                                selectedRoomIdForNavigation = roomId
+                                currentTab = NavItem.ROOMS
+                            },
+                            onNavigateToIdeas = { currentTab = NavItem.IDEAS },
+                            onNavigateToFiles = { currentTab = NavItem.FILES },
+                            onNavigateToAdmin = {
+                                adminInitialSection = "members"
+                                currentTab = NavItem.ADMIN
+                            },
+                            onSwitchTeam = {
+                                activeTeamId = null
+                                currentTab = NavItem.HOME
+                            },
+                            onSignOut = onSignOut,
+                            onAccountDeleted = onAccountDeleted
                         )
                     }
                 }
-            ) { innerPadding ->
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(innerPadding)
-                        .consumeWindowInsets(innerPadding)
-                ) {
-                    ScreenContent(
-                        currentTab = currentTab,
-                        repository = repository,
-                        currentUserProfile = currentUserProfile,
-                        updateManager = updateManager,
-                        adminInitialTab = adminInitialTab,
-                        onShowUpdateDialog = onShowUpdateDialog,
-                        selectedRoomIdForNavigation = selectedRoomIdForNavigation,
-                        onNavigateToRoom = { roomId ->
-                            selectedRoomIdForNavigation = roomId
-                            currentTab = NavItem.ROOMS
-                        },
-                        onNavigateToIdeas = { currentTab = NavItem.IDEAS },
-                        onNavigateToFiles = { currentTab = NavItem.FILES },
-                        onNavigateToAdmin = {
-                            adminInitialTab = 0
-                            currentTab = NavItem.ADMIN
-                        },
-                        onSignOut = onSignOut,
-                        onAccountDeleted = onAccountDeleted
-                    )
+            } else {
+                // Standard Mobile Layout with TopAppBar and NavigationBar
+                Scaffold(
+                    topBar = {
+                        CenterAlignedTopAppBar(
+                            navigationIcon = {
+                                IconButton(
+                                    onClick = {
+                                        activeTeamId = null
+                                        currentTab = NavItem.HOME
+                                    },
+                                    modifier = Modifier.testTag("top_bar_switch_team_button")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.SwapHoriz,
+                                        contentDescription = "Takımlar Merkezi",
+                                        tint = teamAccent
+                                    )
+                                }
+                            },
+                            title = {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier
+                                        .clickable {
+                                            activeTeamId = null
+                                            currentTab = NavItem.HOME
+                                        }
+                                        .testTag("app_top_bar_title")
+                                ) {
+                                    TeamLogoBadge(team = activeTeam, size = 30)
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text(
+                                        text = activeTeam.name.uppercase(),
+                                        fontSize = 14.sp,
+                                        fontWeight = FontWeight.Black,
+                                        letterSpacing = 0.4.sp,
+                                        color = MaterialTheme.colorScheme.onSurface,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.widthIn(max = 165.dp)
+                                    )
+                                    if (activeTeam.shortCode.isNotBlank()) {
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Surface(
+                                            shape = RoundedCornerShape(4.dp),
+                                            color = teamAccent.copy(alpha = 0.16f)
+                                        ) {
+                                            Text(
+                                                text = activeTeam.shortCode,
+                                                color = teamAccent,
+                                                fontSize = 9.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                                            )
+                                        }
+                                    }
+                                }
+                            },
+                            actions = {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                    modifier = Modifier.padding(end = 6.dp)
+                                ) {
+                                    IconButton(
+                                        onClick = { showNotificationsDialog = true },
+                                        modifier = Modifier.testTag("top_bar_notifications_button")
+                                    ) {
+                                        BadgedBox(
+                                            badge = {
+                                                if (unreadNotificationsCount > 0) {
+                                                    Badge(
+                                                        containerColor = ext.dangerSolid,
+                                                        contentColor = Color.White
+                                                    ) {
+                                                        Text(
+                                                            text = if (unreadNotificationsCount > 9) "9+" else "$unreadNotificationsCount",
+                                                            fontSize = 10.sp
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.Notifications,
+                                                contentDescription = "Takım Bildirimleri",
+                                                tint = if (unreadNotificationsCount > 0) ext.accentBlue else ext.textMuted
+                                            )
+                                        }
+                                    }
+
+                                    if (isAdmin) {
+                                        Surface(
+                                            shape = RoundedCornerShape(20.dp),
+                                            color = if (currentTab == NavItem.ADMIN) ext.adminRedSolid else ext.adminRedSolid.copy(alpha = 0.14f),
+                                            border = if (!ext.isDark && currentTab != NavItem.ADMIN) {
+                                                BorderStroke(1.dp, ext.adminRedSolid.copy(alpha = 0.25f))
+                                            } else null,
+                                            modifier = Modifier
+                                                .clickable {
+                                                    adminInitialSection = "members"
+                                                    currentTab = if (currentTab == NavItem.ADMIN) NavItem.HOME else NavItem.ADMIN
+                                                }
+                                                .testTag("top_bar_admin_button")
+                                        ) {
+                                            Row(
+                                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Default.Security,
+                                                    contentDescription = "Yönetici Paneli",
+                                                    tint = if (currentTab == NavItem.ADMIN) Color.White else ext.adminRedText,
+                                                    modifier = Modifier.size(15.dp)
+                                                )
+                                                Text(
+                                                    text = "Yönetici",
+                                                    color = if (currentTab == NavItem.ADMIN) Color.White else ext.adminRedText,
+                                                    fontSize = 11.sp,
+                                                    fontWeight = FontWeight.Bold
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            },
+                            colors = TopAppBarDefaults.centerAlignedTopAppBarColors(
+                                containerColor = MaterialTheme.colorScheme.surface
+                            )
+                        )
+                    },
+                    bottomBar = {
+                        val navBarColors = NavigationBarItemDefaults.colors(
+                            selectedIconColor = ext.accentBlue,
+                            selectedTextColor = ext.accentBlue,
+                            unselectedIconColor = ext.textMuted,
+                            unselectedTextColor = ext.textMuted,
+                            indicatorColor = ext.accentBlueContainer
+                        )
+                        NavigationBar(
+                            containerColor = MaterialTheme.colorScheme.surface,
+                            tonalElevation = if (ext.isDark) 8.dp else 2.dp
+                        ) {
+                            NavigationBarItem(
+                                selected = currentTab == NavItem.HOME,
+                                onClick = { currentTab = NavItem.HOME },
+                                icon = { Icon(Icons.Default.Home, contentDescription = "Ana Sayfa") },
+                                label = { Text("Ana Sayfa", fontSize = 11.sp) },
+                                colors = navBarColors,
+                                modifier = Modifier.testTag("nav_home")
+                            )
+
+                            NavigationBarItem(
+                                selected = currentTab == NavItem.ROOMS,
+                                onClick = { currentTab = NavItem.ROOMS },
+                                icon = { Icon(Icons.Default.ChatBubble, contentDescription = "Odalar") },
+                                label = { Text("Odalar", fontSize = 11.sp) },
+                                colors = navBarColors,
+                                modifier = Modifier.testTag("nav_rooms")
+                            )
+
+                            NavigationBarItem(
+                                selected = currentTab == NavItem.IDEAS,
+                                onClick = { currentTab = NavItem.IDEAS },
+                                icon = { Icon(Icons.Default.Lightbulb, contentDescription = "Fikirler") },
+                                label = { Text("Fikirler", fontSize = 11.sp) },
+                                colors = navBarColors,
+                                modifier = Modifier.testTag("nav_ideas")
+                            )
+
+                            NavigationBarItem(
+                                selected = currentTab == NavItem.FILES,
+                                onClick = { currentTab = NavItem.FILES },
+                                icon = { Icon(Icons.Default.Folder, contentDescription = "Dosyalar") },
+                                label = { Text("Dosyalar", fontSize = 11.sp) },
+                                colors = navBarColors,
+                                modifier = Modifier.testTag("nav_files")
+                            )
+
+                            NavigationBarItem(
+                                selected = currentTab == NavItem.PROFILE,
+                                onClick = { currentTab = NavItem.PROFILE },
+                                icon = { Icon(Icons.Default.Person, contentDescription = "Profil") },
+                                label = { Text("Profil", fontSize = 11.sp) },
+                                colors = navBarColors,
+                                modifier = Modifier.testTag("nav_profile")
+                            )
+                        }
+                    }
+                ) { innerPadding ->
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(innerPadding)
+                            .consumeWindowInsets(innerPadding)
+                    ) {
+                        ScreenContent(
+                            currentTab = currentTab,
+                            repository = repository,
+                            activeTeam = activeTeam,
+                            activeMembership = activeMembership,
+                            currentUserProfile = effectiveProfile,
+                            isPlatformAdmin = isPlatformAdmin,
+                            updateManager = updateManager,
+                            adminInitialSection = adminInitialSection,
+                            onShowUpdateDialog = onShowUpdateDialog,
+                            selectedRoomIdForNavigation = selectedRoomIdForNavigation,
+                            onNavigateToRoom = { roomId ->
+                                selectedRoomIdForNavigation = roomId
+                                currentTab = NavItem.ROOMS
+                            },
+                            onNavigateToIdeas = { currentTab = NavItem.IDEAS },
+                            onNavigateToFiles = { currentTab = NavItem.FILES },
+                            onNavigateToAdmin = {
+                                adminInitialSection = "members"
+                                currentTab = NavItem.ADMIN
+                            },
+                            onSwitchTeam = {
+                                activeTeamId = null
+                                currentTab = NavItem.HOME
+                            },
+                            onSignOut = onSignOut,
+                            onAccountDeleted = onAccountDeleted
+                        )
+                    }
                 }
             }
-        }
 
-        if (showNotificationsDialog) {
-            TeamNotificationsDialog(
-                notifications = visibleNotifications,
-                currentUserId = currentUserId,
-                locallyReadIds = locallyReadIds,
-                availableUpdate = availableUpdate,
-                isUpdateRead = !hasUnreadUpdate,
-                onUpdateClick = { release ->
-                    readUpdateTag = release.tagName
-                    showNotificationsDialog = false
-                    onShowUpdateDialog(release)
-                },
-                onDismiss = { showNotificationsDialog = false },
-                onMarkAsRead = { notifId ->
-                    locallyReadIds = locallyReadIds + notifId
-                    val target = visibleNotifications.firstOrNull { it.id == notifId }
-                    val isShared = target != null && target.recipientUserId != currentUserId
-                    scope.launch {
-                        repository.markNotificationAsRead(notifId, currentUserId, isShared = isShared)
+            if (showNotificationsDialog) {
+                TeamNotificationsDialog(
+                    notifications = visibleNotifications,
+                    currentUserId = currentUserId,
+                    locallyReadIds = locallyReadIds,
+                    availableUpdate = availableUpdate,
+                    isUpdateRead = !hasUnreadUpdate,
+                    onUpdateClick = { release ->
+                        readUpdateTag = release.tagName
+                        showNotificationsDialog = false
+                        onShowUpdateDialog(release)
+                    },
+                    onDismiss = { showNotificationsDialog = false },
+                    onMarkAsRead = { notifId ->
+                        locallyReadIds = locallyReadIds + notifId
+                        val target = visibleNotifications.firstOrNull { it.id == notifId }
+                        val isShared = target != null && target.recipientUserId != currentUserId
+                        scope.launch {
+                            repository.markNotificationAsRead(notifId, currentUserId, isShared = isShared)
+                        }
+                    },
+                    onNotificationClick = { notif ->
+                        showNotificationsDialog = false
+                        navigateForNotification(notif.type, notif.targetRoomId, notif.effectiveTeamId())
+                    },
+                    onMarkAllAsRead = {
+                        if (availableUpdate != null) {
+                            readUpdateTag = availableUpdate.tagName
+                        }
+                        val allIds = visibleNotifications.map { it.id }.filter { it.isNotBlank() }.toSet()
+                        val personalIds = visibleNotifications
+                            .filter { it.recipientUserId == currentUserId && it.id.isNotBlank() }
+                            .map { it.id }
+                            .toSet()
+                        locallyReadIds = locallyReadIds + allIds
+                        scope.launch {
+                            repository.markAllNotificationsAsRead(
+                                userId = currentUserId,
+                                notificationIds = allIds.toList(),
+                                personalNotificationIds = personalIds
+                            )
+                        }
                     }
-                },
-                onNotificationClick = { notif ->
-                    showNotificationsDialog = false
-                    navigateForNotification(notif.type, notif.targetRoomId)
-                },
-                onMarkAllAsRead = {
-                    if (availableUpdate != null) {
-                        readUpdateTag = availableUpdate.tagName
-                    }
-                    val allIds = visibleNotifications.map { it.id }.filter { it.isNotBlank() }.toSet()
-                    val personalIds = visibleNotifications
-                        .filter { it.recipientUserId == currentUserId && it.id.isNotBlank() }
-                        .map { it.id }
-                        .toSet()
-                    locallyReadIds = locallyReadIds + allIds
-                    scope.launch {
-                        repository.markAllNotificationsAsRead(
-                            userId = currentUserId,
-                            notificationIds = allIds.toList(),
-                            personalNotificationIds = personalIds
-                        )
-                    }
-                }
-            )
+                )
+            }
         }
     }
 }
@@ -618,15 +867,19 @@ fun MainScreen(
 private fun ScreenContent(
     currentTab: NavItem,
     repository: BlackseaRepository,
+    activeTeam: TeamInfo,
+    activeMembership: TeamMembership?,
     currentUserProfile: UserProfile?,
+    isPlatformAdmin: Boolean,
     updateManager: com.example.update.AppUpdateManager? = null,
-    adminInitialTab: Int = 0,
+    adminInitialSection: String = "members",
     onShowUpdateDialog: (com.example.update.AppReleaseInfo) -> Unit = {},
     selectedRoomIdForNavigation: String,
     onNavigateToRoom: (String) -> Unit,
     onNavigateToIdeas: () -> Unit,
     onNavigateToFiles: () -> Unit,
     onNavigateToAdmin: () -> Unit = {},
+    onSwitchTeam: () -> Unit = {},
     onSignOut: () -> Unit,
     onAccountDeleted: () -> Unit = onSignOut
 ) {
@@ -641,37 +894,47 @@ private fun ScreenContent(
             NavItem.HOME -> HomeScreen(
                 repository = repository,
                 currentUserProfile = currentUserProfile,
+                activeTeam = activeTeam,
                 onNavigateToRoom = onNavigateToRoom,
                 onNavigateToIdeas = onNavigateToIdeas,
                 onNavigateToFiles = onNavigateToFiles,
-                onNavigateToAdmin = onNavigateToAdmin
+                onNavigateToAdmin = onNavigateToAdmin,
+                onSwitchTeam = onSwitchTeam
             )
             NavItem.ROOMS -> RoomsScreen(
                 repository = repository,
                 currentUserProfile = currentUserProfile,
+                activeTeam = activeTeam,
                 initialRoomId = selectedRoomIdForNavigation
             )
             NavItem.IDEAS -> IdeasScreen(
                 repository = repository,
-                currentUserProfile = currentUserProfile
+                currentUserProfile = currentUserProfile,
+                activeTeam = activeTeam
             )
             NavItem.FILES -> FilesScreen(
                 repository = repository,
-                currentUserProfile = currentUserProfile
+                currentUserProfile = currentUserProfile,
+                activeTeam = activeTeam
             )
             NavItem.ADMIN -> AdminScreen(
                 repository = repository,
                 currentUserProfile = currentUserProfile,
+                activeTeam = activeTeam,
+                isPlatformAdmin = isPlatformAdmin,
                 updateManager = updateManager,
-                initialTabIndex = adminInitialTab,
+                initialSectionKey = adminInitialSection,
                 onShowUpdateDialog = onShowUpdateDialog
             )
             NavItem.PROFILE -> ProfileScreen(
                 currentUserProfile = currentUserProfile,
+                activeTeam = activeTeam,
+                activeMembership = activeMembership,
                 repository = repository,
                 updateManager = updateManager,
                 onShowUpdateDialog = onShowUpdateDialog,
                 onNavigateToAdmin = onNavigateToAdmin,
+                onSwitchTeam = onSwitchTeam,
                 onSignOut = onSignOut,
                 onAccountDeleted = onAccountDeleted
             )

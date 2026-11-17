@@ -283,6 +283,8 @@ fun HelpAndSupportCenterCard(
     currentUserProfile: UserProfile?,
     repository: BlackseaRepository?,
     updateManager: AppUpdateManager?,
+    teamId: String = com.example.model.PLATFORM_MAIN_TEAM_ID,
+    teamName: String = "BlackSea Robotics",
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -290,9 +292,9 @@ fun HelpAndSupportCenterCard(
     val scope = rememberCoroutineScope()
 
     val uid = currentUserProfile?.userId?.ifBlank { currentUserProfile.id }.orEmpty()
-    val myTickets by remember(uid, repository) {
+    val myTickets by remember(uid, repository, teamId) {
         if (repository == null || uid.isBlank()) flowOf(emptyList())
-        else repository.observeMySupportTickets(uid)
+        else repository.observeMySupportTickets(uid, teamId = teamId)
     }.collectAsState(initial = emptyList())
 
     var searchQuery by remember { mutableStateOf("") }
@@ -584,7 +586,9 @@ fun HelpAndSupportCenterCard(
                             userEmail = currentUserProfile.email,
                             userTeam = currentUserProfile.team,
                             appVersion = appVer,
-                            deviceInfo = deviceInfo
+                            deviceInfo = deviceInfo,
+                            teamId = teamId,
+                            teamName = teamName
                         )
                         onComplete()
                         if (res.isSuccess) {
@@ -967,6 +971,8 @@ fun AdminSupportTab(
     tickets: List<SupportTicket>,
     repository: BlackseaRepository,
     currentUserProfile: UserProfile?,
+    teamId: String = com.example.model.PLATFORM_MAIN_TEAM_ID,
+    teamName: String = "BlackSea Robotics",
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -1109,7 +1115,9 @@ fun AdminSupportTab(
                                 status = replyStatus,
                                 adminReply = replyText,
                                 repliedByName = currentUserProfile?.getFullName() ?: "Yönetici",
-                                targetUserId = target.userId
+                                targetUserId = target.userId,
+                                teamId = teamId,
+                                teamName = teamName
                             )
                             isSaving = false
                             if (res.isSuccess) {

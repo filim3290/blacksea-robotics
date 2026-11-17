@@ -1,10 +1,15 @@
 package com.example.model
 
+import androidx.annotation.Keep
 import com.google.firebase.Timestamp
 import com.google.firebase.firestore.DocumentId
+import com.google.firebase.firestore.Exclude
 import com.google.firebase.firestore.IgnoreExtraProperties
 import com.google.firebase.firestore.PropertyName
 import com.google.firebase.firestore.ServerTimestamp
+
+const val PLATFORM_MAIN_TEAM_ID = "blacksea_robotics"
+const val PLATFORM_FOUNDER_EMAIL = "filim3290@gmail.com"
 
 enum class TeamType(val displayName: String, val description: String) {
     GENERAL("Genel Ekip", "Tüm takım üyelerinin ortak iletişim ve çalışma alanı"),
@@ -27,7 +32,6 @@ enum class UserRole(val displayName: String) {
 }
 
 object PredefinedRoles {
-    // Yönetim Rolleri
     val MANAGEMENT_ROLES = listOf(
         "Yetkili Öğretmen",
         "Takım Kaptanı",
@@ -35,7 +39,6 @@ object PredefinedRoles {
         "Yönetici"
     )
 
-    // Ekip Rolleri
     val TEAM_ROLES = listOf(
         "Yazılım Üyesi",
         "Mekanik Üyesi",
@@ -43,7 +46,6 @@ object PredefinedRoles {
         "Genel Yönetim Üyesi"
     )
 
-    // Özel Roller
     val SPECIAL_ROLES = listOf(
         "Elektronik Sorumlusu",
         "Tasarım Sorumlusu",
@@ -109,6 +111,185 @@ enum class UserStatus(val value: String) {
     }
 }
 
+object TeamStatus {
+    const val PENDING = "pending"
+    const val APPROVED = "approved"
+    const val REJECTED = "rejected"
+
+    val ALL = listOf(PENDING, APPROVED, REJECTED)
+
+    fun isApproved(status: String?): Boolean = status.equals(APPROVED, ignoreCase = true)
+    fun isPending(status: String?): Boolean = status.equals(PENDING, ignoreCase = true)
+    fun isRejected(status: String?): Boolean = status.equals(REJECTED, ignoreCase = true)
+
+    fun displayName(status: String?): String = when {
+        isApproved(status) -> "Onaylandı"
+        isRejected(status) -> "Reddedildi"
+        else -> "Onay Bekliyor"
+    }
+}
+
+enum class TeamLogoPreset(val key: String, val label: String) {
+    BSR_PHOENIX("bsr_phoenix", "BlackSea Phoenix"),
+    ROCKET("rocket", "Roket / TEKNOFEST"),
+    DRONE("drone", "İHA / Drone"),
+    AI_BRAIN("ai_brain", "Yapay Zeka"),
+    GEAR("gear", "Mekanik / Robot"),
+    BOLT("bolt", "Elektronik / Enerji"),
+    CIRCUIT("circuit", "Yazılım / Devre"),
+    SHIELD("shield", "Okul Takımı");
+
+    companion object {
+        fun fromKey(raw: String?): TeamLogoPreset {
+            return entries.firstOrNull { it.key.equals(raw, ignoreCase = true) } ?: SHIELD
+        }
+    }
+}
+
+val TEAM_ACCENT_COLORS = listOf(
+    "#0284C7", // Electric Blue
+    "#7C3AED", // Royal Purple
+    "#059669", // Emerald Green
+    "#EA580C", // Vivid Orange
+    "#DC2626", // Crimson Red
+    "#0D9488", // Cyber Teal
+    "#4F46E5", // Deep Indigo
+    "#D97706"  // Amber Gold
+)
+
+val COMPETITION_PRESETS = listOf(
+    "TEKNOFEST",
+    "FRC / Robotik",
+    "Yazılım & Yapay Zeka",
+    "İHA / Drone",
+    "Roket & Uzay",
+    "Elektrikli Araç / Otonom",
+    "Proje & Mühendislik"
+)
+
+@Keep
+@IgnoreExtraProperties
+data class TeamInfo(
+    @DocumentId val id: String = "",
+    val name: String = "",
+    val shortCode: String = "",
+    val competition: String = "",
+    val schoolName: String = "",
+    val city: String = "",
+    val description: String = "",
+    val motto: String = "",
+    val logoKey: String = TeamLogoPreset.SHIELD.key,
+    val accentColorHex: String = "#0284C7",
+    val managerName: String = "",
+    val managerContact: String = "",
+    val founderId: String = "",
+    val founderEmail: String = "",
+    val status: String = TeamStatus.PENDING,
+    @get:PropertyName("isMainTeam") @field:PropertyName("isMainTeam")
+    val isMainTeam: Boolean = false,
+    val memberCount: Long = 1L,
+    val rejectionReason: String = "",
+    val reviewedBy: String = "",
+    @ServerTimestamp val createdAt: Timestamp? = null,
+    @ServerTimestamp val updatedAt: Timestamp? = null
+) {
+    fun isApproved(): Boolean = TeamStatus.isApproved(status)
+    fun isPending(): Boolean = TeamStatus.isPending(status)
+    fun isRejected(): Boolean = TeamStatus.isRejected(status)
+
+    companion object {
+        fun mainBlackseaTeam(): TeamInfo = TeamInfo(
+            id = PLATFORM_MAIN_TEAM_ID,
+            name = "BlackSea Robotics",
+            shortCode = "BSR",
+            competition = "FRC & TEKNOFEST Robotik",
+            schoolName = "Ünye Fen Lisesi",
+            city = "Ordu / Ünye",
+            description = "Ünye Fen Lisesi Robotik Takımı — Platform Ana Ekibi",
+            motto = "ONE TEAM. ONE VISION. ONE ROBOT.",
+            logoKey = TeamLogoPreset.BSR_PHOENIX.key,
+            accentColorHex = "#0284C7",
+            managerName = "BlackSea Yönetimi",
+            managerContact = PLATFORM_FOUNDER_EMAIL,
+            founderId = PLATFORM_MAIN_TEAM_ID,
+            founderEmail = PLATFORM_FOUNDER_EMAIL,
+            status = TeamStatus.APPROVED,
+            isMainTeam = true,
+            memberCount = 1L
+        )
+    }
+}
+
+@Keep
+@IgnoreExtraProperties
+data class TeamMembership(
+    @DocumentId val id: String = "",
+    val teamId: String = "",
+    val userId: String = "",
+    val userName: String = "",
+    val userEmail: String = "",
+    val userPhotoUrl: String = "",
+    val subTeam: String = TeamType.GENERAL.displayName,
+    val role: String = "Takım Üyesi",
+    val roles: List<String> = listOf("Takım Üyesi"),
+    val status: String = UserStatus.PENDING.value,
+    @get:PropertyName("isTeamAdmin") @field:PropertyName("isTeamAdmin")
+    val isTeamAdmin: Boolean = false,
+    val joinNote: String = "",
+    @ServerTimestamp val createdAt: Timestamp? = null,
+    @ServerTimestamp val updatedAt: Timestamp? = null
+) {
+    fun isActive(): Boolean = UserStatus.isActive(status)
+    fun isPending(): Boolean = UserStatus.isPending(status)
+    fun isRejected(): Boolean = UserStatus.isRejected(status)
+    fun isRevoked(): Boolean = UserStatus.isRevoked(status)
+
+    fun isManagerInTeam(): Boolean {
+        if (!isActive()) return false
+        return isTeamAdmin ||
+            role in listOf("Yönetici", "Takım Kaptanı", "Yetkili Öğretmen") ||
+            roles.any { it in listOf("Yönetici", "Takım Kaptanı", "Yetkili Öğretmen") }
+    }
+}
+
+object TeamTaskStatus {
+    const val TODO = "todo"
+    const val IN_PROGRESS = "in_progress"
+    const val DONE = "done"
+
+    val ALL = listOf(TODO, IN_PROGRESS, DONE)
+
+    fun normalize(raw: String?): String {
+        val clean = raw?.trim()?.lowercase()
+        return if (clean in ALL) clean!! else TODO
+    }
+
+    fun displayName(raw: String?): String = when (normalize(raw)) {
+        IN_PROGRESS -> "Devam Ediyor"
+        DONE -> "Tamamlandı"
+        else -> "Yapılacak"
+    }
+}
+
+@Keep
+@IgnoreExtraProperties
+data class TeamTask(
+    @DocumentId val id: String = "",
+    val teamId: String = PLATFORM_MAIN_TEAM_ID,
+    val title: String = "",
+    val description: String = "",
+    val subTeam: String = TeamType.GENERAL.displayName,
+    val assignedToId: String = "",
+    val assignedToName: String = "",
+    val createdById: String = "",
+    val createdByName: String = "",
+    val priority: String = "Orta", // "Düşük", "Orta", "Yüksek"
+    val status: String = TeamTaskStatus.TODO,
+    val dueDateText: String = "",
+    @ServerTimestamp val createdAt: Timestamp? = null,
+    @ServerTimestamp val updatedAt: Timestamp? = null
+)
+
 object IdeaStatus {
     const val NEW = "Yeni"
     const val ACCEPTED = "Kabul Edildi"
@@ -117,6 +298,7 @@ object IdeaStatus {
     val ALL = listOf(NEW, ACCEPTED, REJECTED)
 }
 
+@Keep
 @IgnoreExtraProperties
 data class UserProfile(
     @DocumentId val id: String = "",
@@ -129,9 +311,15 @@ data class UserProfile(
     val team: String = TeamType.SOFTWARE.displayName,
     val role: String = "Yazılım Üyesi",
     val roles: List<String> = listOf("Yazılım Üyesi"),
-    val status: String = UserStatus.PENDING.value,
+    val status: String = UserStatus.ACTIVE.value,
     val photoUrl: String = "",
+    @get:PropertyName("isSuperAdmin") @field:PropertyName("isSuperAdmin")
     val isSuperAdmin: Boolean = false,
+    @get:PropertyName("isPlatformAdmin") @field:PropertyName("isPlatformAdmin")
+    val isPlatformAdmin: Boolean = false,
+    val activeTeamId: String = "",
+    @get:Exclude @field:Exclude
+    val isTeamContextApplied: Boolean = false,
     @ServerTimestamp val createdAt: Timestamp? = null,
     @ServerTimestamp val updatedAt: Timestamp? = null
 ) {
@@ -155,9 +343,16 @@ data class UserProfile(
     fun isRejected(): Boolean = UserStatus.isRejected(status)
     fun isRevoked(): Boolean = UserStatus.isRevoked(status)
 
+    fun isPlatformManagerAccount(): Boolean {
+        return isPlatformAdmin ||
+            email.equals(PLATFORM_FOUNDER_EMAIL, ignoreCase = true) ||
+            (!isTeamContextApplied && isSuperAdmin)
+    }
+
     fun isManagerAccount(): Boolean {
-        return isSuperAdmin ||
-            email.equals("filim3290@gmail.com", ignoreCase = true) ||
+        val inPlatformMainContext = activeTeamId.isBlank() || activeTeamId == PLATFORM_MAIN_TEAM_ID
+        return (inPlatformMainContext && isPlatformManagerAccount()) ||
+            isSuperAdmin ||
             role == UserRole.ADMIN.displayName ||
             roles.any {
                 it in listOf("Yönetici", "Takım Kaptanı", "Yetkili Öğretmen")
@@ -165,10 +360,33 @@ data class UserProfile(
     }
 }
 
+/**
+ * Helper resolving a user's display profile inside a specific team context cleanly.
+ */
+fun UserProfile.withTeamContext(
+    teamId: String,
+    membership: TeamMembership?
+): UserProfile {
+    if (membership == null) return this
+    val wasPlatformAdmin = isPlatformManagerAccount()
+    return copy(
+        team = membership.subTeam.ifBlank { team },
+        role = membership.role.ifBlank { role },
+        roles = membership.roles.ifEmpty { roles },
+        status = membership.status.ifBlank { status },
+        isSuperAdmin = membership.isTeamAdmin || (teamId == PLATFORM_MAIN_TEAM_ID && wasPlatformAdmin),
+        isPlatformAdmin = wasPlatformAdmin,
+        isTeamContextApplied = true,
+        activeTeamId = teamId
+    )
+}
+
+@Keep
 @IgnoreExtraProperties
 data class ChatRoom(
     @DocumentId val id: String = "",
     val roomId: String = "",
+    val teamId: String = PLATFORM_MAIN_TEAM_ID,
     val name: String = "",
     val description: String = "",
     val allowedTeam: String = "all",
@@ -178,10 +396,12 @@ data class ChatRoom(
 
 const val MESSAGE_EDIT_WINDOW_MS = 60L * 60L * 1000L // 1 saat
 
+@Keep
 @IgnoreExtraProperties
 data class ChatMessage(
     @DocumentId val id: String = "",
     val roomId: String = "",
+    val teamId: String = PLATFORM_MAIN_TEAM_ID,
     val senderId: String = "",
     val senderName: String = "",
     val senderPhotoUrl: String = "",
@@ -231,9 +451,11 @@ fun formatMessagesForClipboard(messages: List<ChatMessage>): String {
     }
 }
 
+@Keep
 @IgnoreExtraProperties
 data class IdeaItem(
     @DocumentId val id: String = "",
+    val teamId: String = PLATFORM_MAIN_TEAM_ID,
     val roomId: String = "general",
     val authorId: String = "",
     val authorName: String = "",
@@ -255,6 +477,7 @@ data class IdeaItem(
     @ServerTimestamp val updatedAt: Timestamp? = null
 )
 
+@Keep
 @IgnoreExtraProperties
 data class IdeaComment(
     @DocumentId val id: String = "",
@@ -266,9 +489,11 @@ data class IdeaComment(
     @ServerTimestamp val createdAt: Timestamp? = null
 )
 
+@Keep
 @IgnoreExtraProperties
 data class SharedProjectFile(
     @DocumentId val id: String = "",
+    val teamId: String = PLATFORM_MAIN_TEAM_ID,
     val roomId: String = "general",
     val uploadedById: String = "",
     val uploadedByName: String = "",
@@ -299,36 +524,42 @@ data class SharedProjectFile(
     }
 }
 
+@Keep
 @IgnoreExtraProperties
 data class TeamAnnouncement(
     @DocumentId val id: String = "",
+    val teamId: String = PLATFORM_MAIN_TEAM_ID,
     val authorId: String = "",
     val authorName: String = "",
     val title: String = "",
     val content: String = "",
-    val isPinned: Boolean = false,
+    @get:PropertyName("isPinned") @field:PropertyName("isPinned") val isPinned: Boolean = false,
     @ServerTimestamp val createdAt: Timestamp? = null
 )
 
+@Keep
 @IgnoreExtraProperties
 data class TeamNotification(
     @DocumentId val id: String = "",
-    val recipientUserId: String = "", // "all", "managers", or specific userId
+    val teamId: String = "",
+    val teamName: String = "",
+    val recipientUserId: String = "", // "all", "managers", "platform_admins", or specific userId
     val title: String = "",
     val message: String = "",
-    val type: String = "", // "member_pending", "member_approved", "new_member", "message", "file", "idea", "comment", "announcement", "broadcast", "update"
-    val targetId: String = "", // e.g. ideaId or userId
-    val targetRoomId: String = "", // e.g. "software", "general"
-    val isRead: Boolean = false,
-    val readBy: List<String> = emptyList(), // User IDs who have read this notification
+    val type: String = "", // "member_pending", "member_approved", "new_member", "message", "file", "idea", "comment", "announcement", "broadcast", "update", "team_application_pending", "team_application_approved", "team_application_rejected"
+    val targetId: String = "",
+    val targetRoomId: String = "",
+    @get:PropertyName("isRead") @field:PropertyName("isRead") val isRead: Boolean = false,
+    val readBy: List<String> = emptyList(),
     val senderId: String = "",
     val senderName: String = "",
     @ServerTimestamp val createdAt: Timestamp? = null
 ) {
+    fun effectiveTeamId(): String = teamId.ifBlank { PLATFORM_MAIN_TEAM_ID }
+
     fun isReadBy(userId: String): Boolean {
         if (isRead) return true
         if (userId.isNotBlank() && readBy.contains(userId)) return true
-        if (recipientUserId.isNotBlank() && recipientUserId == userId && isRead) return true
         return false
     }
 }
@@ -339,7 +570,7 @@ data class TeamActivity(
     val userTeam: String = "",
     val actionText: String = "",
     val targetTitle: String = "",
-    val type: String = "idea", // "idea", "file", "announcement", "chat"
+    val type: String = "idea", // "idea", "file", "announcement", "chat", "task"
     val timeAgo: String = ""
 )
 
@@ -374,9 +605,11 @@ object SupportCategories {
     )
 }
 
+@Keep
 @IgnoreExtraProperties
 data class SupportTicket(
     @DocumentId val id: String = "",
+    val teamId: String = PLATFORM_MAIN_TEAM_ID,
     val userId: String = "",
     val userName: String = "",
     val userEmail: String = "",
@@ -401,57 +634,56 @@ data class SupportFaqItem(
 )
 
 object SupportFaqData {
-    val CATEGORIES = listOf("Tümü", "Bildirimler", "Sohbet", "Güncelleme", "Hesap", "Dosyalar")
+    val CATEGORIES = listOf("Tümü", "Takımlar", "Bildirimler", "Sohbet", "Güncelleme", "Hesap", "Dosyalar")
 
     val ITEMS = listOf(
+        SupportFaqItem(
+            id = "faq_multi_team",
+            category = "Takımlar",
+            question = "Birden fazla takıma nasıl katılabilirim veya takım değiştirebilirim?",
+            answer = "Aynı Google hesabınızla platformdaki onaylı tüm takımları 'Takımlar' merkezinde görebilir, istediğiniz takıma katılma başvurusu gönderebilirsiniz. Üyesi olduğunuz takımlar arasında Profil veya üst çubuktaki 'Takımlar' butonuna dokunarak tek tıkla geçiş yapabilirsiniz."
+        ),
+        SupportFaqItem(
+            id = "faq_create_team",
+            category = "Takımlar",
+            question = "Kendi robotik/TEKNOFEST ekibimi nasıl oluşturabilirim?",
+            answer = "Giriş ekranındaki veya Takımlar merkezindeki 'Kendi Ekibini Oluştur' seçeneğini kullanarak takım adı, okul, şehir ve yarışma bilgilerinizi içeren başvuruyu gönderin. BlackSea Robotics yöneticileri başvuruyu onayladığında ekibinizin bağımsız çalışma alanı otomatik olarak aktif edilir."
+        ),
         SupportFaqItem(
             id = "faq_bg_notif",
             category = "Bildirimler",
             question = "Mesaj veya duyuru bildirimleri neden gecikiyor veya gelmiyor?",
-            answer = "Uygulama, mesajları ve duyuruları anlık iletmek için sürekli arka plan bağlantı servisini kullanır. Bildirimlerin kesintisiz gelmesi için Profil sekmesindeki 'Anlık Arka Plan Bildirimleri' anahtarının açık olduğundan, Android bildirim izninin verildiğinden ve cihaz pil ayarlarında BLACKSEA ROBOTICS için 'Kısıtlanmamış' pil kullanımının seçili olduğundan emin olun."
+            answer = "Uygulama, mesajları ve duyuruları anlık iletmek için sürekli arka plan bağlantı servisini kullanır. Bildirimlerin kesintisiz gelmesi için Profil sekmesindeki 'Anlık Arka Plan Bildirimleri' anahtarının açık olduğundan, Android bildirim izninin verildiğinden ve cihaz pil ayarlarında 'Kısıtlanmamış' pil kullanımının seçili olduğundan emin olun."
         ),
         SupportFaqItem(
             id = "faq_active_room",
             category = "Bildirimler",
             question = "Sohbet odasının içindeyken neden yeni mesaj bildirimi gelmiyor?",
-            answer = "Dikkat dağılmasını önlemek için o anda açık olan ve görüntülediğiniz sohbet odasından gelen mesajlar için bildirim sesi/penceresi bastırılır. Diğer odalardan gelen mesajlar, uygulamayı arka plana aldığınızda veya başka bir ekranda olduğunuzda anında bildirim olarak düşer."
+            answer = "Dikkat dağılmasını önlemek için o anda açık olan ve görüntülediğiniz sohbet odasından gelen mesajlar için bildirim sesi/penceresi bastırılır. Diğer odalardan veya diğer üyesi olduğunuz takımlardan gelen mesajlar anında bildirim olarak düşer."
         ),
         SupportFaqItem(
             id = "faq_chat_gestures",
             category = "Sohbet",
             question = "Mesaja nasıl yanıt veririm, düzenlerim, sabitlerim veya silerim?",
-            answer = "Herhangi bir mesaj balonunu sağa doğru kaydırarak o mesaja hızlıca yanıt verebilirsiniz. Mesajların üzerine basılı tutarak çoklu seçim modunu açabilir; üst çubuktan seçilen mesajları kopyalayabilir, kendi mesajlarınızı (ve yöneticiler için tüm mesajları) topluca silebilir, tekil mesajlarda sağ üstteki (⋮) menüsünden sabitleme ve 1 saat içinde düzenleme yapabilirsiniz."
+            answer = "Herhangi bir mesaj balonunu sağa doğru kaydırarak o mesaja hızlıca yanıt verebilirsiniz. Mesajların üzerine basılı tutarak çoklu seçim modunu açabilir; üst çubuktan seçilen mesajları kopyalayabilir, kendi mesajlarınızı (ve takım yöneticileri için tüm mesajları) topluca silebilir, tekil mesajlarda sağ üstteki (⋮) menüsünden sabitleme ve 1 saat içinde düzenleme yapabilirsiniz."
         ),
         SupportFaqItem(
             id = "faq_updates",
             category = "Güncelleme",
             question = "Yeni sürüm yayınlandığında uygulamayı nasıl güncellerim?",
-            answer = "GitHub üzerinde yeni bir sürüm yayınlandığında bildirim alırsınız. Profil > 'Uygulama & Güncellemeler' bölümünden de istediğiniz zaman 'Güncellemeleri Kontrol Et' butonuna basarak en son sürümü indirip kurabilirsiniz. Kurulum sırasında Android'in 'Bilinmeyen uygulamalara izin ver' onayını vermeniz gerekebilir."
+            answer = "GitHub üzerinde yeni bir sürüm yayınlandığında bildirim alırsınız. Profil > 'Uygulama & Güncellemeler' bölümünden de istediğiniz zaman 'Güncellemeleri Kontrol Et' butonuna basarak en son sürümü indirip kurabilirsiniz."
         ),
         SupportFaqItem(
             id = "faq_profile_roles",
             category = "Hesap",
             question = "Ekibimi, adımı veya yetki/rolümü nasıl değiştirebilirim?",
-            answer = "Ad, soyad, kullanıcı adı ve ekip bilgilerinizi Profil ekranındaki 'Profili ve Ekibi Düzenle' butonundan güncelleyebilirsiniz. Takım Kaptanı, Yetkili Öğretmen veya Yönetici gibi yetki rolleri yalnızca mevcut yöneticiler tarafından Yönetici Paneli üzerinden atanabilir."
+            answer = "Ad, soyad, kullanıcı adı ve aktif takım içi alt ekip bilgilerinizi Profil ekranındaki 'Profili Düzenle' butonundan güncelleyebilirsiniz. Takım Kaptanı, Yetkili Öğretmen veya Yönetici gibi yetki rolleri yalnızca bulunduğunuz takımın yöneticileri tarafından Yönetici Paneli üzerinden atanabilir."
         ),
         SupportFaqItem(
             id = "faq_files_media",
             category = "Dosyalar",
             question = "Hangi dosya türlerini yükleyebilirim ve boyut sınırı nedir?",
-            answer = "Fotoğraf, video, ses kaydı, PDF, kod dosyaları (.py, .kt, .cpp vb.) ve CAD dosyalarını (.step, .stl vb.) 100 MB sınırına kadar paylaşabilirsiniz. Medya ve kod dosyaları doğrudan uygulama içinde önizlenebilir."
-        ),
-        SupportFaqItem(
-            id = "faq_approval",
-            category = "Hesap",
-            question = "Yeni kayıt oldum, onay sürecim ne kadar sürer?",
-            answer = "Kaydınızı tamamladığınızda yöneticilere ve takım kaptanlarına otomatik onay bildirimi gider. Yönetici onayladığında bildirim alırsınız ve tüm takım alanlarına erişiminiz anında açılır."
-        ),
-        SupportFaqItem(
-            id = "faq_account_delete",
-            category = "Hesap",
-            question = "Hesabımı silersem ne olur?",
-            answer = "Profil sayfasının en altındaki 'Hesabımı Kalıcı Olarak Sil' seçeneği ile iki aşamalı onay vererek profilinizi ve kişisel bildirim kayıtlarınızı kalıcı olarak silebilirsiniz. Bu işlem geri alınamaz."
+            answer = "Fotoğraf, video, ses kaydı, PDF, kod dosyaları (.py, .kt, .cpp vb.) ve CAD dosyalarını (.step, .stl vb.) 100 MB sınırına kadar paylaşabilirsiniz. Medya ve kod dosyaları doğrudan bulunduğunuz takımın izole alanında önizlenebilir."
         )
     )
 }
-

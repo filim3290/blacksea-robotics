@@ -2,8 +2,11 @@ package com.example
 
 import com.example.base.FirestoreEmulatorTestBase
 import com.example.data.BlackseaRepository
+import com.example.model.PLATFORM_MAIN_TEAM_ID
+import com.example.model.TeamInfo
+import com.example.model.TeamStatus
+import com.example.model.TeamType
 import com.example.model.UserProfile
-import com.example.model.UserRole
 import com.example.model.UserStatus
 import com.google.firebase.firestore.FirebaseFirestoreException
 import kotlinx.coroutines.flow.first
@@ -18,472 +21,193 @@ import org.junit.Test
 class BlackseaRepositoryRuleTest : FirestoreEmulatorTestBase() {
 
   @Test
-  fun testUnauthenticatedUserCannotCreateProfile() = runBlocking {
+  fun testUnauthenticatedUserCannotSubmitTeamOrMessage() = runBlocking {
     val repository = BlackseaRepository(firestore)
     auth.signOut()
 
-    try {
-      withTimeout(5000L) {
-        repository.createOrUpdateUserProfile(
-          userId = "unauth_user",
-          firstName = "Anon",
-          lastName = "User",
-          username = "anon",
-          email = "anon@test.com",
-          team = "Yazılım Ekibi",
-          roles = listOf(UserRole.MEMBER.displayName),
-          photoUrl = ""
-        )
-      }
-      fail("Expected exception for unauthenticated write")
-    } catch (e: Exception) {
-      val isExpected = e is IllegalStateException || e.unwrapFirestoreException()?.code == FirebaseFirestoreException.Code.PERMISSION_DENIED
-      assertTrue("Expected permission or auth failure, got: ${e.message}", isExpected)
+    val teamResult = withTimeout(5000L) {
+      repository.submitTeamCreationRequest(
+        name = "Yetkisiz Takım",
+        shortCode = "YT",
+        competition = "TEKNOFEST",
+        schoolName = "Deneme Lisesi",
+        city = "Ordu",
+        description = "Açıklama metni",
+        motto = "",
+        logoKey = "rocket",
+        accentColorHex = "#0284C7",
+        managerName = "Anon",
+        managerContact = "anon@test.com",
+        founderEmail = "anon@test.com",
+        founderPhotoUrl = ""
+      )
     }
+    assertTrue("Expected failure for unauthenticated team submission", teamResult.isFailure)
   }
 
   @Test
-  fun testAuthenticatedUserCanCreateProfile() = runBlocking {
-    val email = "member1_${System.nanoTime()}@blacksea.test"
+  fun testGoogleSignInAutoCreatesProfileAndPendingJoinWorkflow() = runBlocking {
+    val email = "student_${System.nanoTime()}@blacksea.test"
     val uid = signInTestUser(email)
     val repository = BlackseaRepository(firestore)
 
-    withTimeout(5000L) {
-      repository.createOrUpdateUserProfile(
+    val profileRes = withTimeout(5000L) {
+      repository.ensureBaseUserProfileOnGoogleSignIn(
         userId = uid,
-        firstName = "Kerem",
-        lastName = "Kaptan",
-        username = "kerem",
         email = email,
-        team = "Yazılım Ekibi",
-        roles = listOf(UserRole.CAPTAIN.displayName),
+        displayName = "Kerem Yılmaz",
         photoUrl = ""
       )
     }
+    assertTrue(profileRes.isSuccess)
 
-    val profile = withTimeout(5000L) { repository.observeUserProfile(uid).first { it != null } }
-    assertNotNull(profile)
-    assertEquals(uid, profile?.userId)
-    assertEquals("Kerem Kaptan", profile?.getFullName())
-  }
-
-  @Test
-  fun testSendAndObserveMessage() = runBlocking {
-    val email = "writer_${System.nanoTime()}@blacksea.test"
-    val uid = signInTestUser(email)
-    val repository = BlackseaRepository(firestore)
-
-    withTimeout(5000L) {
-      repository.createOrUpdateUserProfile(
-        userId = uid,
-        firstName = "Mühendis",
-        lastName = "Ali",
-        username = "ali",
-        email = email,
-        team = "Yazılım Ekibi",
-        roles = listOf(UserRole.MEMBER.displayName),
-        photoUrl = ""
-      )
-    }
-    signInTestUser("filim3290@gmail.com")
-    withTimeout(5000L) {
-      repository.updateUserRolesAndTeam(
-        targetUserId = uid,
-        team = "Yazılım Ekibi",
-        roles = listOf(UserRole.MEMBER.displayName),
-        status = UserStatus.APPROVED.value
-      )
-    }
-    signInTestUser(email)
-
-    withTimeout(5000L) {
-      repository.sendMessage(
-        roomId = "software",
-        text = "Robot kolu PID parametreleri güncellendi.",
-        senderName = "Mühendis Ali",
-        senderTeam = "Yazılım Ekibi"
-      )
-    }
-
-    val messages = withTimeout(5000L) {
-      repository.observeMessages("software").first { list -> list.any { it.senderId == uid } }
-    }
-    assertTrue("Should have at least 1 message", messages.isNotEmpty())
-    val lastMsg = messages.last { it.senderId == uid }
-    assertEquals("software", lastMsg.roomId)
-    assertEquals(uid, lastMsg.senderId)
-    assertEquals("Robot kolu PID parametreleri güncellendi.", lastMsg.text)
-  }
-
-  @Test
-  fun testPendingUserNotifiesManagersAndIsBlockedUntilApproved() = runBlocking {
-    val founderUid = signInTestUser("filim3290@gmail.com")
-    val repository = BlackseaRepository(firestore)
-    withTimeout(5000L) {
-      repository.createOrUpdateUserProfile(
-        userId = founderUid,
-        firstName = "Kurucu",
-        lastName = "Yönetici",
-        username = "kurucu",
-        email = "filim3290@gmail.com",
-        team = "Genel Yönetim",
-        roles = listOf(UserRole.ADMIN.displayName),
-        photoUrl = ""
-      )
-    }
-
-    val applicantEmail = "applicant_${System.nanoTime()}@blacksea.test"
-    val applicantUid = signInTestUser(applicantEmail)
-    val created = withTimeout(5000L) {
-      repository.createOrUpdateUserProfile(
-        userId = applicantUid,
-        firstName = "Yeni",
-        lastName = "Aday",
-        username = "aday",
-        email = applicantEmail,
-        team = "Mekanik Ekibi",
-        roles = listOf("Mekanik Üyesi"),
-        photoUrl = ""
-      )
-    }
-    assertEquals(UserStatus.PENDING.value, created.status)
-
-    // Pending user cannot send chat messages yet
-    try {
-      withTimeout(5000L) {
-        repository.sendMessage(
-          roomId = "general",
-          text = "Onaysız mesaj",
-          senderName = "Yeni Aday",
-          senderTeam = "Mekanik Ekibi"
-        )
-      }
-      fail("Pending user must be denied room message creation")
-    } catch (e: Exception) {
-      assertEquals(FirebaseFirestoreException.Code.PERMISSION_DENIED, e.unwrapFirestoreException()?.code)
-    }
-
-    // Manager should receive member_pending notification
-    signInTestUser("filim3290@gmail.com")
-    val managerNotifications = withTimeout(5000L) {
-      repository.observeNotifications(
-        userId = founderUid,
-        isManager = true,
-        userTeam = "Genel Yönetim"
-      ).first { list ->
-        list.any { it.type == "member_pending" && it.recipientUserId == "managers" && it.targetId == applicantUid }
-      }
-    }
-    assertTrue(
-      "Managers should receive member_pending notification",
-      managerNotifications.any {
-        it.type == "member_pending" &&
-          it.recipientUserId == "managers" &&
-          it.targetId == applicantUid
-      }
-    )
-  }
-
-  @Test
-  fun testManagerCanRevokeReapplyAndDeleteUserAccount() = runBlocking {
-    val founderUid = signInTestUser("filim3290@gmail.com")
-    val repository = BlackseaRepository(firestore)
-    withTimeout(5000L) {
-      repository.createOrUpdateUserProfile(
-        userId = founderUid,
-        firstName = "Kurucu",
-        lastName = "Yönetici",
-        username = "kurucu",
-        email = "filim3290@gmail.com",
-        team = "Genel Yönetim",
-        roles = listOf(UserRole.ADMIN.displayName),
-        photoUrl = ""
-      )
-    }
-
-    val memberEmail = "target_${System.nanoTime()}@blacksea.test"
-    val memberUid = signInTestUser(memberEmail)
-    withTimeout(5000L) {
-      repository.createOrUpdateUserProfile(
-        userId = memberUid,
-        firstName = "Deneme",
-        lastName = "Üye",
-        username = "deneme",
-        email = memberEmail,
-        team = "Yazılım Ekibi",
-        roles = listOf("Yazılım Üyesi"),
-        photoUrl = ""
-      )
-    }
-
-    // Founder approves then revokes member
-    signInTestUser("filim3290@gmail.com")
-    withTimeout(5000L) {
-      repository.updateUserRolesAndTeam(
-        targetUserId = memberUid,
-        team = "Yazılım Ekibi",
-        roles = listOf("Yazılım Üyesi"),
-        status = UserStatus.APPROVED.value
-      )
-      repository.revokeUserAccess(memberUid)
-    }
-    val revokedProfile = withTimeout(5000L) { repository.getUserProfile(memberUid) }
-    assertEquals(UserStatus.REVOKED.value, revokedProfile?.status)
-
-    // Revoked user cannot write messages
-    signInTestUser(memberEmail)
-    try {
-      withTimeout(5000L) {
-        repository.sendMessage(
-          roomId = "general",
-          text = "Yetkisiz mesaj",
-          senderName = "Deneme Üye",
-          senderTeam = "Yazılım Ekibi"
-        )
-      }
-      fail("Revoked user must be denied message creation")
-    } catch (e: Exception) {
-      assertEquals(FirebaseFirestoreException.Code.PERMISSION_DENIED, e.unwrapFirestoreException()?.code)
-    }
-
-    // Revoked user can reapply
-    withTimeout(5000L) {
-      repository.reapplyForMembership(memberUid, "Yazılım Ekibi")
-    }
-    val reappliedProfile = withTimeout(5000L) { repository.getUserProfile(memberUid) }
-    assertEquals(UserStatus.PENDING.value, reappliedProfile?.status)
-
-    // Founder can delete member
-    signInTestUser("filim3290@gmail.com")
-    withTimeout(5000L) {
-      repository.deleteUserAccount(memberUid)
-    }
-    val deletedProfile = withTimeout(5000L) { repository.getUserProfile(memberUid) }
-    assertEquals(null, deletedProfile)
-  }
-
-  @Test
-  fun testFirstUserInEmptySystemBecomesAutoAdminAndCanDeleteOwnAccount() = runBlocking {
-    // Clear emulator database so users collection is guaranteed empty regardless of test order
-    val clearUrl = java.net.URL(
-      "http://$EMULATOR_HOST:$FIRESTORE_PORT/emulator/v1/projects/$PROJECT_ID/databases/$databaseId/documents"
-    )
-    val conn = (clearUrl.openConnection() as java.net.HttpURLConnection).apply {
-      requestMethod = "DELETE"
-      connectTimeout = 3000
-      readTimeout = 3000
-    }
-    assertEquals(200, conn.responseCode)
-    conn.disconnect()
-
-    val repository = BlackseaRepository(firestore)
-    val firstEmail = "first_user_${System.nanoTime()}@blacksea.test"
-    val firstUid = signInTestUser(firstEmail)
-
-    assertTrue(
-      "Empty users collection should detect first user eligibility",
-      withTimeout(5000L) { repository.isSystemEmptyForNewUser(excludeUserId = firstUid) }
-    )
-
-    val created = withTimeout(5000L) {
-      repository.createOrUpdateUserProfile(
-        userId = firstUid,
-        firstName = "İlk",
-        lastName = "Kurucu",
-        username = "ilkkurucu",
-        email = firstEmail,
-        team = "Yazılım Ekibi",
-        roles = listOf("Yazılım Üyesi"),
-        photoUrl = ""
-      )
-    }
-
-    assertEquals(UserStatus.ACTIVE.value, created.status)
-    assertTrue("First user must receive super admin privilege", created.isSuperAdmin)
-    assertTrue("First user must receive Yönetici role", created.roles.contains(UserRole.ADMIN.displayName))
-    assertTrue("First user must receive active access immediately", UserStatus.isActive(created.status))
-
-    // First user can immediately send room messages without waiting for approval
-    withTimeout(5000L) {
-      repository.sendMessage(
-        roomId = "general",
-        text = "İlk yönetici olarak sistem açıldı.",
-        senderName = "İlk Kurucu",
-        senderTeam = "Yazılım Ekibi"
-      )
-    }
-
-    // Create a personal notification targeting this user, then verify deleteOwnAccount cleans both
-    withTimeout(5000L) {
-      repository.createNotification(
-        recipientUserId = firstUid,
-        title = "Hoş Geldiniz",
-        message = "Kişisel bildirim",
-        type = "member_approved",
-        targetId = firstUid,
-        senderId = "system_admin"
-      )
-    }
-
-    withTimeout(5000L) {
-      repository.deleteOwnAccount()
-    }
-
-    // Verify user document is deleted (re-authenticate as same email because deleteOwnAccount may delete auth user)
-    val checkUid = signInTestUser(firstEmail)
-    val afterDeleteProfile = withTimeout(5000L) { repository.getUserProfile(firstUid) }
-    assertEquals(null, afterDeleteProfile)
-    assertTrue(checkUid.isNotBlank())
-  }
-
-  @Test
-  fun testLegacyUserWithoutStatusFieldCanSendAndObserveMessages() = runBlocking {
-    val legacyEmail = "legacy_${System.nanoTime()}@blacksea.test"
-    val legacyUid = signInTestUser(legacyEmail)
-    val repository = BlackseaRepository(firestore)
-
-    // Write a legacy-shaped user document without 'status' field (as older app versions did)
-    withTimeout(5000L) {
-      val legacyPayload = mapOf(
-        "userId" to legacyUid,
-        "firstName" to "Eski",
-        "lastName" to "Sürüm",
-        "username" to "eskisurum",
-        "displayName" to "Eski Sürüm",
-        "email" to legacyEmail,
-        "team" to "Mekanik Ekibi",
-        "role" to "Mekanik Üyesi",
-        "roles" to listOf("Mekanik Üyesi")
-      )
-      firestore.collection("users").document(legacyUid).set(legacyPayload).let { task ->
-        com.google.android.gms.tasks.Tasks.await(task)
-      }
-    }
-
-    val loaded = withTimeout(5000L) { repository.getUserProfile(legacyUid) }
+    val loaded = withTimeout(5000L) { repository.observeUserProfile(uid).first { it != null } }
     assertNotNull(loaded)
+    assertEquals(uid, loaded?.userId)
+    assertEquals("Kerem Yılmaz", loaded?.getFullName())
 
-    withTimeout(5000L) {
-      repository.sendMessage(
-        roomId = "mechanic",
-        text = "Eski sürümden gönderilen mesaj",
-        senderName = "Eski Sürüm",
-        senderTeam = "Mekanik Ekibi"
+    // Student applies to join BlackSea Robotics -> starts as pending
+    val joinRes = withTimeout(5000L) {
+      repository.requestJoinTeam(
+        team = TeamInfo.mainBlackseaTeam(),
+        profile = loaded!!,
+        subTeam = TeamType.SOFTWARE.displayName,
+        joinNote = "Otonom sürüş ekibinde yer almak istiyorum"
       )
     }
+    assertTrue(joinRes.isSuccess)
 
-    val messages = withTimeout(5000L) {
-      repository.observeMessages("mechanic").first { list -> list.any { it.senderId == legacyUid } }
+    val memberships = withTimeout(5000L) {
+      repository.observeMyMemberships(uid).first { it.any { m -> m.teamId == PLATFORM_MAIN_TEAM_ID } }
     }
-    assertTrue("Legacy user message must be readable and writable", messages.any { it.senderId == legacyUid })
+    val bsrMem = memberships.first { it.teamId == PLATFORM_MAIN_TEAM_ID }
+    assertTrue(bsrMem.isPending())
+
+    // Pending member cannot post messages to BSR rooms before approval
+    try {
+      withTimeout(5000L) {
+        repository.sendMessage(
+          roomId = "software",
+          text = "Onaysız mesaj",
+          senderName = "Kerem Yılmaz",
+          senderTeam = TeamType.SOFTWARE.displayName,
+          teamId = PLATFORM_MAIN_TEAM_ID
+        )
+      }
+      fail("Pending member must be denied room message creation")
+    } catch (e: Exception) {
+      assertEquals(FirebaseFirestoreException.Code.PERMISSION_DENIED, e.unwrapFirestoreException()?.code)
+    }
   }
 
   @Test
-  fun testEditMessageWithinOneHourAndRejectExpiredOrNonOwner() = runBlocking {
-    val senderEmail = "editor_${System.nanoTime()}@blacksea.test"
-    val senderUid = signInTestUser(senderEmail)
+  fun testTeamCreationApprovalAndIsolatedWorkspaceMessaging() = runBlocking {
+    val founderUid = signInTestUser("filim3290@gmail.com")
     val repository = BlackseaRepository(firestore)
-
-    // Ensure sender is active/approved
     withTimeout(5000L) {
-      val senderPayload = mapOf(
-        "userId" to senderUid,
-        "firstName" to "Mesaj",
-        "lastName" to "Yazarı",
-        "username" to "mesajyazari",
-        "displayName" to "Mesaj Yazarı",
-        "email" to senderEmail,
-        "team" to "Yazılım Ekibi",
-        "role" to "Yazılım Üyesi",
-        "roles" to listOf("Yazılım Üyesi"),
-        "status" to UserStatus.APPROVED.value
-      )
-      com.google.android.gms.tasks.Tasks.await(
-        firestore.collection("users").document(senderUid).set(senderPayload)
+      repository.ensureBaseUserProfileOnGoogleSignIn(
+        userId = founderUid,
+        email = "filim3290@gmail.com",
+        displayName = "BSR Kurucu",
+        photoUrl = ""
       )
     }
 
-    // 1. Fresh message can be edited by its sender
+    val creatorEmail = "fatsa_${System.nanoTime()}@blacksea.test"
+    val creatorUid = signInTestUser(creatorEmail)
+    val teamReqRes = withTimeout(5000L) {
+      repository.submitTeamCreationRequest(
+        name = "Fatsa Robotik",
+        shortCode = "FRT",
+        competition = "TEKNOFEST",
+        schoolName = "Fatsa Fen Lisesi",
+        city = "Ordu",
+        description = "TEKNOFEST İHA ve otonom araç ekibi",
+        motto = "Geleceği Kodla",
+        logoKey = "drone",
+        accentColorHex = "#059669",
+        managerName = "Ahmet Demir",
+        managerContact = creatorEmail,
+        founderEmail = creatorEmail,
+        founderPhotoUrl = ""
+      )
+    }
+    assertTrue(teamReqRes.isSuccess)
+    val newTeamId = teamReqRes.getOrThrow()
+
+    // Pending team appears for platform admin
+    signInTestUser("filim3290@gmail.com")
+    val pendingList = withTimeout(5000L) {
+      repository.observePendingTeamApplications().first { list -> list.any { it.id == newTeamId } }
+    }
+    val pendingTeam = pendingList.first { it.id == newTeamId }
+    assertEquals(TeamStatus.PENDING, pendingTeam.status)
+
+    // Platform admin approves team -> activates workspace & creator membership
+    val approveRes = withTimeout(5000L) {
+      repository.approveTeamCreationRequest(pendingTeam)
+    }
+    assertTrue(approveRes.isSuccess)
+
+    // Creator can now send isolated messages in Fatsa Robotik
+    signInTestUser(creatorEmail)
     withTimeout(5000L) {
       repository.sendMessage(
         roomId = "general",
-        text = "Yanlış yazılmış mesaj",
-        senderName = "Mesaj Yazarı",
-        senderTeam = "Yazılım Ekibi"
+        text = "Fatsa Robotik odası açıldı!",
+        senderName = "Ahmet Demir",
+        senderTeam = TeamType.MANAGEMENT.displayName,
+        teamId = newTeamId,
+        teamName = "Fatsa Robotik"
       )
     }
-    val freshMsg = withTimeout(5000L) {
-      repository.observeMessages("general").first { list -> list.any { it.senderId == senderUid && it.text == "Yanlış yazılmış mesaj" } }
-    }.last { it.senderId == senderUid && it.text == "Yanlış yazılmış mesaj" }
+
+    val fatsaMsgs = withTimeout(5000L) {
+      repository.observeMessages("general", teamId = newTeamId).first { it.any { m -> m.senderId == creatorUid } }
+    }
+    assertEquals("Fatsa Robotik odası açıldı!", fatsaMsgs.last().text)
+  }
+
+  @Test
+  fun testTeamAdminCanApproveRevokeAndRemoveMember() = runBlocking {
+    val founderUid = signInTestUser("filim3290@gmail.com")
+    val repository = BlackseaRepository(firestore)
+    withTimeout(5000L) {
+      repository.ensureBaseUserProfileOnGoogleSignIn(founderUid, "filim3290@gmail.com", "BSR Admin", "")
+    }
+
+    val memberEmail = "uye_${System.nanoTime()}@blacksea.test"
+    val memberUid = signInTestUser(memberEmail)
+    val memberProfile = withTimeout(5000L) {
+      repository.ensureBaseUserProfileOnGoogleSignIn(memberUid, memberEmail, "Deneme Üye", "").getOrThrow()
+    }
+    withTimeout(5000L) {
+      repository.requestJoinTeam(TeamInfo.mainBlackseaTeam(), memberProfile, TeamType.SOFTWARE.displayName)
+    }
+
+    signInTestUser("filim3290@gmail.com")
+    withTimeout(5000L) {
+      repository.updateMembershipRolesAndStatus(
+        team = TeamInfo.mainBlackseaTeam(),
+        targetUserId = memberUid,
+        subTeam = TeamType.SOFTWARE.displayName,
+        roles = listOf("Yazılım Üyesi"),
+        status = UserStatus.ACTIVE.value
+      )
+      repository.revokeTeamMembership(TeamInfo.mainBlackseaTeam(), memberUid)
+    }
+
+    val revokedMem = withTimeout(5000L) {
+      repository.observeTeamMemberships(PLATFORM_MAIN_TEAM_ID)
+        .first { list -> list.any { it.userId == memberUid && it.isRevoked() } }
+        .first { it.userId == memberUid }
+    }
+    assertEquals(UserStatus.REVOKED.value, revokedMem.status)
 
     withTimeout(5000L) {
-      repository.editMessage("general", freshMsg.id, "Düzeltilmiş mesaj")
+      repository.removeTeamMembership(TeamInfo.mainBlackseaTeam(), memberUid)
     }
-    val updatedMessages = withTimeout(5000L) {
-      repository.observeMessages("general").first { list -> list.any { it.id == freshMsg.id && it.text == "Düzeltilmiş mesaj" } }
-    }
-    val editedMsg = updatedMessages.first { it.id == freshMsg.id }
-    assertTrue("Edited flag must be set", editedMsg.isEdited)
-    assertEquals("Düzeltilmiş mesaj", editedMsg.text)
-
-    // 2. Old (> 1 hour) message cannot be edited
-    val oldDate = java.util.Date(System.currentTimeMillis() - 75L * 60L * 1000L)
-    val oldMsgRef = firestore.collection("rooms").document("general").collection("messages").document()
-    withTimeout(5000L) {
-      com.google.android.gms.tasks.Tasks.await(
-        oldMsgRef.set(
-          mapOf(
-            "id" to oldMsgRef.id,
-            "roomId" to "general",
-            "senderId" to senderUid,
-            "senderName" to "Mesaj Yazarı",
-            "senderTeam" to "Yazılım Ekibi",
-            "text" to "Çok eski mesaj",
-            "createdAt" to com.google.firebase.Timestamp(oldDate),
-            "updatedAt" to com.google.firebase.Timestamp(oldDate)
-          )
-        )
-      )
-    }
-
-    try {
-      withTimeout(5000L) {
-        repository.editMessage("general", oldMsgRef.id, "Süre aşımı denemesi")
-      }
-      fail("Editing a message older than 1 hour must fail")
-    } catch (e: Exception) {
-      assertTrue(
-        "Should fail with 1-hour restriction or permission denied, got: ${e.message}",
-        e is IllegalStateException || e.unwrapFirestoreException()?.code == FirebaseFirestoreException.Code.PERMISSION_DENIED
-      )
-    }
-
-    // 3. Another user cannot edit sender's fresh message
-    val otherEmail = "other_${System.nanoTime()}@blacksea.test"
-    val otherUid = signInTestUser(otherEmail)
-    withTimeout(5000L) {
-      com.google.android.gms.tasks.Tasks.await(
-        firestore.collection("users").document(otherUid).set(
-          mapOf(
-            "userId" to otherUid,
-            "email" to otherEmail,
-            "status" to UserStatus.APPROVED.value,
-            "role" to "Yazılım Üyesi",
-            "roles" to listOf("Yazılım Üyesi")
-          )
-        )
-      )
-    }
-    try {
-      withTimeout(5000L) {
-        repository.editMessage("general", freshMsg.id, "Başkasının mesajını değiştir")
-      }
-      fail("Non-owner must not be allowed to edit someone else's message")
-    } catch (e: Exception) {
-      assertTrue(
-        "Expected ownership error or permission denied, got: ${e.message}",
-        e is IllegalStateException || e.unwrapFirestoreException()?.code == FirebaseFirestoreException.Code.PERMISSION_DENIED
-      )
-    }
+    val remaining = withTimeout(5000L) { repository.observeTeamMemberships(PLATFORM_MAIN_TEAM_ID).first() }
+    assertTrue(remaining.none { it.userId == memberUid })
   }
 }

@@ -30,13 +30,22 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.ElectricBolt
 import androidx.compose.material.icons.filled.Engineering
 import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.Flight
 import androidx.compose.material.icons.filled.Group
+import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.Handshake
+import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.Memory
+import androidx.compose.material.icons.filled.Psychology
+import androidx.compose.material.icons.filled.RocketLaunch
+import androidx.compose.material.icons.filled.School
 import androidx.compose.material.icons.filled.Security
+import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material.icons.outlined.FavoriteBorder
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -57,6 +66,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
@@ -66,6 +76,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.R
+import com.example.model.PLATFORM_MAIN_TEAM_ID
+import com.example.model.TeamInfo
+import com.example.model.TeamLogoPreset
 import com.example.model.TeamType
 import com.example.ui.theme.ElectricBlue
 import com.example.ui.theme.ManagementColor
@@ -97,79 +110,245 @@ fun BlackseaLogo(
     )
 }
 
+fun parseTeamColor(hex: String?, fallback: Color = ElectricBlue): Color {
+    if (hex.isNullOrBlank()) return fallback
+    return try {
+        val clean = hex.trim().removePrefix("#")
+        val parsed = android.graphics.Color.parseColor("#$clean")
+        Color(parsed)
+    } catch (_: Exception) {
+        fallback
+    }
+}
+
+fun teamLogoPresetIcon(logoKey: String): ImageVector {
+    return when (TeamLogoPreset.fromKey(logoKey)) {
+        TeamLogoPreset.BSR_PHOENIX -> Icons.Default.Shield
+        TeamLogoPreset.ROCKET -> Icons.Default.RocketLaunch
+        TeamLogoPreset.DRONE -> Icons.Default.Flight
+        TeamLogoPreset.AI_BRAIN -> Icons.Default.Psychology
+        TeamLogoPreset.GEAR -> Icons.Default.Engineering
+        TeamLogoPreset.BOLT -> Icons.Default.ElectricBolt
+        TeamLogoPreset.CIRCUIT -> Icons.Default.Memory
+        TeamLogoPreset.SHIELD -> Icons.Default.Groups
+    }
+}
+
 @Composable
-fun BlackseaTeamBanner(
+fun TeamLogoBadge(
+    team: TeamInfo,
+    size: Int = 48,
+    modifier: Modifier = Modifier
+) {
+    if (team.isMainTeam || team.id == PLATFORM_MAIN_TEAM_ID || team.logoKey == TeamLogoPreset.BSR_PHOENIX.key) {
+        BlackseaLogo(size = size, modifier = modifier)
+    } else {
+        val accent = parseTeamColor(team.accentColorHex)
+        val deeper = accent.copy(
+            red = (accent.red * 0.62f).coerceIn(0f, 1f),
+            green = (accent.green * 0.62f).coerceIn(0f, 1f),
+            blue = (accent.blue * 0.62f).coerceIn(0f, 1f)
+        )
+        Box(
+            modifier = modifier
+                .size(size.dp)
+                .clip(RoundedCornerShape((size * 0.25f).dp))
+                .background(Brush.linearGradient(listOf(accent, deeper))),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = teamLogoPresetIcon(team.logoKey),
+                contentDescription = "${team.name} Logo",
+                tint = Color.White,
+                modifier = Modifier.size((size * 0.54f).dp)
+            )
+        }
+    }
+}
+
+@Composable
+fun DynamicTeamBanner(
+    team: TeamInfo,
+    memberCount: Long? = null,
+    onSwitchTeamClick: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val ext = MaterialTheme.blackseaColors
+    val isMain = team.isMainTeam || team.id == PLATFORM_MAIN_TEAM_ID
+    val accent = parseTeamColor(team.accentColorHex, ElectricBlue)
+    val gradientColors = if (isMain) {
+        ext.bannerGradientColors
+    } else {
+        listOf(
+            accent.copy(
+                red = (accent.red * 0.45f).coerceIn(0f, 1f),
+                green = (accent.green * 0.45f).coerceIn(0f, 1f),
+                blue = (accent.blue * 0.45f).coerceIn(0f, 1f)
+            ),
+            accent.copy(
+                red = (accent.red * 0.85f).coerceIn(0f, 1f),
+                green = (accent.green * 0.85f).coerceIn(0f, 1f),
+                blue = (accent.blue * 0.85f).coerceIn(0f, 1f)
+            )
+        )
+    }
+
     Card(
         modifier = modifier
             .fillMaxWidth()
             .testTag("team_hero_banner"),
         shape = RoundedCornerShape(20.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = Color.Transparent
-        ),
+        colors = CardDefaults.cardColors(containerColor = Color.Transparent),
         elevation = CardDefaults.cardElevation(defaultElevation = if (ext.isDark) 4.dp else 6.dp)
     ) {
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .background(
-                    Brush.horizontalGradient(colors = ext.bannerGradientColors)
-                )
+                .background(Brush.horizontalGradient(colors = gradientColors))
                 .padding(18.dp)
         ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(16.dp)
-            ) {
-                BlackseaLogo(size = 64)
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(14.dp)
+                ) {
+                    TeamLogoBadge(team = team, size = 60)
 
-                Column(modifier = Modifier.weight(1f)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            text = "BLACKSEA ROBOTICS",
-                            color = ext.bannerTitleColor,
-                            fontSize = 18.sp,
-                            fontWeight = FontWeight.Black,
-                            letterSpacing = 1.sp
-                        )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Surface(
-                            shape = RoundedCornerShape(4.dp),
-                            color = Color.White.copy(alpha = 0.16f)
-                        ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
                             Text(
-                                text = "BSR",
-                                color = Color(0xFF7DD3FC),
-                                fontSize = 10.sp,
-                                fontWeight = FontWeight.Bold,
-                                modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
+                                text = team.name.ifBlank { "BLACKSEA ROBOTICS" }.uppercase(),
+                                color = Color.White,
+                                fontSize = 17.sp,
+                                fontWeight = FontWeight.Black,
+                                letterSpacing = 0.8.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f, fill = false)
+                            )
+                            if (team.shortCode.isNotBlank()) {
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Surface(
+                                    shape = RoundedCornerShape(4.dp),
+                                    color = Color.White.copy(alpha = 0.18f)
+                                ) {
+                                    Text(
+                                        text = team.shortCode,
+                                        color = Color.White,
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
+                                    )
+                                }
+                            }
+                        }
+
+                        val subtitle = listOf(team.schoolName, team.city)
+                            .filter { it.isNotBlank() }
+                            .joinToString(" • ")
+                            .ifBlank { "Ünye Fen Lisesi Robotik Takımı" }
+                        Text(
+                            text = subtitle,
+                            color = Color.White.copy(alpha = 0.86f),
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Medium,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+
+                        if (team.competition.isNotBlank() || team.motto.isNotBlank()) {
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = team.motto.ifBlank { team.competition },
+                                color = if (isMain) ext.bannerMottoColor else Color(0xFFFDE68A),
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                letterSpacing = 0.5.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
                         }
                     }
+                }
 
-                    Text(
-                        text = "Ünye Fen Lisesi Robotik Takımı",
-                        color = ext.bannerSubtitleColor,
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.Medium
-                    )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        if (team.competition.isNotBlank()) {
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = Color.White.copy(alpha = 0.16f)
+                            ) {
+                                Text(
+                                    text = team.competition,
+                                    color = Color.White,
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                )
+                            }
+                        }
+                        if (memberCount != null && memberCount > 0L) {
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = Color.White.copy(alpha = 0.16f)
+                            ) {
+                                Text(
+                                    text = "$memberCount Üye",
+                                    color = Color.White,
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                )
+                            }
+                        }
+                    }
 
-                    Spacer(modifier = Modifier.height(4.dp))
-
-                    Text(
-                        text = "ONE TEAM. ONE VISION. ONE ROBOT.",
-                        color = ext.bannerMottoColor,
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.ExtraBold,
-                        letterSpacing = 0.8.sp
-                    )
+                    if (onSwitchTeamClick != null) {
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = Color.White.copy(alpha = 0.22f),
+                            modifier = Modifier
+                                .clickable { onSwitchTeamClick() }
+                                .testTag("banner_switch_team_button")
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.SwapHoriz,
+                                    contentDescription = "Takım Değiştir",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                                Text(
+                                    text = "Takımlar",
+                                    color = Color.White,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                    }
                 }
             }
         }
     }
+}
+
+@Composable
+fun BlackseaTeamBanner(
+    modifier: Modifier = Modifier
+) {
+    DynamicTeamBanner(team = TeamInfo.mainBlackseaTeam(), modifier = modifier)
 }
 
 @Composable
