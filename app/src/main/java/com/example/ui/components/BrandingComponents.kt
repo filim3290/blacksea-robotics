@@ -3,6 +3,8 @@ package com.example.ui.components
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.graphics.BitmapFactory
+import android.util.Base64
 import android.widget.Toast
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
@@ -66,7 +68,10 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
@@ -75,6 +80,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import coil.compose.SubcomposeAsyncImage
 import com.example.R
 import com.example.model.PLATFORM_MAIN_TEAM_ID
 import com.example.model.TeamInfo
@@ -138,6 +144,62 @@ fun teamLogoPresetIcon(logoKey: String): ImageVector {
 fun TeamLogoBadge(
     team: TeamInfo,
     size: Int = 48,
+    modifier: Modifier = Modifier
+) {
+    val logoUrl = team.logoUrl.trim()
+    val cornerRadius = (size * 0.25f).dp
+
+    if (logoUrl.isNotBlank()) {
+        if (logoUrl.startsWith("data:image", ignoreCase = true)) {
+            val bitmap: ImageBitmap? = remember(logoUrl) {
+                try {
+                    val base64Part = logoUrl.substringAfter("base64,", "")
+                    if (base64Part.isBlank()) null
+                    else {
+                        val decoded = Base64.decode(base64Part, Base64.DEFAULT)
+                        BitmapFactory.decodeByteArray(decoded, 0, decoded.size)?.asImageBitmap()
+                    }
+                } catch (_: Exception) {
+                    null
+                }
+            }
+            if (bitmap != null) {
+                Image(
+                    bitmap = bitmap,
+                    contentDescription = "${team.name} Logo",
+                    contentScale = ContentScale.Crop,
+                    modifier = modifier
+                        .size(size.dp)
+                        .clip(RoundedCornerShape(cornerRadius))
+                )
+                return
+            }
+        } else {
+            SubcomposeAsyncImage(
+                model = logoUrl,
+                contentDescription = "${team.name} Logo",
+                contentScale = ContentScale.Crop,
+                modifier = modifier
+                    .size(size.dp)
+                    .clip(RoundedCornerShape(cornerRadius)),
+                loading = {
+                    TeamPresetOrMainLogo(team = team, size = size)
+                },
+                error = {
+                    TeamPresetOrMainLogo(team = team, size = size)
+                }
+            )
+            return
+        }
+    }
+
+    TeamPresetOrMainLogo(team = team, size = size, modifier = modifier)
+}
+
+@Composable
+private fun TeamPresetOrMainLogo(
+    team: TeamInfo,
+    size: Int,
     modifier: Modifier = Modifier
 ) {
     if (team.isMainTeam || team.id == PLATFORM_MAIN_TEAM_ID || team.logoKey == TeamLogoPreset.BSR_PHOENIX.key) {

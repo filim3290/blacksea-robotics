@@ -216,6 +216,15 @@ fun MainScreen(
         }
     }
 
+    // Ensure deleted non-main teams also exit cleanly back to Team Hub
+    LaunchedEffect(activeTeamId, approvedTeams) {
+        val selected = activeTeamId ?: return@LaunchedEffect
+        if (selected != PLATFORM_MAIN_TEAM_ID && approvedTeams.isNotEmpty() && approvedTeams.none { it.id == selected }) {
+            activeTeamId = null
+            currentTab = NavItem.HOME
+        }
+    }
+
     fun navigateForNotification(type: String, roomId: String, targetTeamId: String) {
         val lower = type.lowercase()
         when (lower) {
@@ -579,6 +588,10 @@ fun MainScreen(
                                 activeTeamId = null
                                 currentTab = NavItem.HOME
                             },
+                            onTeamDeleted = {
+                                activeTeamId = null
+                                currentTab = NavItem.HOME
+                            },
                             onSignOut = onSignOut,
                             onAccountDeleted = onAccountDeleted
                         )
@@ -807,6 +820,10 @@ fun MainScreen(
                                 activeTeamId = null
                                 currentTab = NavItem.HOME
                             },
+                            onTeamDeleted = {
+                                activeTeamId = null
+                                currentTab = NavItem.HOME
+                            },
                             onSignOut = onSignOut,
                             onAccountDeleted = onAccountDeleted
                         )
@@ -880,6 +897,7 @@ private fun ScreenContent(
     onNavigateToFiles: () -> Unit,
     onNavigateToAdmin: () -> Unit = {},
     onSwitchTeam: () -> Unit = {},
+    onTeamDeleted: () -> Unit = onSwitchTeam,
     onSignOut: () -> Unit,
     onAccountDeleted: () -> Unit = onSignOut
 ) {
@@ -924,7 +942,8 @@ private fun ScreenContent(
                 isPlatformAdmin = isPlatformAdmin,
                 updateManager = updateManager,
                 initialSectionKey = adminInitialSection,
-                onShowUpdateDialog = onShowUpdateDialog
+                onShowUpdateDialog = onShowUpdateDialog,
+                onTeamDeleted = onTeamDeleted
             )
             NavItem.PROFILE -> ProfileScreen(
                 currentUserProfile = currentUserProfile,

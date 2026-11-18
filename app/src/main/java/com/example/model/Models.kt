@@ -179,6 +179,7 @@ data class TeamInfo(
     val description: String = "",
     val motto: String = "",
     val logoKey: String = TeamLogoPreset.SHIELD.key,
+    val logoUrl: String = "",
     val accentColorHex: String = "#0284C7",
     val managerName: String = "",
     val managerContact: String = "",
@@ -653,7 +654,7 @@ object SupportFaqData {
             id = "faq_bg_notif",
             category = "Bildirimler",
             question = "Mesaj veya duyuru bildirimleri neden gecikiyor veya gelmiyor?",
-            answer = "Uygulama, mesajları ve duyuruları anlık iletmek için sürekli arka plan bağlantı servisini kullanır. Bildirimlerin kesintisiz gelmesi için Profil sekmesindeki 'Anlık Arka Plan Bildirimleri' anahtarının açık olduğundan, Android bildirim izninin verildiğinden ve cihaz pil ayarlarında 'Kısıtlanmamış' pil kullanımının seçili olduğundan emin olun."
+            answer = "Uygulamada anlık bildirim ve arka plan senkronizasyonu her kullanıcıda otomatik olarak aktiftir. Bildirimlerin kesintisiz gelmesi için Android bildirim izninin açık olduğundan ve cihaz pil ayarlarında uygulama için 'Kısıtlanmamış' pil kullanımının seçili olduğundan emin olun."
         ),
         SupportFaqItem(
             id = "faq_active_room",

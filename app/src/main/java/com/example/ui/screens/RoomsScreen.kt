@@ -46,6 +46,8 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Reply
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
@@ -60,8 +62,6 @@ import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.RadioButtonUnchecked
-import androidx.compose.material.icons.filled.Reply
-import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.UploadFile
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -476,7 +476,7 @@ fun RoomsScreen(
                                     text = { Text("Yanıtla") },
                                     leadingIcon = {
                                         Icon(
-                                            imageVector = Icons.Default.Reply,
+                                            imageVector = Icons.AutoMirrored.Filled.Reply,
                                             contentDescription = null,
                                             tint = ElectricBlue
                                         )
@@ -765,7 +765,7 @@ fun RoomsScreen(
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
                         modifier = Modifier.weight(1f)
                     ) {
-                        Icon(imageVector = Icons.Default.Reply, contentDescription = null, tint = ElectricBlue, modifier = Modifier.size(16.dp))
+                        Icon(imageVector = Icons.AutoMirrored.Filled.Reply, contentDescription = null, tint = ElectricBlue, modifier = Modifier.size(16.dp))
                         Text(
                             text = "${replyingTo?.senderName}: ${replyingTo?.text}",
                             fontSize = 12.sp,
@@ -958,7 +958,7 @@ fun RoomsScreen(
                         if (isVoiceUploading) {
                             CircularProgressIndicator(color = Color.White, modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
                         } else {
-                            Icon(imageVector = Icons.Default.Send, contentDescription = "Kaydı Gönder", tint = Color.White, modifier = Modifier.size(18.dp))
+                            Icon(imageVector = Icons.AutoMirrored.Filled.Send, contentDescription = "Kaydı Gönder", tint = Color.White, modifier = Modifier.size(18.dp))
                         }
                     }
                 }
@@ -1070,7 +1070,7 @@ fun RoomsScreen(
                         if (isSending) {
                             CircularProgressIndicator(color = Color.White, modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
                         } else {
-                            Icon(imageVector = Icons.Default.Send, contentDescription = "Gönder", tint = Color.White, modifier = Modifier.size(18.dp))
+                            Icon(imageVector = Icons.AutoMirrored.Filled.Send, contentDescription = "Gönder", tint = Color.White, modifier = Modifier.size(18.dp))
                         }
                     }
                 }
@@ -1579,7 +1579,7 @@ fun MessageItemBubble(
             ) {
                 Box(contentAlignment = Alignment.Center) {
                     Icon(
-                        imageVector = Icons.Default.Reply,
+                        imageVector = Icons.AutoMirrored.Filled.Reply,
                         contentDescription = "Yanıtla",
                         tint = ElectricBlue,
                         modifier = Modifier.size(18.dp)

@@ -1,10 +1,6 @@
 package com.example.ui.components
 
-import android.content.Context
-import android.content.Intent
-import android.net.Uri
 import android.os.Build
-import android.provider.Settings
 import android.widget.Toast
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
@@ -24,6 +20,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -33,17 +30,16 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.BatteryChargingFull
+import androidx.compose.material.icons.automirrored.filled.Reply
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.HelpOutline
-import androidx.compose.material.icons.filled.NotificationsActive
-import androidx.compose.material.icons.filled.Reply
 import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.SupportAgent
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -61,10 +57,10 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.MenuAnchorType
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -83,14 +79,14 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.core.app.NotificationManagerCompat
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import com.example.data.BlackseaRepository
 import com.example.model.SupportCategories
 import com.example.model.SupportFaqData
 import com.example.model.SupportTicket
 import com.example.model.SupportTicketStatus
 import com.example.model.UserProfile
-import com.example.notifications.RealtimeNotificationService
 import com.example.ui.theme.blackseaColors
 import com.example.update.AppUpdateManager
 import com.example.util.sanitizeUserErrorMessage
@@ -100,178 +96,180 @@ import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Locale
 
-private fun openSystemNotificationSettings(context: Context) {
-    try {
-        val intent = Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
-            putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK
-        }
-        context.startActivity(intent)
-    } catch (_: Exception) {
-        val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
-            data = Uri.fromParts("package", context.packageName, null)
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK
-        }
-        context.startActivity(intent)
-    }
-}
-
-private fun openBatteryOptimizationSettings(context: Context) {
-    try {
-        val intent = Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS).apply {
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK
-        }
-        context.startActivity(intent)
-    } catch (_: Exception) {
-        val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
-            data = Uri.fromParts("package", context.packageName, null)
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK
-        }
-        context.startActivity(intent)
-    }
-}
-
 @Composable
-fun BackgroundNotificationControlCard(
+fun SupportCenterButtonCard(
+    currentUserProfile: UserProfile?,
+    repository: BlackseaRepository?,
+    updateManager: AppUpdateManager?,
+    teamId: String = com.example.model.PLATFORM_MAIN_TEAM_ID,
+    teamName: String = "BlackSea Robotics",
     modifier: Modifier = Modifier
 ) {
-    val context = LocalContext.current
     val ext = MaterialTheme.blackseaColors
-    var bgSyncEnabled by remember { mutableStateOf(RealtimeNotificationService.isContinuousSyncEnabled(context)) }
-    val isServiceRunning by RealtimeNotificationService.isRunning.collectAsState()
-    val notificationsEnabled = remember {
-        NotificationManagerCompat.from(context).areNotificationsEnabled()
+    var showSupportModal by remember { mutableStateOf(false) }
+
+    val uid = currentUserProfile?.userId?.ifBlank { currentUserProfile.id }.orEmpty()
+    val myTickets by remember(uid, repository, teamId) {
+        if (repository == null || uid.isBlank()) flowOf(emptyList())
+        else repository.observeMySupportTickets(uid, teamId = teamId)
+    }.collectAsState(initial = emptyList())
+
+    val openTicketsCount = remember(myTickets) {
+        myTickets.count { SupportTicketStatus.normalize(it.status) != SupportTicketStatus.RESOLVED }
     }
 
     Card(
         modifier = modifier
             .fillMaxWidth()
-            .testTag("background_notification_control_card"),
+            .heightIn(min = 60.dp)
+            .clickable { showSupportModal = true }
+            .testTag("open_support_center_button"),
         shape = RoundedCornerShape(16.dp),
         border = BorderStroke(1.dp, ext.cardBorder),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         elevation = CardDefaults.cardElevation(defaultElevation = if (ext.isDark) 2.dp else 1.dp)
     ) {
-        Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
         ) {
             Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                modifier = Modifier.weight(1f)
             ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    modifier = Modifier.weight(1f)
+                Surface(
+                    shape = CircleShape,
+                    color = ext.accentBlueContainer,
+                    modifier = Modifier.size(40.dp)
                 ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            imageVector = Icons.Default.SupportAgent,
+                            contentDescription = "Yardım ve Destek",
+                            tint = ext.accentBlue,
+                            modifier = Modifier.size(21.dp)
+                        )
+                    }
+                }
+                Column {
+                    Text(
+                        text = "Yardım & Destek Merkezi",
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Text(
+                        text = "Hazır çözümler, SSS ve yönetici destek formu",
+                        fontSize = 11.sp,
+                        color = ext.textMuted,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                if (openTicketsCount > 0) {
                     Surface(
-                        shape = CircleShape,
-                        color = if (bgSyncEnabled && isServiceRunning) ext.emeraldSolid.copy(alpha = 0.16f) else ext.accentBlueContainer,
-                        modifier = Modifier.size(36.dp)
+                        shape = RoundedCornerShape(8.dp),
+                        color = ext.amberText.copy(alpha = 0.16f)
                     ) {
-                        Box(contentAlignment = Alignment.Center) {
+                        Text(
+                            text = "$openTicketsCount Açık",
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = ext.amberText,
+                            modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
+                        )
+                    }
+                }
+                Icon(
+                    imageVector = Icons.Default.ChevronRight,
+                    contentDescription = "Destek Merkezini Aç",
+                    tint = ext.textMuted,
+                    modifier = Modifier.size(22.dp)
+                )
+            }
+        }
+    }
+
+    if (showSupportModal) {
+        Dialog(
+            onDismissRequest = { showSupportModal = false },
+            properties = DialogProperties(usePlatformDefaultWidth = false)
+        ) {
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth(0.94f)
+                    .widthIn(max = 560.dp)
+                    .heightIn(max = 680.dp)
+                    .testTag("support_center_modal"),
+                shape = RoundedCornerShape(22.dp),
+                color = MaterialTheme.colorScheme.background,
+                border = BorderStroke(1.dp, ext.cardBorder),
+                tonalElevation = 6.dp,
+                shadowElevation = 10.dp
+            ) {
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(start = 18.dp, end = 8.dp, top = 12.dp, bottom = 8.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
                             Icon(
-                                imageVector = Icons.Default.NotificationsActive,
+                                imageVector = Icons.Default.SupportAgent,
                                 contentDescription = null,
-                                tint = if (bgSyncEnabled && isServiceRunning) ext.emeraldText else ext.accentBlue,
-                                modifier = Modifier.size(19.dp)
+                                tint = ext.accentBlue,
+                                modifier = Modifier.size(22.dp)
+                            )
+                            Text(
+                                text = "Yardım & Destek Merkezi",
+                                fontSize = 17.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                        }
+                        IconButton(
+                            onClick = { showSupportModal = false },
+                            modifier = Modifier.testTag("close_support_modal_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Close,
+                                contentDescription = "Kapat",
+                                tint = ext.textMuted
                             )
                         }
                     }
-                    Column {
-                        Text(
-                            text = "Anlık Arka Plan Bildirimleri",
-                            fontSize = 15.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-                        Text(
-                            text = when {
-                                !bgSyncEnabled -> "Kapalı (Yalnızca periyodik kontrol)"
-                                isServiceRunning -> "Canlı bağlantı aktif • Anlık iletim"
-                                else -> "Etkin • Arka planda otomatik çalışır"
-                            },
-                            fontSize = 11.sp,
-                            color = if (bgSyncEnabled) ext.emeraldText else ext.textMuted,
-                            fontWeight = FontWeight.Medium
+
+                    HorizontalDivider(color = ext.cardBorder)
+
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .verticalScroll(rememberScrollState())
+                            .padding(14.dp)
+                    ) {
+                        HelpAndSupportCenterCard(
+                            currentUserProfile = currentUserProfile,
+                            repository = repository,
+                            updateManager = updateManager,
+                            teamId = teamId,
+                            teamName = teamName
                         )
                     }
-                }
-
-                Switch(
-                    checked = bgSyncEnabled,
-                    onCheckedChange = { enabled ->
-                        bgSyncEnabled = enabled
-                        RealtimeNotificationService.setContinuousSyncEnabled(context, enabled)
-                        Toast.makeText(
-                            context,
-                            if (enabled) "Anlık arka plan bildirimi açıldı." else "Sürekli arka plan servisi kapatıldı.",
-                            Toast.LENGTH_SHORT
-                        ).show()
-                    },
-                    modifier = Modifier.testTag("bg_sync_toggle_switch")
-                )
-            }
-
-            Text(
-                text = "Uygulama arka plandayken yeni mesaj, duyuru ve destek yanıtlarının beklemeden ulaşması için sürekli dinleme servisi kullanılır.",
-                fontSize = 12.sp,
-                color = ext.textSecondary,
-                lineHeight = 17.sp
-            )
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                OutlinedButton(
-                    onClick = { openSystemNotificationSettings(context) },
-                    modifier = Modifier
-                        .weight(1f)
-                        .heightIn(min = 48.dp),
-                    shape = RoundedCornerShape(10.dp),
-                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.NotificationsActive,
-                        contentDescription = null,
-                        tint = if (notificationsEnabled) ext.accentBlue else ext.dangerText,
-                        modifier = Modifier.size(16.dp)
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(
-                        text = if (notificationsEnabled) "Bildirim Ayarı" else "Bildirimi Aç",
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-
-                OutlinedButton(
-                    onClick = { openBatteryOptimizationSettings(context) },
-                    modifier = Modifier
-                        .weight(1f)
-                        .heightIn(min = 48.dp),
-                    shape = RoundedCornerShape(10.dp),
-                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.BatteryChargingFull,
-                        contentDescription = null,
-                        tint = ext.amberText,
-                        modifier = Modifier.size(16.dp)
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(
-                        text = "Pil Optimizasyonu",
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
                 }
             }
         }
@@ -537,7 +535,7 @@ fun HelpAndSupportCenterCard(
                         contentColor = Color.White
                     )
                 ) {
-                    Icon(imageVector = Icons.Default.Send, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Icon(imageVector = Icons.AutoMirrored.Filled.Send, contentDescription = null, modifier = Modifier.size(16.dp))
                     Spacer(modifier = Modifier.width(8.dp))
                     Text("Yöneticiye Destek Talebi / Sorun Bildir", fontSize = 13.sp, fontWeight = FontWeight.Bold)
                 }
@@ -679,7 +677,7 @@ fun SupportTicketFormDialog(
                         trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = categoryExpanded) },
                         modifier = Modifier
                             .fillMaxWidth()
-                            .menuAnchor(),
+                            .menuAnchor(MenuAnchorType.PrimaryNotEditable),
                         shape = RoundedCornerShape(10.dp)
                     )
                     ExposedDropdownMenu(
@@ -951,7 +949,7 @@ fun SupportTicketSummaryCard(
                         contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
                         modifier = Modifier.heightIn(min = 40.dp)
                     ) {
-                        Icon(imageVector = Icons.Default.Reply, contentDescription = null, modifier = Modifier.size(15.dp))
+                        Icon(imageVector = Icons.AutoMirrored.Filled.Reply, contentDescription = null, modifier = Modifier.size(15.dp))
                         Spacer(modifier = Modifier.width(6.dp))
                         Text(
                             text = if (ticket.adminReply.isBlank()) "Yanıtla / Durumu Güncelle" else "Yanıtı Düzenle",

@@ -1232,7 +1232,7 @@ private fun DiscoverableTeamCard(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "${maxOf(1L, team.memberCount)} Üye",
+                    text = "${team.memberCount.coerceAtLeast(0L)} Üye",
                     fontSize = 11.sp,
                     color = ext.textMuted,
                     fontWeight = FontWeight.Medium

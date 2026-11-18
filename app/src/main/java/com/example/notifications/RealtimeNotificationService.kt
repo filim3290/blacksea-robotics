@@ -1,14 +1,6 @@
 package com.example.notifications
 
-import android.app.ForegroundServiceStartNotAllowedException
-import android.app.Service
 import android.content.Context
-import android.content.Intent
-import android.content.pm.ServiceInfo
-import android.os.Build
-import android.os.IBinder
-import androidx.core.app.ServiceCompat
-import androidx.core.content.ContextCompat
 import com.example.data.BlackseaRepository
 import com.example.data.UserProfileLoadState
 import com.example.model.PLATFORM_FOUNDER_EMAIL
@@ -27,7 +19,6 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -38,196 +29,163 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 
 /**
- * Persistent foreground listener service (`dataSync`) that keeps Firestore notification
- * and release listeners active continuously in the background so team chat messages,
- * announcements, ideas, files, support updates, and team approvals arrive immediately.
+ * Always-on process-level notification & update listener coordinator.
+ * Runs silently in-process without starting an Android Foreground Service or showing
+ * any persistent status-bar notification, paired with [BackgroundNotificationWorker]
+ * for reliable background delivery when the app process is stopped.
  */
-class RealtimeNotificationService : Service() {
+object RealtimeNotificationService {
+    private const val TAG = "RealtimeNotifCoordinator"
 
-    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var mainJob: Job? = null
 
-    override fun onBind(intent: Intent?): IBinder? = null
+    private val _isRunning = MutableStateFlow(false)
+    val isRunning: StateFlow<Boolean> = _isRunning.asStateFlow()
 
-    override fun onCreate() {
-        super.onCreate()
-        promoteToForeground()
-        _isRunning.value = true
-    }
+    @Suppress("UNUSED_PARAMETER")
+    fun isContinuousSyncEnabled(context: Context): Boolean = true
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        promoteToForeground()
-
-        if (!isContinuousSyncEnabled(this) || Firebase.auth.currentUser == null) {
-            stopSelf()
-            return START_NOT_STICKY
-        }
-
-        if (mainJob?.isActive != true) {
-            startRealtimeListeners()
-        }
-        return START_STICKY
-    }
-
-    override fun onTimeout(startId: Int, fgsType: Int) {
-        logDebugWarn(TAG, "dataSync foreground timeout reached; handing off to WorkManager")
-        BackgroundNotificationWorker.triggerImmediateSync(applicationContext)
-        stopSelf()
-    }
-
-    override fun onTaskRemoved(rootIntent: Intent?) {
-        super.onTaskRemoved(rootIntent)
-        if (isContinuousSyncEnabled(applicationContext) && Firebase.auth.currentUser != null) {
-            BackgroundNotificationWorker.schedulePeriodicSync(applicationContext)
-            BackgroundNotificationWorker.triggerOneTimeUpdateCheck(applicationContext, delaySeconds = 2L)
-        }
-    }
-
-    override fun onDestroy() {
-        _isRunning.value = false
-        mainJob?.cancel()
-        serviceScope.cancel()
-        super.onDestroy()
-    }
-
-    private fun promoteToForeground() {
-        try {
-            val notification = TeamNotificationDispatcher.buildRealtimeServiceNotification(this)
-            val serviceType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
-            } else {
-                0
+    fun startIfEnabled(context: Context) {
+        val appCtx = context.applicationContext
+        if (Firebase.auth.currentUser == null) return
+        synchronized(this) {
+            if (mainJob?.isActive == true) {
+                _isRunning.value = true
+                return
             }
-            ServiceCompat.startForeground(
-                this,
-                TeamNotificationDispatcher.BACKGROUND_SERVICE_NOTIFICATION_ID,
-                notification,
-                serviceType
-            )
-        } catch (e: Exception) {
-            logDebugWarn(TAG, "Failed to promote RealtimeNotificationService to foreground", e)
-            stopSelf()
-        }
-    }
-
-    private fun startRealtimeListeners() {
-        val repository = BlackseaRepository(applicationContext)
-        val updateManager = AppUpdateManager(applicationContext)
-
-        mainJob?.cancel()
-        mainJob = serviceScope.launch {
-            observeAuthUidFlow().collectLatest { uid ->
-                if (uid.isNullOrBlank() || !isContinuousSyncEnabled(applicationContext)) {
-                    stopSelf()
-                    return@collectLatest
-                }
-
-                // Parallel listener for pushed updates while authenticated
-                val updateJob = launch {
-                    observeRemoteAppUpdates(repository, updateManager)
-                }
-
+            _isRunning.value = true
+            mainJob = scope.launch {
+                val repository = BlackseaRepository(appCtx)
+                val updateManager = AppUpdateManager(appCtx)
                 try {
-                    combine(
-                        repository.observeUserProfileState(uid),
-                        repository.observeMyMemberships(uid)
-                    ) { profileState, memberships ->
-                        profileState to memberships
-                    }.collectLatest { (state, memberships) ->
-                        when (state) {
-                            is UserProfileLoadState.Loading -> Unit
-                            is UserProfileLoadState.Missing -> {
-                                val isFounderEmail = Firebase.auth.currentUser?.email
-                                    .equals(PLATFORM_FOUNDER_EMAIL, ignoreCase = true)
-                                if (!isFounderEmail) {
-                                    stopSelf()
-                                }
-                            }
-                            is UserProfileLoadState.Found -> {
-                                val profile = state.profile
-                                val isPlatformAdmin = profile.isPlatformManagerAccount() ||
-                                    Firebase.auth.currentUser?.email.equals(PLATFORM_FOUNDER_EMAIL, ignoreCase = true)
+                    observeAuthUidFlow().collectLatest { uid ->
+                        if (uid.isNullOrBlank()) {
+                            _isRunning.value = false
+                            return@collectLatest
+                        }
 
-                                val membershipsByTeam = memberships
-                                    .filter { it.teamId.isNotBlank() }
-                                    .associateBy { it.teamId }
-                                    .toMutableMap()
+                        val updateJob = launch {
+                            observeRemoteAppUpdates(appCtx, repository, updateManager)
+                        }
 
-                                if (!membershipsByTeam.containsKey(PLATFORM_MAIN_TEAM_ID) &&
-                                    (isPlatformAdmin || (profile.activeTeamId.isBlank() && UserStatus.isActive(profile.status) && profile.roles.any { it != "Takım Üyesi" }))
-                                ) {
-                                    membershipsByTeam[PLATFORM_MAIN_TEAM_ID] = TeamMembership(
-                                        id = "${PLATFORM_MAIN_TEAM_ID}_$uid",
-                                        teamId = PLATFORM_MAIN_TEAM_ID,
-                                        userId = uid,
-                                        userName = profile.getFullName(),
-                                        userEmail = profile.email,
-                                        subTeam = profile.team,
-                                        role = profile.role,
-                                        roles = profile.roles,
-                                        status = UserStatus.ACTIVE.value,
-                                        isTeamAdmin = profile.isManagerAccount() || isPlatformAdmin
-                                    )
-                                }
+                        try {
+                            combine(
+                                repository.observeUserProfileState(uid),
+                                repository.observeMyMemberships(uid)
+                            ) { profileState, memberships ->
+                                profileState to memberships
+                            }.collectLatest { (state, memberships) ->
+                                when (state) {
+                                    is UserProfileLoadState.Loading -> Unit
+                                    is UserProfileLoadState.Missing -> {
+                                        val isFounderEmail = Firebase.auth.currentUser?.email
+                                            .equals(PLATFORM_FOUNDER_EMAIL, ignoreCase = true)
+                                        if (!isFounderEmail) {
+                                            stop(appCtx)
+                                        }
+                                    }
+                                    is UserProfileLoadState.Found -> {
+                                        val profile = state.profile
+                                        val isPlatformAdmin = profile.isPlatformManagerAccount() ||
+                                            Firebase.auth.currentUser?.email.equals(PLATFORM_FOUNDER_EMAIL, ignoreCase = true)
 
-                                val profileJoinMs = profile.createdAt?.toDate()?.time ?: 0L
-                                if (profileJoinMs > 0L) {
-                                    TeamNotificationDispatcher.recordUserJoinTimestampIfMissing(
-                                        applicationContext,
-                                        uid,
-                                        profileJoinMs
-                                    )
-                                }
-                                val effectiveJoinMs = if (profileJoinMs > 0L) {
-                                    profileJoinMs
-                                } else {
-                                    TeamNotificationDispatcher.getUserJoinTimestampMs(applicationContext, uid)
-                                }
+                                        val membershipsByTeam = memberships
+                                            .filter { it.teamId.isNotBlank() }
+                                            .associateBy { it.teamId }
+                                            .toMutableMap()
 
-                                if (!TeamNotificationDispatcher.hasSeededBaseline(applicationContext, uid)) {
-                                    val initialSnapshot = repository.fetchNotificationsOnceForUser(
-                                        userId = uid,
-                                        membershipsByTeam = membershipsByTeam,
-                                        isPlatformAdmin = isPlatformAdmin,
-                                        userCreatedAtMs = effectiveJoinMs
-                                    )
-                                    if (initialSnapshot != null) {
-                                        TeamNotificationDispatcher.syncBaselineSilently(
-                                            context = applicationContext,
+                                        if (!membershipsByTeam.containsKey(PLATFORM_MAIN_TEAM_ID) &&
+                                            (isPlatformAdmin || (profile.activeTeamId.isBlank() && UserStatus.isActive(profile.status) && profile.roles.any { it != "Takım Üyesi" }))
+                                        ) {
+                                            membershipsByTeam[PLATFORM_MAIN_TEAM_ID] = TeamMembership(
+                                                id = "${PLATFORM_MAIN_TEAM_ID}_$uid",
+                                                teamId = PLATFORM_MAIN_TEAM_ID,
+                                                userId = uid,
+                                                userName = profile.getFullName(),
+                                                userEmail = profile.email,
+                                                subTeam = profile.team,
+                                                role = profile.role,
+                                                roles = profile.roles,
+                                                status = UserStatus.ACTIVE.value,
+                                                isTeamAdmin = profile.isManagerAccount() || isPlatformAdmin
+                                            )
+                                        }
+
+                                        val profileJoinMs = profile.createdAt?.toDate()?.time ?: 0L
+                                        if (profileJoinMs > 0L) {
+                                            TeamNotificationDispatcher.recordUserJoinTimestampIfMissing(
+                                                appCtx,
+                                                uid,
+                                                profileJoinMs
+                                            )
+                                        }
+                                        val effectiveJoinMs = if (profileJoinMs > 0L) {
+                                            profileJoinMs
+                                        } else {
+                                            TeamNotificationDispatcher.getUserJoinTimestampMs(appCtx, uid)
+                                        }
+
+                                        if (!TeamNotificationDispatcher.hasSeededBaseline(appCtx, uid)) {
+                                            val initialSnapshot = repository.fetchNotificationsOnceForUser(
+                                                userId = uid,
+                                                membershipsByTeam = membershipsByTeam,
+                                                isPlatformAdmin = isPlatformAdmin,
+                                                userCreatedAtMs = effectiveJoinMs
+                                            )
+                                            if (initialSnapshot != null) {
+                                                TeamNotificationDispatcher.syncBaselineSilently(
+                                                    context = appCtx,
+                                                    userId = uid,
+                                                    notifications = initialSnapshot
+                                                )
+                                            }
+                                        }
+
+                                        repository.observeNotificationsForUser(
                                             userId = uid,
-                                            notifications = initialSnapshot
-                                        )
+                                            membershipsByTeam = membershipsByTeam,
+                                            isPlatformAdmin = isPlatformAdmin,
+                                            userCreatedAtMs = effectiveJoinMs
+                                        ).collect { notifications ->
+                                            TeamNotificationDispatcher.processNotifications(
+                                                context = appCtx,
+                                                userId = uid,
+                                                notifications = notifications,
+                                                userCreatedAtMs = effectiveJoinMs
+                                            )
+                                        }
                                     }
                                 }
-
-                                repository.observeNotificationsForUser(
-                                    userId = uid,
-                                    membershipsByTeam = membershipsByTeam,
-                                    isPlatformAdmin = isPlatformAdmin,
-                                    userCreatedAtMs = effectiveJoinMs
-                                ).collect { notifications ->
-                                    TeamNotificationDispatcher.processNotifications(
-                                        context = applicationContext,
-                                        userId = uid,
-                                        notifications = notifications,
-                                        userCreatedAtMs = effectiveJoinMs
-                                    )
-                                }
                             }
+                        } catch (ce: CancellationException) {
+                            throw ce
+                        } catch (e: Exception) {
+                            logDebugWarn(TAG, "RealtimeNotificationService stream error", e)
+                        } finally {
+                            updateJob.cancel()
                         }
                     }
                 } catch (ce: CancellationException) {
                     throw ce
-                } catch (e: Exception) {
-                    logDebugWarn(TAG, "RealtimeNotificationService stream error", e)
                 } finally {
-                    updateJob.cancel()
+                    _isRunning.value = false
                 }
             }
         }
     }
 
+    @Suppress("UNUSED_PARAMETER")
+    fun stop(context: Context) {
+        synchronized(this) {
+            mainJob?.cancel()
+            mainJob = null
+            _isRunning.value = false
+        }
+    }
+
     private suspend fun observeRemoteAppUpdates(
+        appCtx: Context,
         repository: BlackseaRepository,
         updateManager: AppUpdateManager
     ) {
@@ -243,7 +201,7 @@ class RealtimeNotificationService : Service() {
                     val vCode = doc.getLong("versionCode")?.toInt() ?: 0
                     val vName = doc.getString("versionName") ?: return@collect
                     if (updateManager.isUpdateAlreadyInstalled(vCode, vName)) {
-                        TeamNotificationDispatcher.clearPendingUpdateNotification(applicationContext)
+                        TeamNotificationDispatcher.clearPendingUpdateNotification(appCtx)
                         return@collect
                     }
 
@@ -268,7 +226,7 @@ class RealtimeNotificationService : Service() {
                             isForceUpdate = doc.getBoolean("isForceUpdate") ?: false
                         )
                         TeamNotificationDispatcher.dispatchUpdateNotificationIfNeeded(
-                            context = applicationContext,
+                            context = appCtx,
                             updateManager = updateManager,
                             release = release
                         )
@@ -277,7 +235,7 @@ class RealtimeNotificationService : Service() {
         } catch (ce: CancellationException) {
             throw ce
         } catch (e: Exception) {
-            logDebugWarn(TAG, "Remote app update observation error in service", e)
+            logDebugWarn(TAG, "Remote app update observation error", e)
         }
     }
 
@@ -288,62 +246,5 @@ class RealtimeNotificationService : Service() {
         }
         Firebase.auth.addAuthStateListener(listener)
         awaitClose { Firebase.auth.removeAuthStateListener(listener) }
-    }
-
-    companion object {
-        private const val TAG = "RealtimeNotifService"
-        private const val PREFS_NAME = "bsr_service_prefs"
-        private const val KEY_CONTINUOUS_SYNC_ENABLED = "continuous_bg_sync_enabled"
-
-        private val _isRunning = MutableStateFlow(false)
-        val isRunning: StateFlow<Boolean> = _isRunning.asStateFlow()
-
-        fun isContinuousSyncEnabled(context: Context): Boolean {
-            return context.applicationContext
-                .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-                .getBoolean(KEY_CONTINUOUS_SYNC_ENABLED, true)
-        }
-
-        fun setContinuousSyncEnabled(context: Context, enabled: Boolean) {
-            val appCtx = context.applicationContext
-            appCtx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-                .edit()
-                .putBoolean(KEY_CONTINUOUS_SYNC_ENABLED, enabled)
-                .apply()
-            if (enabled) {
-                startIfEnabled(appCtx)
-            } else {
-                stop(appCtx)
-            }
-        }
-
-        fun startIfEnabled(context: Context) {
-            val appCtx = context.applicationContext
-            if (!isContinuousSyncEnabled(appCtx)) return
-            if (Firebase.auth.currentUser == null) return
-            try {
-                val intent = Intent(appCtx, RealtimeNotificationService::class.java)
-                ContextCompat.startForegroundService(appCtx, intent)
-            } catch (e: Exception) {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
-                    e is ForegroundServiceStartNotAllowedException
-                ) {
-                    logDebugWarn(TAG, "Foreground service start restricted from background; falling back to WorkManager", e)
-                    BackgroundNotificationWorker.triggerImmediateSync(appCtx)
-                } else {
-                    logDebugWarn(TAG, "Could not start RealtimeNotificationService", e)
-                }
-            }
-        }
-
-        fun stop(context: Context) {
-            val appCtx = context.applicationContext
-            try {
-                appCtx.stopService(Intent(appCtx, RealtimeNotificationService::class.java))
-            } catch (e: Exception) {
-                logDebugWarn(TAG, "Failed to stop RealtimeNotificationService", e)
-            }
-            _isRunning.value = false
-        }
     }
 }

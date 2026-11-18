@@ -22,13 +22,13 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ExitToApp
+import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.DeleteForever
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.filled.ExitToApp
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.LocationOn
-import androidx.compose.material.icons.filled.Logout
 import androidx.compose.material.icons.filled.School
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.SwapHoriz
@@ -44,6 +44,7 @@ import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.MenuAnchorType
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
@@ -101,7 +102,8 @@ fun ProfileScreen(
     val credentialManager = remember { CredentialManager.create(context) }
     var showEditDialog by remember { mutableStateOf(false) }
     var showSignOutConfirmation by remember { mutableStateOf(false) }
-    var showLeaveTeamConfirmation by remember { mutableStateOf(false) }
+    var showLeaveTeamStep1 by remember { mutableStateOf(false) }
+    var showLeaveTeamStep2 by remember { mutableStateOf(false) }
     var isLeavingTeam by remember { mutableStateOf(false) }
     var showDeleteStep1 by remember { mutableStateOf(false) }
     var showDeleteStep2 by remember { mutableStateOf(false) }
@@ -359,16 +361,19 @@ fun ProfileScreen(
                 }
 
                 if (canLeaveCurrentTeam) {
-                    TextButton(
-                        onClick = { showLeaveTeamConfirmation = true },
+                    OutlinedButton(
+                        onClick = { showLeaveTeamStep1 = true },
                         modifier = Modifier
                             .fillMaxWidth()
+                            .heightIn(min = 44.dp)
                             .testTag("leave_team_button"),
-                        colors = ButtonDefaults.textButtonColors(contentColor = ext.dangerText)
+                        shape = RoundedCornerShape(10.dp),
+                        border = BorderStroke(1.dp, ext.dangerText.copy(alpha = 0.45f)),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = ext.dangerText)
                     ) {
-                        Icon(imageVector = Icons.Default.Logout, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Icon(imageVector = Icons.AutoMirrored.Filled.Logout, contentDescription = null, modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(6.dp))
-                        Text("Bu Takımdan Ayrıl", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                        Text("Ekipten Ayrıl (Takım Kaydımı Sil)", fontSize = 12.sp, fontWeight = FontWeight.Bold)
                     }
                 }
             }
@@ -539,9 +544,7 @@ fun ProfileScreen(
             }
         }
 
-        com.example.ui.components.BackgroundNotificationControlCard()
-
-        com.example.ui.components.HelpAndSupportCenterCard(
+        com.example.ui.components.SupportCenterButtonCard(
             currentUserProfile = currentUserProfile,
             teamId = activeTeam.id,
             teamName = activeTeam.name,
@@ -632,7 +635,7 @@ fun ProfileScreen(
             colors = ButtonDefaults.outlinedButtonColors(contentColor = ext.dangerText)
         ) {
             Icon(
-                imageVector = Icons.Default.ExitToApp,
+                imageVector = Icons.AutoMirrored.Filled.ExitToApp,
                 contentDescription = null,
                 tint = ext.dangerText
             )
@@ -679,15 +682,70 @@ fun ProfileScreen(
         )
     }
 
-    if (showLeaveTeamConfirmation && repository != null) {
+    if (showLeaveTeamStep1 && repository != null) {
         AlertDialog(
-            onDismissRequest = { if (!isLeavingTeam) showLeaveTeamConfirmation = false },
-            title = { Text("${activeTeam.name} Takımından Ayrıl", fontWeight = FontWeight.Bold) },
+            onDismissRequest = { showLeaveTeamStep1 = false },
+            icon = {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.Logout,
+                    contentDescription = null,
+                    tint = ext.dangerText,
+                    modifier = Modifier.size(30.dp)
+                )
+            },
+            title = { Text("${activeTeam.name} Ekibinden Ayrılmak İstiyor musunuz?", fontWeight = FontWeight.Bold) },
             text = {
                 Text(
-                    "Bu takımdan ayrılmak istediğinize emin misiniz? Yeniden katılmak için daha sonra tekrar başvuru gönderebilirsiniz.",
+                    "${activeTeam.name} ekibindeki üyelik ve rol kaydınız silinecektir. Diğer takımlardaki üyelikleriniz ve Google hesabınız korunur. Devam etmek için sonraki adımda son onay istenecektir.",
                     color = ext.textSecondary,
-                    fontSize = 13.sp
+                    fontSize = 13.sp,
+                    lineHeight = 19.sp
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showLeaveTeamStep1 = false
+                        showLeaveTeamStep2 = true
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = ext.dangerSolid, contentColor = Color.White),
+                    modifier = Modifier.testTag("leave_team_step1_confirm")
+                ) {
+                    Text("Devam Et", fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showLeaveTeamStep1 = false }) {
+                    Text("Vazgeç")
+                }
+            }
+        )
+    }
+
+    if (showLeaveTeamStep2 && repository != null) {
+        AlertDialog(
+            onDismissRequest = { if (!isLeavingTeam) showLeaveTeamStep2 = false },
+            icon = {
+                Icon(
+                    imageVector = Icons.Default.DeleteForever,
+                    contentDescription = null,
+                    tint = ext.dangerText,
+                    modifier = Modifier.size(32.dp)
+                )
+            },
+            title = {
+                Text(
+                    "Son Onay: Takım Kaydınız Silinecek",
+                    fontWeight = FontWeight.Bold,
+                    color = ext.dangerText
+                )
+            },
+            text = {
+                Text(
+                    "Onayladığınızda ${activeTeam.name} ekibinden ayrılacak ve bu takımdaki üyelik kaydınızı kalıcı olarak sileceksiniz. Yeniden katılmak isterseniz tekrar başvuru göndermeniz gerekir. Emin misiniz?",
+                    color = ext.textSecondary,
+                    fontSize = 13.sp,
+                    lineHeight = 19.sp
                 )
             },
             confirmButton = {
@@ -698,8 +756,8 @@ fun ProfileScreen(
                             val res = repository.leaveTeam(activeTeam.id)
                             isLeavingTeam = false
                             if (res.isSuccess) {
-                                showLeaveTeamConfirmation = false
-                                Toast.makeText(context, "${activeTeam.name} takımından ayrıldınız.", Toast.LENGTH_SHORT).show()
+                                showLeaveTeamStep2 = false
+                                Toast.makeText(context, "${activeTeam.name} ekibinden ayrıldınız ve takım kaydınız silindi.", Toast.LENGTH_LONG).show()
                                 onSwitchTeam()
                             } else {
                                 Toast.makeText(
@@ -711,18 +769,19 @@ fun ProfileScreen(
                         }
                     },
                     enabled = !isLeavingTeam,
-                    colors = ButtonDefaults.buttonColors(containerColor = ext.dangerSolid, contentColor = Color.White)
+                    colors = ButtonDefaults.buttonColors(containerColor = ext.dangerSolid, contentColor = Color.White),
+                    modifier = Modifier.testTag("leave_team_step2_confirm")
                 ) {
                     if (isLeavingTeam) {
                         CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.White, strokeWidth = 2.dp)
                     } else {
-                        Text("Takımdan Ayrıl", fontWeight = FontWeight.Bold)
+                        Text("Evet, Ekipten Ayrıl", fontWeight = FontWeight.Bold)
                     }
                 }
             },
             dismissButton = {
-                TextButton(onClick = { showLeaveTeamConfirmation = false }, enabled = !isLeavingTeam) {
-                    Text("Vazgeç")
+                TextButton(onClick = { showLeaveTeamStep2 = false }, enabled = !isLeavingTeam) {
+                    Text("İptal")
                 }
             }
         )
@@ -935,7 +994,7 @@ fun ProfileScreen(
                             readOnly = true,
                             label = { Text("Takım İçi Alt Ekip") },
                             trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = teamExpanded) },
-                            modifier = Modifier.fillMaxWidth().menuAnchor(),
+                            modifier = Modifier.fillMaxWidth().menuAnchor(MenuAnchorType.PrimaryNotEditable),
                             shape = RoundedCornerShape(10.dp)
                         )
 
@@ -971,21 +1030,14 @@ fun ProfileScreen(
                         if (trimmedFirst.isNotBlank() && trimmedLast.isNotBlank()) {
                             scope.launch {
                                 try {
-                                    repository.updateOwnProfile(
+                                    repository.updateUserDisplayAcrossTeams(
                                         userId = uid,
                                         firstName = trimmedFirst,
                                         lastName = trimmedLast,
                                         username = editUsername.trim(),
-                                        team = editTeam
+                                        activeTeamId = activeTeam.id,
+                                        subTeam = editTeam
                                     )
-                                    if (activeMembership != null) {
-                                        repository.updateMyTeamMembershipProfile(
-                                            teamId = activeTeam.id,
-                                            userId = uid,
-                                            displayName = "$trimmedFirst $trimmedLast",
-                                            subTeam = editTeam
-                                        )
-                                    }
                                     showEditDialog = false
                                     Toast.makeText(context, "Profil güncellendi!", Toast.LENGTH_SHORT).show()
                                 } catch (ce: CancellationException) {

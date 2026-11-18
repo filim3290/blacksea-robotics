@@ -37,6 +37,7 @@
         "description": { "type": "string" },
         "motto": { "type": "string" },
         "logoKey": { "type": "string" },
+        "logoUrl": { "type": "string" },
         "accentColorHex": { "type": "string" },
         "managerName": { "type": "string" },
         "managerContact": { "type": "string" },

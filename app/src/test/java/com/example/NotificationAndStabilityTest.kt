@@ -10,6 +10,7 @@ import androidx.test.core.app.ApplicationProvider
 import com.example.data.shouldUserReceiveNotification
 import com.example.model.SupportFaqData
 import com.example.model.SupportTicketStatus
+import com.example.model.TeamInfo
 import com.example.model.TeamNotification
 import com.example.model.filterChatDisplayRoles
 import com.example.notifications.RealtimeNotificationService
@@ -696,18 +697,22 @@ class NotificationAndStabilityTest {
     }
 
     @Test
-    fun `background service channel is silent low importance and continuous sync defaults enabled`() {
+    fun `background listener runs silently without persistent foreground channel and continuous sync defaults enabled`() {
         val context = ApplicationProvider.getApplicationContext<Context>()
         TeamNotificationDispatcher.ensureNotificationChannels(context)
         val nm = context.getSystemService(NotificationManager::class.java)!!
-        val bgChannel = nm.getNotificationChannel(TeamNotificationDispatcher.CHANNEL_BACKGROUND_SERVICE)
-        assertTrue(bgChannel != null)
-        assertEquals(NotificationManager.IMPORTANCE_MIN, bgChannel!!.importance)
-        assertFalse(bgChannel.canShowBadge())
-
+        assertNull(nm.getNotificationChannel(TeamNotificationDispatcher.CHANNEL_BACKGROUND_SERVICE))
+        assertTrue(nm.getNotificationChannel(TeamNotificationDispatcher.CHANNEL_MESSAGES) != null)
         assertTrue(RealtimeNotificationService.isContinuousSyncEnabled(context))
-        val notif = TeamNotificationDispatcher.buildRealtimeServiceNotification(context)
-        assertEquals(TeamNotificationDispatcher.CHANNEL_BACKGROUND_SERVICE, notif.channelId)
+    }
+
+    @Test
+    fun `TeamInfo preserves custom uploaded logoUrl cleanly`() {
+        val defaultTeam = TeamInfo(id = "t1", name = "Fatsa Robotik")
+        assertEquals("", defaultTeam.logoUrl)
+
+        val customLogoTeam = defaultTeam.copy(logoUrl = "data:image/jpeg;base64,/9j/4AAQSkZJRg==")
+        assertEquals("data:image/jpeg;base64,/9j/4AAQSkZJRg==", customLogoTeam.logoUrl)
     }
 
     @Test

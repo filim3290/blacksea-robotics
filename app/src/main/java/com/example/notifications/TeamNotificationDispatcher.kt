@@ -153,8 +153,10 @@ object TeamNotificationDispatcher {
         try {
             val nm = appCtx.getSystemService(NotificationManager::class.java)
             nm?.cancel(LEGACY_FOREGROUND_SYNC_NOTIFICATION_ID)
+            nm?.cancel(BACKGROUND_SERVICE_NOTIFICATION_ID)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 nm?.deleteNotificationChannel(LEGACY_CHANNEL_REALTIME_SYNC)
+                nm?.deleteNotificationChannel(CHANNEL_BACKGROUND_SERVICE)
             }
         } catch (_: Exception) {
         }
@@ -250,52 +252,15 @@ object TeamNotificationDispatcher {
                 enableVibration(true)
             }
 
-            val backgroundServiceChannel = NotificationChannel(
-                CHANNEL_BACKGROUND_SERVICE,
-                context.getString(R.string.bg_service_channel_name),
-                NotificationManager.IMPORTANCE_MIN
-            ).apply {
-                description = context.getString(R.string.bg_service_channel_desc)
-                enableLights(false)
-                enableVibration(false)
-                setShowBadge(false)
-                setSound(null, null)
-            }
-
             notificationManager.createNotificationChannel(generalChannel)
             notificationManager.createNotificationChannel(messagesChannel)
             notificationManager.createNotificationChannel(announcementsChannel)
             notificationManager.createNotificationChannel(updatesChannel)
-            notificationManager.createNotificationChannel(backgroundServiceChannel)
+            notificationManager.deleteNotificationChannel(CHANNEL_BACKGROUND_SERVICE)
             notificationManager.deleteNotificationChannel(LEGACY_CHANNEL_REALTIME_SYNC)
             notificationManager.deleteNotificationChannel(LEGACY_CHANNEL_MESSAGES_SILENT)
             notificationManager.deleteNotificationChannel(LEGACY_CHANNEL_MESSAGES_V2)
         }
-    }
-
-    fun buildRealtimeServiceNotification(context: Context): android.app.Notification {
-        val appCtx = context.applicationContext
-        ensureNotificationChannels(appCtx)
-        val openIntent = Intent(appCtx, MainActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
-        }
-        val pendingIntent = PendingIntent.getActivity(
-            appCtx,
-            BACKGROUND_SERVICE_NOTIFICATION_ID,
-            openIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-        return NotificationCompat.Builder(appCtx, CHANNEL_BACKGROUND_SERVICE)
-            .setSmallIcon(R.drawable.ic_notification)
-            .setContentTitle(appCtx.getString(R.string.bg_service_notif_title))
-            .setContentText(appCtx.getString(R.string.bg_service_notif_text))
-            .setPriority(NotificationCompat.PRIORITY_MIN)
-            .setOngoing(true)
-            .setSilent(true)
-            .setShowWhen(false)
-            .setCategory(NotificationCompat.CATEGORY_SERVICE)
-            .setContentIntent(pendingIntent)
-            .build()
     }
 
     fun hasNotificationPermission(context: Context): Boolean {

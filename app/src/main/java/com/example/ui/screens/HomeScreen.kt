@@ -26,8 +26,8 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Assignment
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Assignment
 import androidx.compose.material.icons.filled.Campaign
 import androidx.compose.material.icons.filled.ChatBubble
 import androidx.compose.material.icons.filled.CheckCircle
@@ -56,6 +56,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -121,6 +122,12 @@ fun HomeScreen(
     val currentUid = currentUserProfile?.userId?.ifBlank { currentUserProfile.id }.orEmpty()
 
     var showAddTaskDialog by remember { mutableStateOf(false) }
+
+    LaunchedEffect(activeTeamId, approvedMembers.size, activeTeam.memberCount, currentUid) {
+        if (currentUid.isNotBlank() && approvedMembers.isNotEmpty() && activeTeam.memberCount != approvedMembers.size.toLong()) {
+            repository.syncTeamMemberCountIfDrifted(activeTeamId, approvedMembers.size.toLong())
+        }
+    }
 
     LazyColumn(
         modifier = modifier
@@ -259,7 +266,7 @@ fun HomeScreen(
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         Icon(
-                            imageVector = Icons.Default.Assignment,
+                            imageVector = Icons.AutoMirrored.Filled.Assignment,
                             contentDescription = null,
                             tint = ext.accentBlue,
                             modifier = Modifier.size(20.dp)

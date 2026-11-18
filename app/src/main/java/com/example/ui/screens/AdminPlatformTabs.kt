@@ -1,6 +1,9 @@
 package com.example.ui.screens
 
 import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -17,6 +20,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -27,8 +31,11 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AddPhotoAlternate
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.DeleteForever
 import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.Person
@@ -534,7 +541,8 @@ fun PlatformTeamsOverviewTab(
 @Composable
 fun TeamInfoEditorTab(
     activeTeam: TeamInfo,
-    repository: BlackseaRepository
+    repository: BlackseaRepository,
+    onTeamDeleted: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -548,10 +556,15 @@ fun TeamInfoEditorTab(
     var description by remember(activeTeam.id) { mutableStateOf(activeTeam.description) }
     var motto by remember(activeTeam.id) { mutableStateOf(activeTeam.motto) }
     var logoKey by remember(activeTeam.id) { mutableStateOf(activeTeam.logoKey) }
+    var logoUrl by remember(activeTeam.id) { mutableStateOf(activeTeam.logoUrl) }
     var accentColorHex by remember(activeTeam.id) { mutableStateOf(activeTeam.accentColorHex) }
     var managerName by remember(activeTeam.id) { mutableStateOf(activeTeam.managerName) }
     var managerContact by remember(activeTeam.id) { mutableStateOf(activeTeam.managerContact) }
     var isSaving by remember { mutableStateOf(false) }
+    var isUploadingLogo by remember { mutableStateOf(false) }
+    var showDeleteTeamStep1 by remember { mutableStateOf(false) }
+    var showDeleteTeamStep2 by remember { mutableStateOf(false) }
+    var isDeletingTeam by remember { mutableStateOf(false) }
 
     LaunchedEffect(activeTeam) {
         name = activeTeam.name
@@ -562,9 +575,36 @@ fun TeamInfoEditorTab(
         description = activeTeam.description
         motto = activeTeam.motto
         logoKey = activeTeam.logoKey
+        logoUrl = activeTeam.logoUrl
         accentColorHex = activeTeam.accentColorHex
         managerName = activeTeam.managerName
         managerContact = activeTeam.managerContact
+    }
+
+    val logoPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia()
+    ) { uri ->
+        if (uri != null) {
+            isUploadingLogo = true
+            scope.launch {
+                val res = repository.uploadTeamLogo(
+                    context = context,
+                    uri = uri,
+                    teamHint = shortCode.ifBlank { activeTeam.id }
+                )
+                isUploadingLogo = false
+                if (res.isSuccess) {
+                    logoUrl = res.getOrNull().orEmpty()
+                    Toast.makeText(context, "Logo yüklendi! Kaydetmek için aşağıdaki butona dokunun.", Toast.LENGTH_SHORT).show()
+                } else {
+                    Toast.makeText(
+                        context,
+                        sanitizeUserErrorMessage(res.exceptionOrNull(), "Logo yüklenemedi."),
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+            }
+        }
     }
 
     val isMainTeam = activeTeam.isMainTeam || activeTeam.id == PLATFORM_MAIN_TEAM_ID
@@ -589,7 +629,12 @@ fun TeamInfoEditorTab(
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     TeamLogoBadge(
-                        team = activeTeam.copy(name = name, logoKey = logoKey, accentColorHex = accentColorHex),
+                        team = activeTeam.copy(
+                            name = name,
+                            logoKey = logoKey,
+                            logoUrl = logoUrl,
+                            accentColorHex = accentColorHex
+                        ),
                         size = 52
                     )
                     Column {
@@ -688,7 +733,47 @@ fun TeamInfoEditorTab(
                 )
 
                 if (!isMainTeam) {
-                    Text("Takım Simgesi", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = ext.textSecondary)
+                    Text("Özel Takım Logosu", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = ext.textSecondary)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        OutlinedButton(
+                            onClick = {
+                                logoPickerLauncher.launch(
+                                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                                )
+                            },
+                            enabled = !isUploadingLogo && !isSaving,
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier.testTag("pick_team_logo_button")
+                        ) {
+                            if (isUploadingLogo) {
+                                CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                            } else {
+                                Icon(imageVector = Icons.Default.AddPhotoAlternate, contentDescription = null, modifier = Modifier.size(16.dp))
+                            }
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = if (logoUrl.isNotBlank()) "Logoyu Değiştir" else "Özel Logo Yükle",
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                        if (logoUrl.isNotBlank()) {
+                            TextButton(
+                                onClick = { logoUrl = "" },
+                                enabled = !isUploadingLogo && !isSaving
+                            ) {
+                                Icon(imageVector = Icons.Default.Delete, contentDescription = "Logoyu Kaldır", tint = ext.dangerText, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("Logoyu Kaldır", color = ext.dangerText, fontSize = 12.sp)
+                            }
+                        }
+                    }
+
+                    Text("Takım Simgesi (Yedek İkon)", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = ext.textSecondary)
                     FlowRow(
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
                         verticalArrangement = Arrangement.spacedBy(6.dp)
@@ -766,6 +851,7 @@ fun TeamInfoEditorTab(
                                     description = description,
                                     motto = motto,
                                     logoKey = logoKey,
+                                    logoUrl = logoUrl,
                                     accentColorHex = accentColorHex,
                                     managerName = managerName,
                                     managerContact = managerContact
@@ -782,7 +868,7 @@ fun TeamInfoEditorTab(
                             }
                         }
                     },
-                    enabled = !isSaving && name.trim().length >= 2,
+                    enabled = !isSaving && !isUploadingLogo && name.trim().length >= 2,
                     modifier = Modifier.fillMaxWidth().height(46.dp),
                     shape = RoundedCornerShape(10.dp),
                     colors = ButtonDefaults.buttonColors(
@@ -800,5 +886,176 @@ fun TeamInfoEditorTab(
                 }
             }
         }
+
+        if (!isMainTeam) {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                border = BorderStroke(1.dp, ext.dangerText.copy(alpha = 0.35f))
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Text(
+                        text = "Takımı Kalıcı Olarak Sil / Kaldır",
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = ext.dangerText
+                    )
+                    Text(
+                        text = "${activeTeam.name} takımı ve tüm mesajlar, dosyalar, fikirler, görevler, duyurular ve üye kayıtları geri alınamaz şekilde silinir.",
+                        fontSize = 12.sp,
+                        color = ext.textSecondary,
+                        lineHeight = 17.sp
+                    )
+                    OutlinedButton(
+                        onClick = { showDeleteTeamStep1 = true },
+                        enabled = !isDeletingTeam && !isSaving,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 46.dp)
+                            .testTag("delete_team_button"),
+                        shape = RoundedCornerShape(10.dp),
+                        border = BorderStroke(1.2.dp, ext.dangerText.copy(alpha = 0.6f)),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = ext.dangerText)
+                    ) {
+                        Icon(Icons.Default.DeleteForever, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Takımı Kalıcı Olarak Sil", fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+        }
+    }
+
+    if (showDeleteTeamStep1) {
+        AlertDialog(
+            onDismissRequest = { showDeleteTeamStep1 = false },
+            icon = {
+                Icon(
+                    imageVector = Icons.Default.DeleteForever,
+                    contentDescription = null,
+                    tint = ext.dangerText,
+                    modifier = Modifier.size(32.dp)
+                )
+            },
+            title = {
+                Text("${activeTeam.name} Takımını Silmek İstiyor musunuz?", fontWeight = FontWeight.Bold)
+            },
+            text = {
+                Text(
+                    "Bu işlem takımı, sohbet odalarını, mesajları, dosyaları, fikirleri, görevleri ve tüm üyelik kayıtlarını siler. Yanlışlıkla silmeyi önlemek için bir sonraki adımda son onay istenecektir.",
+                    fontSize = 13.sp,
+                    color = ext.textSecondary,
+                    lineHeight = 19.sp
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showDeleteTeamStep1 = false
+                        showDeleteTeamStep2 = true
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = ext.dangerSolid,
+                        contentColor = Color.White
+                    ),
+                    modifier = Modifier.testTag("delete_team_step1_confirm")
+                ) {
+                    Text("Devam Et", fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteTeamStep1 = false }) {
+                    Text("Vazgeç")
+                }
+            }
+        )
+    }
+
+    if (showDeleteTeamStep2) {
+        AlertDialog(
+            onDismissRequest = { if (!isDeletingTeam) showDeleteTeamStep2 = false },
+            icon = {
+                Icon(
+                    imageVector = Icons.Default.DeleteForever,
+                    contentDescription = null,
+                    tint = ext.dangerText,
+                    modifier = Modifier.size(34.dp)
+                )
+            },
+            title = {
+                Text(
+                    "Son Onay: Takım Kalıcı Olarak Silinecek",
+                    fontWeight = FontWeight.Bold,
+                    color = ext.dangerText
+                )
+            },
+            text = {
+                Text(
+                    "Bu işlem geri alınamaz! ${activeTeam.name} çalışma alanı tamamen kapatılacak ve tüm veriler kalıcı olarak silinecektir. Emin misiniz?",
+                    fontSize = 13.sp,
+                    color = ext.textSecondary,
+                    lineHeight = 19.sp
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        isDeletingTeam = true
+                        scope.launch {
+                            try {
+                                val res = repository.deleteTeamCompletely(activeTeam.id)
+                                if (res.isSuccess) {
+                                    showDeleteTeamStep2 = false
+                                    Toast.makeText(
+                                        context,
+                                        "${activeTeam.name} takımı ve tüm verileri kalıcı olarak silindi.",
+                                        Toast.LENGTH_LONG
+                                    ).show()
+                                    onTeamDeleted()
+                                } else {
+                                    Toast.makeText(
+                                        context,
+                                        sanitizeUserErrorMessage(res.exceptionOrNull(), "Takım silinemedi."),
+                                        Toast.LENGTH_LONG
+                                    ).show()
+                                }
+                            } catch (ce: CancellationException) {
+                                throw ce
+                            } finally {
+                                isDeletingTeam = false
+                            }
+                        }
+                    },
+                    enabled = !isDeletingTeam,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = ext.dangerSolid,
+                        contentColor = Color.White
+                    ),
+                    modifier = Modifier.testTag("delete_team_step2_confirm")
+                ) {
+                    if (isDeletingTeam) {
+                        CircularProgressIndicator(
+                            color = Color.White,
+                            modifier = Modifier.size(18.dp),
+                            strokeWidth = 2.dp
+                        )
+                    } else {
+                        Text("Evet, Takımı Sil", fontWeight = FontWeight.Bold)
+                    }
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { showDeleteTeamStep2 = false },
+                    enabled = !isDeletingTeam
+                ) {
+                    Text("İptal")
+                }
+            }
+        )
     }
 }

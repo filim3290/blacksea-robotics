@@ -120,6 +120,7 @@ service cloud.firestore {
         data.isMainTeam is bool &&
         (!('motto' in data) || (data.motto is string && data.motto.size() <= 120)) &&
         (!('logoKey' in data) || (data.logoKey is string && data.logoKey.size() <= 40)) &&
+        (!('logoUrl' in data) || (data.logoUrl is string && data.logoUrl.size() <= 180000)) &&
         (!('accentColorHex' in data) || (data.accentColorHex is string && data.accentColorHex.size() <= 12)) &&
         (!('memberCount' in data) || (data.memberCount is int && data.memberCount >= 0)) &&
         (!('rejectionReason' in data) || (data.rejectionReason is string && data.rejectionReason.size() <= 500)) &&
@@ -236,13 +237,21 @@ service cloud.firestore {
          request.resource.data.createdAt == resource.data.createdAt &&
          request.resource.data.diff(resource.data).affectedKeys().hasOnly([
            'name', 'shortCode', 'competition', 'schoolName', 'city',
-           'description', 'motto', 'logoKey', 'accentColorHex',
+           'description', 'motto', 'logoKey', 'logoUrl', 'accentColorHex',
            'managerName', 'managerContact', 'memberCount', 'updatedAt'
-         ]))
+         ])) ||
+        (isActiveTeamMember(teamId) &&
+         resource.data.status == 'approved' &&
+         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['memberCount', 'updatedAt']) &&
+         request.resource.data.memberCount is int &&
+         request.resource.data.memberCount >= 0 &&
+         request.resource.data.updatedAt is timestamp &&
+         request.resource.data.updatedAt <= request.time)
       );
 
       allow delete: if isAuthenticated() && teamId != 'blacksea_robotics' && (
         isPlatformAdmin() ||
+        isTeamManager(teamId) ||
         (resource.data.founderId == request.auth.uid && resource.data.status in ['pending', 'rejected'])
       );
 

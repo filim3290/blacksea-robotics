@@ -631,6 +631,49 @@ class BlackseaRepository(val db: FirebaseFirestore) {
         )
     }
 
+    suspend fun uploadTeamLogo(
+        context: Context,
+        uri: Uri,
+        teamHint: String = "team"
+    ): Result<String> = withContext(Dispatchers.IO) {
+        val safeHint = teamHint.replace("[^a-zA-Z0-9_-]".toRegex(), "_").take(24).ifBlank { "team" }
+        var bytes = compressImage(context, uri, maxDimension = 320, quality = 78)
+            ?: return@withContext Result.failure(IllegalArgumentException("Seçilen görsel okunamadı."))
+
+        val storageInstances = listOf(
+            try { FirebaseStorage.getInstance("gs://gen-lang-client-0922417463.firebasestorage.app") } catch (_: Exception) { null },
+            try { FirebaseStorage.getInstance("gs://gen-lang-client-0922417463.appspot.com") } catch (_: Exception) { null },
+            try { FirebaseStorage.getInstance() } catch (_: Exception) { null }
+        ).filterNotNull()
+
+        val uniquePath = "team_logos/${System.currentTimeMillis()}_$safeHint.jpg"
+        for (st in storageInstances) {
+            try {
+                val storageRef = st.reference.child(uniquePath)
+                storageRef.putBytes(bytes).await()
+                val downloadUrl = storageRef.downloadUrl.await().toString()
+                if (downloadUrl.isNotBlank()) {
+                    return@withContext Result.success(downloadUrl)
+                }
+            } catch (e: Exception) {
+                logDebugWarn("Repository", "Team logo Storage upload skipped", e)
+            }
+        }
+
+        var dataUri = "data:image/jpeg;base64," + Base64.encodeToString(bytes, Base64.NO_WRAP)
+        if (dataUri.length > 150_000) {
+            val smaller = compressImage(context, uri, maxDimension = 220, quality = 65)
+            if (smaller != null) {
+                bytes = smaller
+                dataUri = "data:image/jpeg;base64," + Base64.encodeToString(bytes, Base64.NO_WRAP)
+            }
+        }
+        if (dataUri.length > 175_000) {
+            return@withContext Result.failure(IllegalArgumentException("Logo görseli çok büyük. Lütfen daha küçük bir görsel seçin."))
+        }
+        Result.success(dataUri)
+    }
+
     // ==========================================
     // GLOBAL USER PROFILES & AUTO ONBOARDING
     // ==========================================
@@ -906,6 +949,50 @@ class BlackseaRepository(val db: FirebaseFirestore) {
         }
     }
 
+    suspend fun updateUserDisplayAcrossTeams(
+        userId: String,
+        firstName: String,
+        lastName: String,
+        username: String,
+        activeTeamId: String,
+        subTeam: String
+    ) {
+        updateOwnProfile(
+            userId = userId,
+            firstName = firstName,
+            lastName = lastName,
+            username = username,
+            team = subTeam
+        )
+        val cleanId = userId.trim()
+        if (cleanId.isBlank()) return
+        val displayName = "$firstName $lastName".trim().ifBlank { username.trim() }
+        val membershipsSnap = try {
+            db.collection("team_memberships")
+                .whereEqualTo("userId", cleanId)
+                .get()
+                .await()
+        } catch (_: Exception) {
+            null
+        } ?: return
+
+        if (membershipsSnap.isEmpty) return
+        membershipsSnap.documents.chunked(450).forEach { chunk ->
+            val batch = db.batch()
+            chunk.forEach { doc ->
+                val updates = mutableMapOf<String, Any>(
+                    "userName" to displayName,
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+                if (doc.getString("teamId") == activeTeamId && subTeam.isNotBlank()) {
+                    updates["subTeam"] = subTeam.trim()
+                }
+                batch.update(doc.reference, updates)
+            }
+            batch.commit().await()
+        }
+    }
+
     fun observeAllUsers(): Flow<List<UserProfile>> = db.collection("users")
         .snapshots()
         .map { snapshot -> snapshot.toObjects(UserProfile::class.java) }
@@ -1037,6 +1124,7 @@ class BlackseaRepository(val db: FirebaseFirestore) {
         description: String,
         motto: String,
         logoKey: String,
+        logoUrl: String = "",
         accentColorHex: String,
         managerName: String,
         managerContact: String,
@@ -1050,6 +1138,7 @@ class BlackseaRepository(val db: FirebaseFirestore) {
         val cleanCity = city.trim().take(60)
         val cleanDesc = description.trim().take(500)
         val cleanMotto = motto.trim().take(120)
+        val cleanLogoUrl = logoUrl.trim()
         val cleanMgrName = managerName.trim().take(80)
         val cleanMgrContact = managerContact.trim().take(120)
 
@@ -1093,6 +1182,7 @@ class BlackseaRepository(val db: FirebaseFirestore) {
                 "description" to cleanDesc,
                 "motto" to cleanMotto,
                 "logoKey" to logoKey.ifBlank { TeamLogoPreset.SHIELD.key },
+                "logoUrl" to cleanLogoUrl,
                 "accentColorHex" to accentColorHex.ifBlank { "#0284C7" },
                 "managerName" to cleanMgrName,
                 "managerContact" to cleanMgrContact,
@@ -1249,6 +1339,7 @@ class BlackseaRepository(val db: FirebaseFirestore) {
         description: String,
         motto: String,
         logoKey: String,
+        logoUrl: String = "",
         accentColorHex: String,
         managerName: String,
         managerContact: String
@@ -1266,6 +1357,7 @@ class BlackseaRepository(val db: FirebaseFirestore) {
                     "description" to description.trim().take(500),
                     "motto" to motto.trim().take(120),
                     "logoKey" to logoKey.ifBlank { TeamLogoPreset.SHIELD.key },
+                    "logoUrl" to logoUrl.trim(),
                     "accentColorHex" to accentColorHex.ifBlank { "#0284C7" },
                     "managerName" to managerName.trim().take(80),
                     "managerContact" to managerContact.trim().take(120),
@@ -1589,20 +1681,143 @@ class BlackseaRepository(val db: FirebaseFirestore) {
     }
 
     suspend fun leaveTeam(teamId: String): Result<Unit> {
+        val cleanTeamId = teamId.trim().ifBlank { PLATFORM_MAIN_TEAM_ID }
         val uid = try {
             requireUserId()
         } catch (e: Exception) {
             return Result.failure(e)
         }
-        val membershipId = "${teamId}_$uid"
+        val membershipId = "${cleanTeamId}_$uid"
         return try {
+            // Recompute exact memberCount BEFORE deleting our membership so isActiveTeamMember(teamId) allows the count sync
+            syncTeamMemberCount(cleanTeamId, excludeUserId = uid)
             db.collection("team_memberships").document(membershipId).delete().await()
-            syncTeamMemberCount(teamId)
+            try {
+                val userRef = db.collection("users").document(uid)
+                val userSnap = userRef.get().await()
+                if (userSnap.getString("activeTeamId") == cleanTeamId) {
+                    userRef.update(
+                        mapOf(
+                            "activeTeamId" to "",
+                            "updatedAt" to FieldValue.serverTimestamp()
+                        )
+                    ).await()
+                }
+            } catch (_: Exception) {
+            }
             Result.success(Unit)
         } catch (ce: CancellationException) {
             throw ce
         } catch (e: Exception) {
             handleFirestoreError(e, OperationType.DELETE, "team_memberships/$membershipId")
+            Result.failure(e)
+        }
+    }
+
+    suspend fun deleteTeamCompletely(teamId: String): Result<Unit> {
+        val cleanTeamId = teamId.trim()
+        if (cleanTeamId.isBlank() || cleanTeamId == PLATFORM_MAIN_TEAM_ID) {
+            return Result.failure(IllegalArgumentException("Ana platform takımı silinemez."))
+        }
+        val uid = try {
+            requireUserId()
+        } catch (e: Exception) {
+            return Result.failure(e)
+        }
+
+        return try {
+            val teamRef = db.collection("teams").document(cleanTeamId)
+            val teamSnap = teamRef.get().await()
+            if (!teamSnap.exists()) {
+                return Result.failure(IllegalArgumentException("Takım zaten silinmiş."))
+            }
+            if (teamSnap.getBoolean("isMainTeam") == true) {
+                return Result.failure(IllegalArgumentException("Ana platform takımı silinemez."))
+            }
+
+            suspend fun deleteCollectionRefs(refs: List<com.google.firebase.firestore.DocumentReference>) {
+                refs.chunked(450).forEach { chunk ->
+                    val batch = db.batch()
+                    chunk.forEach { batch.delete(it) }
+                    batch.commit().await()
+                }
+            }
+
+            // 1. Delete rooms and nested messages while caller is still team manager
+            try {
+                val roomsSnap = teamRef.collection("rooms").get().await()
+                for (roomDoc in roomsSnap.documents) {
+                    val msgsSnap = roomDoc.reference.collection("messages").get().await()
+                    deleteCollectionRefs(msgsSnap.documents.map { it.reference })
+                }
+                deleteCollectionRefs(roomsSnap.documents.map { it.reference })
+            } catch (e: Exception) {
+                logDebugWarn("Repository", "Room cleanup skipped during team delete", e)
+            }
+
+            // 2. Delete ideas and nested comments
+            try {
+                val ideasSnap = teamRef.collection("ideas").get().await()
+                for (ideaDoc in ideasSnap.documents) {
+                    val commentsSnap = ideaDoc.reference.collection("comments").get().await()
+                    deleteCollectionRefs(commentsSnap.documents.map { it.reference })
+                }
+                deleteCollectionRefs(ideasSnap.documents.map { it.reference })
+            } catch (e: Exception) {
+                logDebugWarn("Repository", "Idea cleanup skipped during team delete", e)
+            }
+
+            // 3. Delete files, announcements, tasks, support_tickets
+            listOf("files", "announcements", "tasks", "support_tickets").forEach { subCol ->
+                try {
+                    val snap = teamRef.collection(subCol).get().await()
+                    deleteCollectionRefs(snap.documents.map { it.reference })
+                } catch (e: Exception) {
+                    logDebugWarn("Repository", "$subCol cleanup skipped during team delete", e)
+                }
+            }
+
+            // 4. Delete team notifications
+            try {
+                val notifsSnap = db.collection("notifications")
+                    .whereEqualTo("teamId", cleanTeamId)
+                    .get()
+                    .await()
+                deleteCollectionRefs(notifsSnap.documents.map { it.reference })
+            } catch (e: Exception) {
+                logDebugWarn("Repository", "Notification cleanup skipped during team delete", e)
+            }
+
+            // 5. Delete other members' team_memberships while caller still has isTeamManager(cleanTeamId)
+            val callerMembershipId = "${cleanTeamId}_$uid"
+            val membershipsSnap = db.collection("team_memberships")
+                .whereEqualTo("teamId", cleanTeamId)
+                .get()
+                .await()
+            val otherMembershipRefs = membershipsSnap.documents
+                .filter { it.id != callerMembershipId }
+                .map { it.reference }
+            deleteCollectionRefs(otherMembershipRefs)
+
+            // 6. Delete the team registry document itself while caller is still team manager
+            teamRef.delete().await()
+
+            // 7. Finally delete caller's own membership doc
+            val ownMembershipRef = db.collection("team_memberships").document(callerMembershipId)
+            if (membershipsSnap.documents.any { it.id == callerMembershipId }) {
+                ownMembershipRef.delete().await()
+            } else {
+                try {
+                    ownMembershipRef.delete().await()
+                } catch (_: Exception) {
+                }
+            }
+
+            Result.success(Unit)
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.DELETE, "teams/$cleanTeamId")
             Result.failure(e)
         }
     }
@@ -1631,19 +1846,64 @@ class BlackseaRepository(val db: FirebaseFirestore) {
         }
     }
 
-    private suspend fun syncTeamMemberCount(teamId: String) {
+    suspend fun syncTeamMemberCountIfDrifted(teamId: String, liveActiveCount: Long) {
+        val cleanTeamId = teamId.trim().ifBlank { PLATFORM_MAIN_TEAM_ID }
+        try {
+            val teamRef = db.collection("teams").document(cleanTeamId)
+            val snap = teamRef.get().await()
+            if (!snap.exists()) return
+            val storedCount = snap.getLong("memberCount") ?: -1L
+            if (storedCount != liveActiveCount && liveActiveCount >= 0L) {
+                teamRef.update(
+                    mapOf(
+                        "memberCount" to liveActiveCount,
+                        "updatedAt" to FieldValue.serverTimestamp()
+                    )
+                ).await()
+            }
+        } catch (_: Exception) {
+        }
+    }
+
+    private suspend fun syncTeamMemberCount(teamId: String, excludeUserId: String? = null) {
+        val cleanTeamId = teamId.trim().ifBlank { PLATFORM_MAIN_TEAM_ID }
         try {
             val activeSnap = db.collection("team_memberships")
-                .whereEqualTo("teamId", teamId)
+                .whereEqualTo("teamId", cleanTeamId)
                 .get()
                 .await()
-            val count = activeSnap.documents.count { doc ->
-                UserStatus.isActive(doc.getString("status"))
-            }.toLong().coerceAtLeast(1L)
-            db.collection("teams").document(teamId).update(
+            val activeUserIds = mutableSetOf<String>()
+            for (doc in activeSnap.documents) {
+                val uid = doc.getString("userId")?.trim().orEmpty()
+                if (uid.isNotBlank() && uid != excludeUserId && UserStatus.isActive(doc.getString("status"))) {
+                    activeUserIds.add(uid)
+                }
+            }
+            if (cleanTeamId == PLATFORM_MAIN_TEAM_ID) {
+                try {
+                    val usersSnap = db.collection("users").get().await()
+                    val allMembershipUids = activeSnap.documents.mapNotNull { it.getString("userId")?.trim() }.toSet()
+                    for (userDoc in usersSnap.documents) {
+                        val legacy = userDoc.toObject(UserProfile::class.java) ?: continue
+                        val uid = legacy.userId.ifBlank { legacy.id }.trim()
+                        if (uid.isNotBlank() && uid != excludeUserId && uid !in allMembershipUids) {
+                            val isFounderOrBsr = legacy.email.equals(PLATFORM_FOUNDER_EMAIL, ignoreCase = true) ||
+                                legacy.isPlatformManagerAccount() ||
+                                (legacy.activeTeamId.isBlank() && legacy.roles.any { it != "Takım Üyesi" })
+                            if (isFounderOrBsr && UserStatus.isActive(legacy.status)) {
+                                activeUserIds.add(uid)
+                            }
+                        }
+                    }
+                } catch (_: Exception) {
+                }
+            }
+            val count = activeUserIds.size.toLong()
+            db.collection("teams").document(cleanTeamId).update(
                 mapOf("memberCount" to count, "updatedAt" to FieldValue.serverTimestamp())
             ).await()
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            logDebugWarn("Repository", "syncTeamMemberCount skipped for $cleanTeamId", e)
         }
     }
 
@@ -1651,29 +1911,52 @@ class BlackseaRepository(val db: FirebaseFirestore) {
         val uid = requireUserId()
         val path = "users/$uid"
         try {
+            val myMembershipsSnap = try {
+                db.collection("team_memberships")
+                    .whereEqualTo("userId", uid)
+                    .get()
+                    .await()
+            } catch (e: Exception) {
+                logDebugWarn("Repository", "Could not pre-query memberships before account delete", e)
+                null
+            }
+
+            // Recompute memberCount for every team this user was actively in BEFORE deleting membership/user docs
+            val affectedTeamIds = myMembershipsSnap?.documents
+                ?.filter { UserStatus.isActive(it.getString("status")) }
+                ?.mapNotNull { it.getString("teamId")?.trim()?.takeIf { id -> id.isNotBlank() } }
+                ?.toMutableSet()
+                ?: mutableSetOf()
+            if (affectedTeamIds.contains(PLATFORM_MAIN_TEAM_ID) || myMembershipsSnap == null) {
+                affectedTeamIds.add(PLATFORM_MAIN_TEAM_ID)
+            }
+            for (tId in affectedTeamIds) {
+                syncTeamMemberCount(tId, excludeUserId = uid)
+            }
+
             try {
                 val personalNotifs = db.collection("notifications")
                     .whereEqualTo("recipientUserId", uid)
                     .get()
                     .await()
                 if (!personalNotifs.isEmpty) {
-                    val batch = db.batch()
-                    personalNotifs.documents.forEach { batch.delete(it.reference) }
-                    batch.commit().await()
+                    personalNotifs.documents.chunked(450).forEach { chunk ->
+                        val batch = db.batch()
+                        chunk.forEach { batch.delete(it.reference) }
+                        batch.commit().await()
+                    }
                 }
             } catch (cleanupEx: Exception) {
                 logDebugWarn("Repository", "Self notification cleanup skipped", cleanupEx)
             }
 
             try {
-                val myMemberships = db.collection("team_memberships")
-                    .whereEqualTo("userId", uid)
-                    .get()
-                    .await()
-                if (!myMemberships.isEmpty) {
-                    val batch = db.batch()
-                    myMemberships.documents.forEach { batch.delete(it.reference) }
-                    batch.commit().await()
+                if (myMembershipsSnap != null && !myMembershipsSnap.isEmpty) {
+                    myMembershipsSnap.documents.chunked(450).forEach { chunk ->
+                        val batch = db.batch()
+                        chunk.forEach { batch.delete(it.reference) }
+                        batch.commit().await()
+                    }
                 }
             } catch (memCleanupEx: Exception) {
                 logDebugWarn("Repository", "Self membership cleanup skipped", memCleanupEx)

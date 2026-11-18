@@ -755,3 +755,123 @@ test("Complete workspace isolation across teams (messages, files, ideas, tasks, 
   await assertFails(bsrAdminDb.collection("teams").doc("team_fatsa").collection("files").get());
   await assertSucceeds(bsrAdminDb.collection("teams").get()); // Can view team registry/status summary
 });
+
+test("Active member leaving updates memberCount, team manager can update logoUrl & delete non-main team", async () => {
+  const created = new Date(Date.now() - 5000);
+  await testEnv.withSecurityRulesDisabled(async (ctx) => {
+    const db = ctx.firestore();
+    await db.collection("teams").doc("blacksea_robotics").set({
+      name: "BlackSea Robotics",
+      shortCode: "BSR",
+      competition: "TEKNOFEST",
+      schoolName: "Ünye Fen Lisesi",
+      city: "Ordu",
+      description: "Ana takım",
+      managerName: "Platform Yöneticisi",
+      managerContact: "admin@example.com",
+      founderId: "bsr_founder",
+      founderEmail: "admin@example.com",
+      status: "approved",
+      isMainTeam: true,
+      memberCount: 2,
+      createdAt: created,
+      updatedAt: created
+    });
+    await db.collection("teams").doc("team_fatsa").set({
+      name: "Fatsa Robotik",
+      shortCode: "FATSA",
+      competition: "TEKNOFEST",
+      schoolName: "Fatsa Fen Lisesi",
+      city: "Ordu",
+      description: "Fatsa ekibi",
+      managerName: "Fatsa Kaptan",
+      managerContact: "fk@example.com",
+      founderId: "fatsa_mgr",
+      founderEmail: "fk@example.com",
+      status: "approved",
+      isMainTeam: false,
+      memberCount: 2,
+      createdAt: created,
+      updatedAt: created
+    });
+    await db.collection("team_memberships").doc("team_fatsa_fatsa_mgr").set({
+      teamId: "team_fatsa",
+      userId: "fatsa_mgr",
+      userName: "Fatsa Kaptan",
+      userEmail: "fk@example.com",
+      subTeam: "Genel Yönetim",
+      role: "Yönetici",
+      roles: ["Yönetici"],
+      status: "active",
+      isTeamAdmin: true,
+      createdAt: created,
+      updatedAt: created
+    });
+    await db.collection("team_memberships").doc("team_fatsa_student_a").set({
+      teamId: "team_fatsa",
+      userId: "student_a",
+      userName: "Öğrenci A",
+      userEmail: "sa@example.com",
+      subTeam: "Yazılım Ekibi",
+      role: "Yazılım Üyesi",
+      roles: ["Yazılım Üyesi"],
+      status: "active",
+      isTeamAdmin: false,
+      createdAt: created,
+      updatedAt: created
+    });
+    await db.collection("users").doc("bsr_admin_only").set({
+      userId: "bsr_admin_only",
+      email: "bsradmin@example.com",
+      role: "Yönetici",
+      roles: ["Yönetici"],
+      status: "active",
+      isPlatformAdmin: true,
+      isSuperAdmin: true
+    });
+  });
+
+  const fatsaMgrDb = testEnv.authenticatedContext("fatsa_mgr", { email: "fk@example.com" }).firestore();
+  const studentADb = testEnv.authenticatedContext("student_a", { email: "sa@example.com" }).firestore();
+  const bsrAdminDb = testEnv.authenticatedContext("bsr_admin_only", { email: "bsradmin@example.com" }).firestore();
+
+  // Active member leaving team can sync memberCount down BEFORE deleting own membership,
+  // but cannot alter name/status/logoUrl.
+  await assertSucceeds(
+    studentADb.collection("teams").doc("team_fatsa").update({
+      memberCount: 1,
+      updatedAt: new Date(Date.now() - 1000)
+    })
+  );
+  await assertFails(
+    studentADb.collection("teams").doc("team_fatsa").update({
+      name: "Hacked Name",
+      memberCount: 1,
+      updatedAt: new Date(Date.now() - 1000)
+    })
+  );
+  await assertSucceeds(
+    studentADb.collection("team_memberships").doc("team_fatsa_student_a").delete()
+  );
+
+  // Team manager can update team logoUrl, student cannot
+  await assertFails(
+    studentADb.collection("teams").doc("team_fatsa").update({
+      logoUrl: "https://example.com/bad.png",
+      updatedAt: new Date(Date.now() - 1000)
+    })
+  );
+  await assertSucceeds(
+    fatsaMgrDb.collection("teams").doc("team_fatsa").update({
+      logoUrl: "https://example.com/fatsa_logo.png",
+      updatedAt: new Date(Date.now() - 1000)
+    })
+  );
+
+  // Main blacksea_robotics team cannot be deleted even by platform admin
+  await assertFails(bsrAdminDb.collection("teams").doc("blacksea_robotics").delete());
+
+  // Fatsa team manager can delete their non-main team
+  await assertSucceeds(fatsaMgrDb.collection("teams").doc("team_fatsa").delete());
+});
+

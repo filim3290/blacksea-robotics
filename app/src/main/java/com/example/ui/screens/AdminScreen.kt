@@ -25,6 +25,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.Campaign
@@ -34,7 +35,6 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Restore
 import androidx.compose.material.icons.filled.Security
-import androidx.compose.material.icons.filled.Send
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -51,6 +51,7 @@ import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.MenuAnchorType
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.ScrollableTabRow
@@ -122,6 +123,7 @@ fun AdminScreen(
     updateManager: com.example.update.AppUpdateManager? = null,
     initialSectionKey: String = "members",
     onShowUpdateDialog: (com.example.update.AppReleaseInfo) -> Unit = {},
+    onTeamDeleted: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -812,7 +814,7 @@ fun AdminScreen(
                                     if (isSendingBroadcast) {
                                         CircularProgressIndicator(color = Color.White, modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
                                     } else {
-                                        Icon(imageVector = Icons.Default.Send, contentDescription = null, modifier = Modifier.size(18.dp))
+                                        Icon(imageVector = Icons.AutoMirrored.Filled.Send, contentDescription = null, modifier = Modifier.size(18.dp))
                                         Spacer(modifier = Modifier.width(8.dp))
                                         Text("Takıma Bildirimi Gönder", fontWeight = FontWeight.Bold)
                                     }
@@ -880,7 +882,8 @@ fun AdminScreen(
             AdminSection.TEAM_INFO -> {
                 TeamInfoEditorTab(
                     activeTeam = activeTeam,
-                    repository = repository
+                    repository = repository,
+                    onTeamDeleted = onTeamDeleted
                 )
             }
 
@@ -1482,7 +1485,7 @@ fun EditMemberRolesDialog(
                         readOnly = true,
                         label = { Text("Alt Ekip") },
                         trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = teamMenuExpanded) },
-                        modifier = Modifier.fillMaxWidth().menuAnchor(),
+                        modifier = Modifier.fillMaxWidth().menuAnchor(MenuAnchorType.PrimaryNotEditable),
                         shape = RoundedCornerShape(10.dp)
                     )
 

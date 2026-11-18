@@ -35,12 +35,15 @@ abstract class FirestoreEmulatorTestBase {
     val isEmulatorReachable = try {
       java.net.Socket().use { socket ->
         socket.connect(java.net.InetSocketAddress(EMULATOR_HOST, FIRESTORE_PORT), 1000)
-        true
       }
+      java.net.Socket().use { socket ->
+        socket.connect(java.net.InetSocketAddress(EMULATOR_HOST, AUTH_PORT), 1000)
+      }
+      true
     } catch (_: Exception) {
       false
     }
-    org.junit.Assume.assumeTrue("Firebase local emulator not reachable at $EMULATOR_HOST:$FIRESTORE_PORT", isEmulatorReachable)
+    org.junit.Assume.assumeTrue("Firebase local Firestore+Auth emulators not reachable at $EMULATOR_HOST", isEmulatorReachable)
 
     val context = ApplicationProvider.getApplicationContext<Context>()
     val resId = context.resources.getIdentifier("firestore_database_id", "string", context.packageName)

@@ -5,6 +5,9 @@ import android.content.Context
 import android.content.ContextWrapper
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -34,8 +37,10 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.AddCircleOutline
+import androidx.compose.material.icons.filled.AddPhotoAlternate
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.Lock
@@ -85,8 +90,10 @@ import com.example.R
 import com.example.data.BlackseaRepository
 import com.example.model.COMPETITION_PRESETS
 import com.example.model.TEAM_ACCENT_COLORS
+import com.example.model.TeamInfo
 import com.example.model.TeamLogoPreset
 import com.example.ui.components.BlackseaLogo
+import com.example.ui.components.TeamLogoBadge
 import com.example.ui.components.parseTeamColor
 import com.example.ui.components.teamLogoPresetIcon
 import com.example.ui.theme.PhoenixAmber
@@ -738,17 +745,46 @@ fun TeamCreationApplicationCard(
 
     var teamName by rememberSaveable { mutableStateOf("") }
     var shortCode by rememberSaveable { mutableStateOf("") }
+    var shortCodeEdited by rememberSaveable { mutableStateOf(false) }
     var competition by rememberSaveable { mutableStateOf("TEKNOFEST") }
     var schoolName by rememberSaveable { mutableStateOf("") }
     var city by rememberSaveable { mutableStateOf("") }
     var description by rememberSaveable { mutableStateOf("") }
     var motto by rememberSaveable { mutableStateOf("") }
     var selectedLogoKey by rememberSaveable { mutableStateOf(TeamLogoPreset.ROCKET.key) }
+    var customLogoUrl by rememberSaveable { mutableStateOf("") }
+    var isUploadingLogo by remember { mutableStateOf(false) }
     var selectedColorHex by rememberSaveable { mutableStateOf(TEAM_ACCENT_COLORS.first()) }
     var managerName by rememberSaveable(defaultManagerName) { mutableStateOf(defaultManagerName) }
     var managerContact by rememberSaveable(connectedEmail) { mutableStateOf(connectedEmail) }
     var isSubmitting by remember { mutableStateOf(false) }
     var formError by remember { mutableStateOf<String?>(null) }
+
+    val logoPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia()
+    ) { uri ->
+        if (uri != null) {
+            isUploadingLogo = true
+            scope.launch {
+                val res = repository.uploadTeamLogo(
+                    context = context,
+                    uri = uri,
+                    teamHint = shortCode.ifBlank { teamName.ifBlank { "team" } }
+                )
+                isUploadingLogo = false
+                if (res.isSuccess) {
+                    customLogoUrl = res.getOrNull().orEmpty()
+                    Toast.makeText(context, "Takım logosu eklendi!", Toast.LENGTH_SHORT).show()
+                } else {
+                    Toast.makeText(
+                        context,
+                        sanitizeUserErrorMessage(res.exceptionOrNull(), "Logo yüklenemedi."),
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+            }
+        }
+    }
 
     Card(
         modifier = modifier
@@ -834,12 +870,23 @@ fun TeamCreationApplicationCard(
                     value = teamName,
                     onValueChange = { value ->
                         teamName = value
-                        if (shortCode.isBlank() && value.trim().length >= 3) {
-                            val initials = value.trim().split(" ")
+                        if (!shortCodeEdited) {
+                            val normalized = value.trim()
+                                .replace('ç', 'C').replace('Ç', 'C')
+                                .replace('ğ', 'G').replace('Ğ', 'G')
+                                .replace('ı', 'I').replace('İ', 'I')
+                                .replace('ö', 'O').replace('Ö', 'O')
+                                .replace('ş', 'S').replace('Ş', 'S')
+                                .replace('ü', 'U').replace('Ü', 'U')
+                            val initials = normalized.split(" ")
                                 .filter { it.isNotBlank() }
                                 .map { it.first().uppercaseChar() }
                                 .joinToString("")
-                            shortCode = initials.take(5).ifBlank { value.trim().take(3).uppercase() }
+                            shortCode = if (initials.length >= 2) {
+                                initials.take(5)
+                            } else {
+                                normalized.replace(" ", "").take(4).uppercase()
+                            }
                         }
                     },
                     label = { Text("Takım Adı *") },
@@ -852,7 +899,10 @@ fun TeamCreationApplicationCard(
                 )
                 OutlinedTextField(
                     value = shortCode,
-                    onValueChange = { if (it.length <= 8) shortCode = it.uppercase() },
+                    onValueChange = {
+                        shortCodeEdited = it.isNotBlank()
+                        if (it.length <= 8) shortCode = it.uppercase()
+                    },
                     label = { Text("Kısa Kod *") },
                     placeholder = { Text("Örn: FRT") },
                     singleLine = true,
@@ -980,11 +1030,86 @@ fun TeamCreationApplicationCard(
 
             // Logo & Accent Color Customization
             Text(
-                text = "Takım Sembolü ve Rengi",
+                text = "Takım Logosu, Sembolü ve Rengi",
                 fontSize = 12.sp,
                 fontWeight = FontWeight.SemiBold,
                 color = MaterialTheme.colorScheme.onSurface
             )
+
+            Surface(
+                shape = RoundedCornerShape(12.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+                border = BorderStroke(1.dp, ext.cardBorder),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    TeamLogoBadge(
+                        team = TeamInfo(
+                            id = "preview",
+                            name = teamName.ifBlank { "Yeni Takım" },
+                            logoKey = selectedLogoKey,
+                            logoUrl = customLogoUrl,
+                            accentColorHex = selectedColorHex
+                        ),
+                        size = 52
+                    )
+                    Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(
+                            text = if (customLogoUrl.isNotBlank()) "Özel Logo Yüklendi" else "Özel Takım Logosu (Opsiyonel)",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Text(
+                            text = if (customLogoUrl.isNotBlank()) "Kartlarda özel logonuz gösterilecek" else "Galeriden takım logonuzu yükleyebilirsiniz",
+                            fontSize = 11.sp,
+                            color = ext.textMuted
+                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedButton(
+                                onClick = {
+                                    logoPickerLauncher.launch(
+                                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                                    )
+                                },
+                                enabled = !isUploadingLogo && !isSubmitting,
+                                shape = RoundedCornerShape(8.dp),
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                                modifier = Modifier.testTag("create_team_pick_logo_button")
+                            ) {
+                                if (isUploadingLogo) {
+                                    CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
+                                } else {
+                                    Icon(imageVector = Icons.Default.AddPhotoAlternate, contentDescription = null, modifier = Modifier.size(15.dp))
+                                }
+                                Spacer(modifier = Modifier.width(5.dp))
+                                Text(
+                                    text = if (customLogoUrl.isNotBlank()) "Değiştir" else "Logo Seç",
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                            if (customLogoUrl.isNotBlank()) {
+                                TextButton(
+                                    onClick = { customLogoUrl = "" },
+                                    enabled = !isUploadingLogo && !isSubmitting,
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp)
+                                ) {
+                                    Icon(imageVector = Icons.Default.Delete, contentDescription = "Logoyu Kaldır", tint = ext.dangerText, modifier = Modifier.size(15.dp))
+                                    Spacer(modifier = Modifier.width(3.dp))
+                                    Text("Kaldır", fontSize = 11.sp, color = ext.dangerText)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             FlowRow(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
@@ -1087,6 +1212,7 @@ fun TeamCreationApplicationCard(
                             description = description,
                             motto = motto,
                             logoKey = selectedLogoKey,
+                            logoUrl = customLogoUrl,
                             accentColorHex = selectedColorHex,
                             managerName = managerName,
                             managerContact = managerContact,
@@ -1108,7 +1234,7 @@ fun TeamCreationApplicationCard(
                         }
                     }
                 },
-                enabled = !isSubmitting,
+                enabled = !isSubmitting && !isUploadingLogo,
                 modifier = Modifier
                     .fillMaxWidth()
                     .heightIn(min = 50.dp)
