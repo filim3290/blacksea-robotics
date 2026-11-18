@@ -335,7 +335,7 @@ fun AppContent(
     val activeProfile = (profileState as? UserProfileLoadState.Found)?.profile
     val isPlatformAdmin = remember(activeProfile, currentUser?.email) {
         activeProfile?.isPlatformManagerAccount() == true ||
-            currentUser?.email.equals(com.example.model.PLATFORM_FOUNDER_EMAIL, ignoreCase = true)
+            currentUser?.email?.trim().equals(com.example.model.PLATFORM_FOUNDER_EMAIL, ignoreCase = true)
     }
 
     val myMemberships by remember(authenticatedUid) {
@@ -374,7 +374,8 @@ fun AppContent(
         when (val state = profileState) {
             is UserProfileLoadState.Loading -> Unit
             is UserProfileLoadState.Missing -> {
-                val isFounderEmail = currentUser?.email.equals(com.example.model.PLATFORM_FOUNDER_EMAIL, ignoreCase = true)
+                val isFounderEmail = currentUser?.email?.trim()
+                    .equals(com.example.model.PLATFORM_FOUNDER_EMAIL, ignoreCase = true)
                 if (!isFounderEmail && !isSelfDeleting) {
                     BackgroundNotificationWorker.cancelPeriodicSync(context)
                     RealtimeNotificationService.stop(context)
@@ -402,52 +403,16 @@ fun AppContent(
         }
     }
 
-    LaunchedEffect(authenticatedUid, activeProfile?.createdAt, membershipsByTeam, isPlatformAdmin, permissionGrantCount) {
+    LaunchedEffect(authenticatedUid, permissionGrantCount) {
         val uid = authenticatedUid ?: return@LaunchedEffect
-        val profile = activeProfile ?: return@LaunchedEffect
-
-        val profileJoinMs = profile.createdAt?.toDate()?.time ?: 0L
-        if (profileJoinMs > 0L) {
-            TeamNotificationDispatcher.recordUserJoinTimestampIfMissing(context, uid, profileJoinMs)
-        }
-        val effectiveJoinMs = if (profileJoinMs > 0L) {
-            profileJoinMs
-        } else {
-            TeamNotificationDispatcher.getUserJoinTimestampMs(context, uid)
-        }
-
-        if (!TeamNotificationDispatcher.hasSeededBaseline(context, uid)) {
-            val initialSnapshot = repository.fetchNotificationsOnceForUser(
-                userId = uid,
-                membershipsByTeam = membershipsByTeam,
-                isPlatformAdmin = isPlatformAdmin,
-                userCreatedAtMs = effectiveJoinMs
-            )
-            if (initialSnapshot != null) {
-                TeamNotificationDispatcher.syncBaselineSilently(
-                    context = context,
-                    userId = uid,
-                    notifications = initialSnapshot
-                )
-            }
-        }
-
-        repository.observeNotificationsForUser(
-            userId = uid,
-            membershipsByTeam = membershipsByTeam,
-            isPlatformAdmin = isPlatformAdmin,
-            userCreatedAtMs = effectiveJoinMs
-        ).collect { filteredNotifications ->
-            TeamNotificationDispatcher.processNotifications(
-                context = context,
-                userId = uid,
-                notifications = filteredNotifications,
-                userCreatedAtMs = effectiveJoinMs
-            )
+        if (uid.isBlank()) return@LaunchedEffect
+        RealtimeNotificationService.startIfEnabled(context)
+        if (permissionGrantCount > 0) {
+            BackgroundNotificationWorker.triggerImmediateSync(context)
         }
     }
 
-    // Check updates when returning from background and schedule prompt background check on stop
+    // Check updates when returning from background and trigger expedited background sync on stop
     DisposableEffect(lifecycleOwner, currentUser?.uid) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
@@ -460,7 +425,7 @@ fun AppContent(
                 TeamNotificationDispatcher.setAppForeground(context, currentUser?.uid, false)
                 RealtimeNotificationService.startIfEnabled(context)
                 BackgroundNotificationWorker.schedulePeriodicSync(context)
-                BackgroundNotificationWorker.triggerOneTimeUpdateCheck(context, delaySeconds = 5L)
+                BackgroundNotificationWorker.triggerImmediateSync(context)
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)

@@ -22,6 +22,7 @@ import com.example.model.SupportTicket
 import com.example.model.SupportTicketStatus
 import com.example.model.TeamActivity
 import com.example.model.TeamAnnouncement
+import com.example.model.TeamAppealStatus
 import com.example.model.TeamInfo
 import com.example.model.TeamLogoPreset
 import com.example.model.TeamMembership
@@ -51,9 +52,11 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
@@ -62,6 +65,7 @@ import java.io.FileOutputStream
 import java.text.SimpleDateFormat
 import java.util.Locale
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 
 data class FileUploadResult(
     val fileName: String,
@@ -112,6 +116,7 @@ fun shouldUserReceiveNotification(
     return when (notif.type.lowercase()) {
         "update" -> true
         "broadcast", "announcement" -> true
+        "team_suspended", "team_under_review", "team_resumed" -> true
         "idea" -> true
         "new_member" -> userId.isBlank() || notif.targetId != userId
         "support_ticket" -> isManager
@@ -137,8 +142,8 @@ fun shouldUserReceiveNotification(
 
 /**
  * Multi-team isolated notification evaluator.
- * Strictly isolates notifications per [TeamMembership] and checks [isPlatformAdmin] only for
- * platform-wide team applications & app updates.
+ * Strictly isolates notifications per [TeamMembership] and restricts platform-wide admin
+ * notifications (team applications, appeals, and support tickets) solely to [isPlatformAdmin].
  */
 fun shouldUserReceiveNotification(
     notif: TeamNotification,
@@ -160,7 +165,12 @@ fun shouldUserReceiveNotification(
         return true
     }
 
-    if (typeLower == "team_application_pending" || notif.teamId == "platform_admin") {
+    if (typeLower == "team_application_pending" ||
+        typeLower == "support_ticket" ||
+        typeLower == "team_appeal" ||
+        notif.teamId == "platform_admin" ||
+        notif.recipientUserId == "platform_admins"
+    ) {
         return isPlatformAdmin
     }
 
@@ -863,7 +873,7 @@ class BlackseaRepository(val db: FirebaseFirestore) {
     ) {
         val uid = profile.userId.ifBlank { profile.id }.trim()
         if (uid.isBlank()) return
-        val isFounder = profile.email.equals(PLATFORM_FOUNDER_EMAIL, ignoreCase = true)
+        val isFounder = profile.email.trim().equals(PLATFORM_FOUNDER_EMAIL, ignoreCase = true)
         val membershipId = "${PLATFORM_MAIN_TEAM_ID}_$uid"
         val membershipRef = db.collection("team_memberships").document(membershipId)
 
@@ -872,15 +882,15 @@ class BlackseaRepository(val db: FirebaseFirestore) {
             if (existingMembership.exists()) return
 
             val isExplicitLegacyBsrUser = isFounder ||
-                profile.isPlatformManagerAccount() ||
                 (hasActiveTeamField == false && UserStatus.isActive(profile.status))
 
             if (!isExplicitLegacyBsrUser) return
 
             val roles = when {
-                isFounder || profile.isPlatformManagerAccount() ->
-                    (profile.roles + listOf("Yönetici", "Takım Kaptanı")).distinct()
-                profile.roles.isNotEmpty() -> profile.roles
+                isFounder -> (profile.roles + listOf("Yönetici", "Takım Kaptanı")).distinct()
+                profile.roles.isNotEmpty() -> profile.roles.map {
+                    if (it.equals("Yönetici", ignoreCase = true)) "Yetkili Öğretmen" else it
+                }.distinct()
                 else -> listOf(PredefinedRoles.getDefaultTeamRole(profile.team))
             }
             val isTeamAdmin = isFounder || profile.isManagerAccount()
@@ -1241,6 +1251,13 @@ class BlackseaRepository(val db: FirebaseFirestore) {
             if (founderUid.isNotBlank()) {
                 val founderMembershipId = "${team.id}_$founderUid"
                 val founderProfile = getUserProfile(founderUid)
+                val founderIsPlatformOwner = team.founderEmail.trim()
+                    .equals(PLATFORM_FOUNDER_EMAIL, ignoreCase = true)
+                val initialFounderRoles = if (founderIsPlatformOwner) {
+                    listOf("Yönetici", "Takım Kaptanı")
+                } else {
+                    listOf("Yetkili Öğretmen", "Takım Kaptanı")
+                }
                 db.collection("team_memberships").document(founderMembershipId).set(
                     mapOf(
                         "teamId" to team.id,
@@ -1249,11 +1266,11 @@ class BlackseaRepository(val db: FirebaseFirestore) {
                         "userEmail" to team.founderEmail.ifBlank { founderProfile?.email ?: "" },
                         "userPhotoUrl" to (founderProfile?.photoUrl ?: ""),
                         "subTeam" to TeamType.MANAGEMENT.displayName,
-                        "role" to "Yönetici",
-                        "roles" to listOf("Yönetici", "Takım Kaptanı"),
+                        "role" to initialFounderRoles.first(),
+                        "roles" to initialFounderRoles,
                         "status" to UserStatus.ACTIVE.value,
                         "isTeamAdmin" to true,
-                        "joinNote" to "Takım kurucu yöneticisi",
+                        "joinNote" to if (founderIsPlatformOwner) "Platform kurucu yöneticisi" else "Takım kurucusu • Yetkili Öğretmen",
                         "createdAt" to FieldValue.serverTimestamp(),
                         "updatedAt" to FieldValue.serverTimestamp()
                     ),
@@ -1364,6 +1381,220 @@ class BlackseaRepository(val db: FirebaseFirestore) {
                     "updatedAt" to FieldValue.serverTimestamp()
                 )
             ).await()
+            Result.success(Unit)
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.UPDATE, "teams/$cleanId")
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Observes specific teams by ID (so members of suspended or under-review teams
+     * can still see them in their workspace list and access the moderation warning & appeal flow).
+     */
+    fun observeTeamsByIds(teamIds: Set<String>): Flow<List<TeamInfo>> {
+        val cleanIds = teamIds.map { it.trim() }.filter { it.isNotBlank() }.distinct()
+        if (cleanIds.isEmpty()) return flowOf(emptyList())
+        return channelFlow {
+            val map = ConcurrentHashMap<String, TeamInfo>()
+            fun emitSorted() {
+                trySend(
+                    map.values.sortedWith(
+                        compareByDescending<TeamInfo> { it.isMainTeam || it.id == PLATFORM_MAIN_TEAM_ID }
+                            .thenBy { it.name.lowercase(Locale("tr", "TR")) }
+                    )
+                )
+            }
+            for (tId in cleanIds) {
+                launch {
+                    db.collection("teams").document(tId)
+                        .snapshots()
+                        .catch { err ->
+                            logDebugWarn("Repository", "observeTeamsByIds snapshot error for $tId", err)
+                        }
+                        .collect { snap ->
+                            if (snap.exists()) {
+                                snap.toObject(TeamInfo::class.java)?.let { info ->
+                                    map[tId] = info
+                                }
+                            } else if (tId == PLATFORM_MAIN_TEAM_ID) {
+                                map[tId] = TeamInfo.mainBlackseaTeam()
+                            } else {
+                                map.remove(tId)
+                            }
+                            emitSorted()
+                        }
+                }
+            }
+        }
+    }
+
+    suspend fun suspendTeamWorkspace(team: TeamInfo, reason: String): Result<Unit> {
+        return moderateTeamStatus(
+            team = team,
+            newStatus = TeamStatus.SUSPENDED,
+            reason = reason,
+            notifType = "team_suspended",
+            notifTitle = "${team.name} Çalışma Alanı Durduruldu",
+            notifBody = { r ->
+                if (r.isNotBlank()) "Sebep: $r" else "Bu takımın çalışma alanı platform yöneticisi tarafından geçici olarak durduruldu."
+            }
+        )
+    }
+
+    suspend fun markTeamUnderReview(team: TeamInfo, reason: String): Result<Unit> {
+        return moderateTeamStatus(
+            team = team,
+            newStatus = TeamStatus.UNDER_REVIEW,
+            reason = reason,
+            notifType = "team_under_review",
+            notifTitle = "${team.name} İncelemeye Alındı",
+            notifBody = { r ->
+                if (r.isNotBlank()) "Sebep: $r" else "Takım çalışma alanınız inceleme sürecindedir."
+            }
+        )
+    }
+
+    suspend fun resumeTeamWorkspace(team: TeamInfo): Result<Unit> {
+        return moderateTeamStatus(
+            team = team,
+            newStatus = TeamStatus.APPROVED,
+            reason = "",
+            notifType = "team_resumed",
+            notifTitle = "${team.name} Yeniden Aktifleştirildi",
+            notifBody = { _ -> "${team.name} çalışma alanı tekrar açıldı. Çalışmaya devam edebilirsiniz." }
+        )
+    }
+
+    suspend fun dismissTeamAppeal(team: TeamInfo, note: String = ""): Result<Unit> {
+        val reviewerUid = try {
+            requireUserId()
+        } catch (e: Exception) {
+            return Result.failure(e)
+        }
+        val cleanId = team.id.trim()
+        if (cleanId.isBlank() || team.isMainTeam || cleanId == PLATFORM_MAIN_TEAM_ID) {
+            return Result.failure(IllegalArgumentException("Ana platform takımı üzerinde işlem yapılamaz."))
+        }
+        val cleanNote = note.trim().take(500)
+        return try {
+            val updates = mutableMapOf<String, Any>(
+                "appealStatus" to TeamAppealStatus.REJECTED,
+                "reviewedBy" to reviewerUid,
+                "updatedAt" to FieldValue.serverTimestamp()
+            )
+            if (cleanNote.isNotBlank()) {
+                updates["moderationReason"] = cleanNote
+            }
+            db.collection("teams").document(cleanId).update(updates).await()
+            Result.success(Unit)
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.UPDATE, "teams/$cleanId")
+            Result.failure(e)
+        }
+    }
+
+    private suspend fun moderateTeamStatus(
+        team: TeamInfo,
+        newStatus: String,
+        reason: String,
+        notifType: String,
+        notifTitle: String,
+        notifBody: (String) -> String
+    ): Result<Unit> {
+        val reviewerUid = try {
+            requireUserId()
+        } catch (e: Exception) {
+            return Result.failure(e)
+        }
+        val cleanId = team.id.trim()
+        if (cleanId.isBlank() || team.isMainTeam || cleanId == PLATFORM_MAIN_TEAM_ID) {
+            return Result.failure(IllegalArgumentException("Ana platform takımı durdurulamaz veya incelemeye alınamaz."))
+        }
+        val cleanReason = reason.trim().take(500)
+        return try {
+            val updates = mutableMapOf<String, Any>(
+                "status" to newStatus,
+                "moderationReason" to cleanReason,
+                "reviewedBy" to reviewerUid,
+                "updatedAt" to FieldValue.serverTimestamp()
+            )
+            if (newStatus == TeamStatus.APPROVED) {
+                updates["appealText"] = ""
+                updates["appealStatus"] = ""
+                updates["appealByUserId"] = ""
+                updates["appealByName"] = ""
+            } else {
+                updates["appealStatus"] = TeamAppealStatus.NONE
+            }
+            db.collection("teams").document(cleanId).update(updates).await()
+
+            createNotification(
+                recipientUserId = "all",
+                title = notifTitle,
+                message = notifBody(cleanReason),
+                type = notifType,
+                targetId = cleanId,
+                senderName = "BlackSea Platform Yönetimi",
+                senderId = reviewerUid,
+                teamId = cleanId,
+                teamName = team.name
+            )
+            Result.success(Unit)
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.UPDATE, "teams/$cleanId")
+            Result.failure(e)
+        }
+    }
+
+    suspend fun submitTeamAppeal(
+        team: TeamInfo,
+        appellantName: String,
+        appealText: String
+    ): Result<Unit> {
+        val cleanId = team.id.trim()
+        if (cleanId.isBlank() || cleanId == PLATFORM_MAIN_TEAM_ID) {
+            return Result.failure(IllegalArgumentException("Geçersiz takım."))
+        }
+        val cleanText = appealText.trim().take(1000)
+        if (cleanText.length < 10) {
+            return Result.failure(IllegalArgumentException("İtiraz açıklaması en az 10 karakter olmalıdır."))
+        }
+        val uid = try {
+            requireUserId()
+        } catch (e: Exception) {
+            return Result.failure(e)
+        }
+        val cleanName = appellantName.trim().ifBlank { "Takım Üyesi" }.take(120)
+        return try {
+            db.collection("teams").document(cleanId).update(
+                mapOf(
+                    "appealText" to cleanText,
+                    "appealStatus" to TeamAppealStatus.PENDING,
+                    "appealByUserId" to uid,
+                    "appealByName" to cleanName,
+                    "appealSubmittedAt" to FieldValue.serverTimestamp(),
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+            ).await()
+
+            createNotification(
+                recipientUserId = "platform_admins",
+                title = "Takım İtirazı: ${team.name}",
+                message = "$cleanName: ${cleanText.take(120)}",
+                type = "team_appeal",
+                targetId = cleanId,
+                senderName = cleanName,
+                senderId = uid,
+                teamId = "platform_admin",
+                teamName = "BlackSea Robotics Platform"
+            )
             Result.success(Unit)
         } catch (ce: CancellationException) {
             throw ce
@@ -1526,13 +1757,25 @@ class BlackseaRepository(val db: FirebaseFirestore) {
         if (cleanTargetUid.isBlank()) return Result.failure(IllegalArgumentException("Geçersiz üye."))
         val membershipId = "${team.id}_$cleanTargetUid"
         val docRef = db.collection("team_memberships").document(membershipId)
-        val finalRoles = if (roles.isNotEmpty()) roles else listOf(PredefinedRoles.getDefaultTeamRole(subTeam))
-        val isTeamAdmin = finalRoles.any { it in PredefinedRoles.MANAGEMENT_ROLES && it != "Takım Yardımcısı" }
+        val callerIsFounder = auth.currentUser?.email?.trim()
+            .equals(PLATFORM_FOUNDER_EMAIL, ignoreCase = true)
 
         return try {
             val existingSnap = try { docRef.get().await() } catch (_: Exception) { null }
             val previousStatus = existingSnap?.getString("status")
             val targetProfile = getUserProfile(cleanTargetUid)
+            val targetEmail = existingSnap?.getString("userEmail") ?: targetProfile?.email.orEmpty()
+            val targetIsFounder = targetEmail.trim().equals(PLATFORM_FOUNDER_EMAIL, ignoreCase = true)
+
+            val requestedRoles = if (roles.isNotEmpty()) roles else listOf(PredefinedRoles.getDefaultTeamRole(subTeam))
+            val finalRoles = if (callerIsFounder && targetIsFounder) {
+                requestedRoles
+            } else {
+                requestedRoles.filterNot { it.equals("Yönetici", ignoreCase = true) }
+                    .ifEmpty { listOf(PredefinedRoles.getDefaultTeamRole(subTeam)) }
+            }
+            val isTeamAdmin = finalRoles.any { it in PredefinedRoles.MANAGEMENT_ROLES && it != "Takım Yardımcısı" }
+
             val memberName = existingSnap?.getString("userName")
                 ?: targetProfile?.getFullName()?.takeIf { it.isNotBlank() }
                 ?: "Üye"
@@ -1542,7 +1785,7 @@ class BlackseaRepository(val db: FirebaseFirestore) {
                 put("teamId", team.id)
                 put("userId", cleanTargetUid)
                 put("userName", memberName)
-                put("userEmail", existingSnap?.getString("userEmail") ?: targetProfile?.email.orEmpty())
+                put("userEmail", targetEmail)
                 put("userPhotoUrl", existingSnap?.getString("userPhotoUrl") ?: targetProfile?.photoUrl.orEmpty())
                 put("subTeam", subTeam.ifBlank { TeamType.GENERAL.displayName })
                 put("roles", finalRoles)
@@ -2029,59 +2272,53 @@ class BlackseaRepository(val db: FirebaseFirestore) {
             .map { it.teamId }
             .distinct()
 
-        val flows = mutableListOf<Flow<List<TeamNotification>>>()
-        flows += db.collection("notifications")
-            .whereEqualTo("recipientUserId", userId)
-            .snapshots()
-            .map { it.toObjects(TeamNotification::class.java) }
-            .catch { error ->
-                handleFirestoreError(error, OperationType.LIST, "notifications?recipient=$userId")
-                emit(emptyList())
+        return channelFlow {
+            val buckets = ConcurrentHashMap<String, List<TeamNotification>>()
+
+            fun emitMergedSnapshot() {
+                val merged = LinkedHashMap<String, TeamNotification>()
+                for (list in buckets.values) {
+                    for (item in list) {
+                        merged[item.id] = item
+                    }
+                }
+                val filtered = merged.values
+                    .filter { notif ->
+                        shouldUserReceiveNotification(
+                            notif = notif,
+                            userId = userId,
+                            membershipsByTeam = membershipsByTeam,
+                            isPlatformAdmin = isPlatformAdmin,
+                            userCreatedAtMs = userCreatedAtMs
+                        )
+                    }
+                    .sortedByDescending { it.createdAt?.toDate()?.time ?: Long.MAX_VALUE }
+                trySend(filtered)
             }
 
-        flows += db.collection("notifications")
-            .whereEqualTo("teamId", "platform")
-            .snapshots()
-            .map { it.toObjects(TeamNotification::class.java) }
-            .catch { emit(emptyList()) }
-
-        if (isPlatformAdmin) {
-            flows += db.collection("notifications")
-                .whereEqualTo("teamId", "platform_admin")
-                .snapshots()
-                .map { it.toObjects(TeamNotification::class.java) }
-                .catch { emit(emptyList()) }
-        }
-
-        for (tId in activeTeamIds) {
-            flows += db.collection("notifications")
-                .whereEqualTo("teamId", tId)
-                .snapshots()
-                .map { it.toObjects(TeamNotification::class.java) }
-                .catch { error ->
-                    handleFirestoreError(error, OperationType.LIST, "notifications?teamId=$tId")
-                    emit(emptyList())
-                }
-        }
-
-        return combine(flows) { arrays ->
-            val merged = LinkedHashMap<String, TeamNotification>()
-            for (list in arrays) {
-                for (item in list) {
-                    merged[item.id] = item
+            fun subscribeQuery(key: String, query: com.google.firebase.firestore.Query) {
+                launch {
+                    query.snapshots()
+                        .map { it.toObjects(TeamNotification::class.java) }
+                        .catch { error ->
+                            handleFirestoreError(error, OperationType.LIST, "notifications?$key")
+                            emit(emptyList())
+                        }
+                        .collect { items ->
+                            buckets[key] = items
+                            emitMergedSnapshot()
+                        }
                 }
             }
-            merged.values
-                .filter { notif ->
-                    shouldUserReceiveNotification(
-                        notif = notif,
-                        userId = userId,
-                        membershipsByTeam = membershipsByTeam,
-                        isPlatformAdmin = isPlatformAdmin,
-                        userCreatedAtMs = userCreatedAtMs
-                    )
-                }
-                .sortedByDescending { it.createdAt?.toDate()?.time ?: Long.MAX_VALUE }
+
+            subscribeQuery("recipient=$userId", db.collection("notifications").whereEqualTo("recipientUserId", userId))
+            subscribeQuery("platform", db.collection("notifications").whereEqualTo("teamId", "platform"))
+            if (isPlatformAdmin) {
+                subscribeQuery("platform_admin", db.collection("notifications").whereEqualTo("teamId", "platform_admin"))
+            }
+            for (tId in activeTeamIds) {
+                subscribeQuery("teamId=$tId", db.collection("notifications").whereEqualTo("teamId", tId))
+            }
         }
     }
 
@@ -3194,17 +3431,17 @@ class BlackseaRepository(val db: FirebaseFirestore) {
     }
 
     // ==========================================
-    // SUPPORT & HELP CENTER TICKETS (TEAM SCOPED)
+    // SUPPORT & HELP CENTER TICKETS (CENTRALIZED TO BLACKSEA PLATFORM ADMIN)
     // ==========================================
 
+    @Suppress("UNUSED_PARAMETER")
     fun observeMySupportTickets(
         userId: String,
         teamId: String = PLATFORM_MAIN_TEAM_ID
     ): Flow<List<SupportTicket>> {
         val cleanUid = userId.trim()
-        val cleanTeamId = teamId.ifBlank { PLATFORM_MAIN_TEAM_ID }
         if (cleanUid.isBlank()) return flowOf(emptyList())
-        return supportTicketsCollection(cleanTeamId)
+        return supportTicketsCollection(PLATFORM_MAIN_TEAM_ID)
             .whereEqualTo("userId", cleanUid)
             .snapshots()
             .map { snapshot ->
@@ -3212,14 +3449,14 @@ class BlackseaRepository(val db: FirebaseFirestore) {
                     .sortedByDescending { it.createdAt?.toDate()?.time ?: Long.MAX_VALUE }
             }
             .catch { error ->
-                handleFirestoreError(error, OperationType.LIST, "${workspacePathPrefix(cleanTeamId)}support_tickets")
+                handleFirestoreError(error, OperationType.LIST, "support_tickets")
                 emit(emptyList())
             }
     }
 
+    @Suppress("UNUSED_PARAMETER")
     fun observeAllSupportTickets(teamId: String = PLATFORM_MAIN_TEAM_ID): Flow<List<SupportTicket>> {
-        val cleanTeamId = teamId.ifBlank { PLATFORM_MAIN_TEAM_ID }
-        return supportTicketsCollection(cleanTeamId)
+        return supportTicketsCollection(PLATFORM_MAIN_TEAM_ID)
             .snapshots()
             .map { snapshot ->
                 snapshot.toObjects(SupportTicket::class.java)
@@ -3234,7 +3471,7 @@ class BlackseaRepository(val db: FirebaseFirestore) {
                     )
             }
             .catch { error ->
-                handleFirestoreError(error, OperationType.LIST, "${workspacePathPrefix(cleanTeamId)}support_tickets")
+                handleFirestoreError(error, OperationType.LIST, "support_tickets")
                 emit(emptyList())
             }
     }
@@ -3267,51 +3504,55 @@ class BlackseaRepository(val db: FirebaseFirestore) {
             return Result.failure(e)
         }
 
-        val cleanTeamId = teamId.ifBlank { PLATFORM_MAIN_TEAM_ID }
-        val docRef = supportTicketsCollection(cleanTeamId).document()
-        val cleanName = userName.trim().ifBlank { "Takım Üyesi" }.take(100)
-        val payload = buildMap<String, Any> {
-            if (cleanTeamId != PLATFORM_MAIN_TEAM_ID) {
-                put("teamId", cleanTeamId)
-            }
-            put("userId", uid)
-            put("userName", cleanName)
-            put("userEmail", userEmail.trim().take(150))
-            put("userTeam", userTeam.trim().ifBlank { "Genel Ekip" }.take(80))
-            put("category", cleanCategory)
-            put("subject", cleanSubject)
-            put("description", cleanDesc)
-            put("appVersion", appVersion.trim().take(40))
-            put("deviceInfo", deviceInfo.trim().take(120))
-            put("status", SupportTicketStatus.OPEN)
-            put("adminReply", "")
-            put("repliedByName", "")
-            put("createdAt", FieldValue.serverTimestamp())
-            put("updatedAt", FieldValue.serverTimestamp())
+        val originTeamId = teamId.trim().ifBlank { PLATFORM_MAIN_TEAM_ID }
+        val formattedTeamContext = if (originTeamId != PLATFORM_MAIN_TEAM_ID && teamName.isNotBlank()) {
+            "${teamName.trim()} • ${userTeam.trim().ifBlank { "Üye" }}".take(80)
+        } else {
+            userTeam.trim().ifBlank { "Genel Ekip" }.take(80)
         }
+        val docRef = supportTicketsCollection(PLATFORM_MAIN_TEAM_ID).document()
+        val cleanName = userName.trim().ifBlank { "Takım Üyesi" }.take(100)
+        val payload = mapOf(
+            "teamId" to PLATFORM_MAIN_TEAM_ID,
+            "userId" to uid,
+            "userName" to cleanName,
+            "userEmail" to userEmail.trim().take(150),
+            "userTeam" to formattedTeamContext,
+            "category" to cleanCategory,
+            "subject" to cleanSubject,
+            "description" to cleanDesc,
+            "appVersion" to appVersion.trim().take(40),
+            "deviceInfo" to deviceInfo.trim().take(120),
+            "status" to SupportTicketStatus.OPEN,
+            "adminReply" to "",
+            "repliedByName" to "",
+            "createdAt" to FieldValue.serverTimestamp(),
+            "updatedAt" to FieldValue.serverTimestamp()
+        )
         return try {
             docRef.set(payload).await()
             createNotification(
-                recipientUserId = "managers",
+                recipientUserId = "platform_admins",
                 title = "Yeni Destek Talebi ($cleanCategory)",
-                message = "$cleanName: $cleanSubject",
+                message = "$cleanName ($formattedTeamContext): $cleanSubject",
                 type = "support_ticket",
                 targetId = docRef.id,
                 targetRoomId = cleanCategory,
                 senderName = cleanName,
                 senderId = uid,
-                teamId = cleanTeamId,
-                teamName = teamName
+                teamId = "platform_admin",
+                teamName = "BlackSea Robotics Platform"
             )
             Result.success(docRef.id)
         } catch (ce: CancellationException) {
             throw ce
         } catch (e: Exception) {
-            handleFirestoreError(e, OperationType.CREATE, "${workspacePathPrefix(cleanTeamId)}support_tickets/${docRef.id}")
+            handleFirestoreError(e, OperationType.CREATE, "support_tickets/${docRef.id}")
             Result.failure(e)
         }
     }
 
+    @Suppress("UNUSED_PARAMETER")
     suspend fun replyAndUpdateSupportTicket(
         ticketId: String,
         status: String,
@@ -3330,7 +3571,6 @@ class BlackseaRepository(val db: FirebaseFirestore) {
         } catch (e: Exception) {
             return Result.failure(e)
         }
-        val cleanTeamId = teamId.ifBlank { PLATFORM_MAIN_TEAM_ID }
         val normalizedStatus = SupportTicketStatus.normalize(status)
         val cleanReply = adminReply.trim().take(2000)
         val cleanReplier = repliedByName.trim().ifBlank { "Yönetici" }.take(100)
@@ -3342,7 +3582,7 @@ class BlackseaRepository(val db: FirebaseFirestore) {
             "updatedAt" to FieldValue.serverTimestamp()
         )
         return try {
-            supportTicketsCollection(cleanTeamId).document(cleanId).update(updates).await()
+            supportTicketsCollection(PLATFORM_MAIN_TEAM_ID).document(cleanId).update(updates).await()
             if (targetUserId.isNotBlank() && targetUserId != uid) {
                 val statusLabel = SupportTicketStatus.displayName(normalizedStatus)
                 val body = if (cleanReply.isNotBlank()) {
@@ -3358,15 +3598,15 @@ class BlackseaRepository(val db: FirebaseFirestore) {
                     targetId = cleanId,
                     senderName = cleanReplier,
                     senderId = uid,
-                    teamId = cleanTeamId,
-                    teamName = teamName
+                    teamId = "platform_admin",
+                    teamName = "BlackSea Robotics"
                 )
             }
             Result.success(Unit)
         } catch (ce: CancellationException) {
             throw ce
         } catch (e: Exception) {
-            handleFirestoreError(e, OperationType.UPDATE, "${workspacePathPrefix(cleanTeamId)}support_tickets/$cleanId")
+            handleFirestoreError(e, OperationType.UPDATE, "support_tickets/$cleanId")
             Result.failure(e)
         }
     }

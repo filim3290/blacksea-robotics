@@ -32,13 +32,18 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AddPhotoAlternate
+import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DeleteForever
+import androidx.compose.material.icons.filled.Gavel
 import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.LocationOn
+import androidx.compose.material.icons.filled.PauseCircle
 import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.ReportProblem
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.School
 import androidx.compose.material.icons.filled.Verified
@@ -49,6 +54,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -77,6 +83,7 @@ import com.example.data.BlackseaRepository
 import com.example.model.COMPETITION_PRESETS
 import com.example.model.PLATFORM_MAIN_TEAM_ID
 import com.example.model.TEAM_ACCENT_COLORS
+import com.example.model.TeamAppealStatus
 import com.example.model.TeamInfo
 import com.example.model.TeamLogoPreset
 import com.example.model.TeamStatus
@@ -405,11 +412,26 @@ fun TeamApplicationsTab(
     }
 }
 
+private enum class PlatformTeamModerationAction {
+    SUSPEND,
+    UNDER_REVIEW
+}
+
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun PlatformTeamsOverviewTab(
-    teams: List<TeamInfo>
+    teams: List<TeamInfo>,
+    repository: BlackseaRepository
 ) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     val ext = MaterialTheme.blackseaColors
+
+    var moderationTarget by remember { mutableStateOf<Pair<TeamInfo, PlatformTeamModerationAction>?>(null) }
+    var moderationReasonInput by remember { mutableStateOf("") }
+    var teamToDeleteStep1 by remember { mutableStateOf<TeamInfo?>(null) }
+    var teamToDeleteStep2 by remember { mutableStateOf<TeamInfo?>(null) }
+    var processingTeamId by remember { mutableStateOf<String?>(null) }
 
     LazyColumn(
         modifier = Modifier
@@ -428,13 +450,13 @@ fun PlatformTeamsOverviewTab(
             ) {
                 Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text(
-                        text = "Platform Takımları Genel Durumu (${teams.size})",
+                        text = "Platform Takımları Yönetimi (${teams.size})",
                         fontSize = 14.sp,
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.onSurface
                     )
                     Text(
-                        text = "Her takımın iç sohbetleri, dosyaları, fikirleri ve görevleri kendi çalışma alanında gizli tutulur. Burada yalnızca temel takım durumu görüntülenir.",
+                        text = "Takımların iç sohbet ve dosya içerikleri gizli kalır; ancak ana yönetici takımların çalışma alanlarını durdurabilir, incelemeye alabilir, yeniden başlatabilir veya kaldırabilir.",
                         fontSize = 11.sp,
                         color = ext.textSecondary,
                         lineHeight = 16.sp
@@ -447,17 +469,31 @@ fun PlatformTeamsOverviewTab(
             items = teams,
             key = { index, team -> "overview_${team.id}_$index" }
         ) { _, team ->
+            val isMain = team.isMainTeam || team.id == PLATFORM_MAIN_TEAM_ID
+            val isBusy = processingTeamId == team.id
+            val isAppealPending = team.appealStatus.equals(TeamAppealStatus.PENDING, ignoreCase = true)
+
             val (statusColor, statusBg) = when {
                 team.isApproved() -> Pair(ext.emeraldText, ext.emeraldSolid.copy(alpha = 0.14f))
-                team.isRejected() -> Pair(ext.dangerText, ext.dangerText.copy(alpha = 0.14f))
+                team.isSuspended() || team.isRejected() -> Pair(ext.dangerText, ext.dangerText.copy(alpha = 0.14f))
                 else -> Pair(ext.amberText, ext.amberText.copy(alpha = 0.16f))
             }
 
             Card(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("platform_team_card_${team.id}"),
                 shape = RoundedCornerShape(14.dp),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                border = BorderStroke(1.dp, ext.cardBorder)
+                border = BorderStroke(
+                    width = if (isAppealPending) 1.5.dp else 1.dp,
+                    color = when {
+                        isAppealPending -> ext.accentBlue.copy(alpha = 0.6f)
+                        team.isSuspended() -> ext.dangerText.copy(alpha = 0.4f)
+                        team.isUnderReview() -> ext.amberText.copy(alpha = 0.45f)
+                        else -> ext.cardBorder
+                    }
+                )
             ) {
                 Column(
                     modifier = Modifier.padding(14.dp),
@@ -478,7 +514,7 @@ fun PlatformTeamsOverviewTab(
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
                                 )
-                                if (team.isMainTeam || team.id == PLATFORM_MAIN_TEAM_ID) {
+                                if (isMain) {
                                     Icon(Icons.Default.Verified, contentDescription = "Ana Takım", tint = ext.accentBlue, modifier = Modifier.size(15.dp))
                                 }
                             }
@@ -518,9 +554,18 @@ fun PlatformTeamsOverviewTab(
 
                     if (team.managerName.isNotBlank() || team.managerContact.isNotBlank()) {
                         Text(
-                            text = "Yönetici: ${team.managerName} (${team.managerContact})",
+                            text = "Yetkili Öğretmen / Kaptan: ${team.managerName} (${team.managerContact})",
                             fontSize = 11.sp,
                             color = ext.textMuted
+                        )
+                    }
+
+                    if (team.moderationReason.isNotBlank()) {
+                        Text(
+                            text = "Moderasyon Gerekçesi: ${team.moderationReason}",
+                            fontSize = 11.sp,
+                            color = statusColor,
+                            fontWeight = FontWeight.Medium
                         )
                     }
 
@@ -531,9 +576,383 @@ fun PlatformTeamsOverviewTab(
                             color = ext.dangerText
                         )
                     }
+
+                    if (team.appealText.isNotBlank() || isAppealPending) {
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = ext.accentBlueContainer.copy(alpha = if (ext.isDark) 0.45f else 0.7f),
+                            border = BorderStroke(1.dp, ext.accentBlue.copy(alpha = 0.35f)),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(10.dp),
+                                verticalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Icon(Icons.Default.Gavel, contentDescription = null, tint = ext.accentBlue, modifier = Modifier.size(15.dp))
+                                    Text(
+                                        text = TeamAppealStatus.displayName(team.appealStatus).ifBlank { "Takım İtirazı" },
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = ext.accentBlue
+                                    )
+                                }
+                                if (team.appealByName.isNotBlank()) {
+                                    Text(
+                                        text = "Gönderen: ${team.appealByName}",
+                                        fontSize = 10.sp,
+                                        color = ext.textMuted
+                                    )
+                                }
+                                if (team.appealText.isNotBlank()) {
+                                    Text(
+                                        text = team.appealText,
+                                        fontSize = 12.sp,
+                                        color = MaterialTheme.colorScheme.onSurface,
+                                        lineHeight = 16.sp
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    if (!isMain && !team.isPending()) {
+                        HorizontalDivider(color = ext.cardBorder)
+                        FlowRow(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            if (!team.isApproved()) {
+                                Button(
+                                    onClick = {
+                                        processingTeamId = team.id
+                                        scope.launch {
+                                            try {
+                                                val res = repository.resumeTeamWorkspace(team)
+                                                if (res.isSuccess) {
+                                                    Toast.makeText(context, "${team.name} çalışma alanı yeniden başlatıldı.", Toast.LENGTH_SHORT).show()
+                                                } else {
+                                                    Toast.makeText(context, sanitizeUserErrorMessage(res.exceptionOrNull()), Toast.LENGTH_LONG).show()
+                                                }
+                                            } catch (ce: CancellationException) {
+                                                throw ce
+                                            } finally {
+                                                processingTeamId = null
+                                            }
+                                        }
+                                    },
+                                    enabled = !isBusy,
+                                    shape = RoundedCornerShape(8.dp),
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = ext.emeraldSolid,
+                                        contentColor = Color.White
+                                    ),
+                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                                    modifier = Modifier
+                                        .heightIn(min = 38.dp)
+                                        .testTag("resume_team_${team.id}")
+                                ) {
+                                    Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text("Başlat", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                }
+                            }
+
+                            if (!team.isSuspended()) {
+                                OutlinedButton(
+                                    onClick = {
+                                        moderationReasonInput = ""
+                                        moderationTarget = team to PlatformTeamModerationAction.SUSPEND
+                                    },
+                                    enabled = !isBusy,
+                                    shape = RoundedCornerShape(8.dp),
+                                    border = BorderStroke(1.dp, ext.dangerText.copy(alpha = 0.5f)),
+                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                                    modifier = Modifier
+                                        .heightIn(min = 38.dp)
+                                        .testTag("suspend_team_${team.id}")
+                                ) {
+                                    Icon(Icons.Default.PauseCircle, contentDescription = null, tint = ext.dangerText, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text("Durdur", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = ext.dangerText)
+                                }
+                            }
+
+                            if (!team.isUnderReview()) {
+                                OutlinedButton(
+                                    onClick = {
+                                        moderationReasonInput = ""
+                                        moderationTarget = team to PlatformTeamModerationAction.UNDER_REVIEW
+                                    },
+                                    enabled = !isBusy,
+                                    shape = RoundedCornerShape(8.dp),
+                                    border = BorderStroke(1.dp, ext.amberText.copy(alpha = 0.55f)),
+                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                                    modifier = Modifier
+                                        .heightIn(min = 38.dp)
+                                        .testTag("review_team_${team.id}")
+                                ) {
+                                    Icon(Icons.Default.ReportProblem, contentDescription = null, tint = ext.amberText, modifier = Modifier.size(15.dp))
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text("İncelemeye Al", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = ext.amberText)
+                                }
+                            }
+
+                            if (isAppealPending) {
+                                OutlinedButton(
+                                    onClick = {
+                                        processingTeamId = team.id
+                                        scope.launch {
+                                            try {
+                                                val res = repository.dismissTeamAppeal(team)
+                                                if (res.isSuccess) {
+                                                    Toast.makeText(context, "${team.name} itirazı reddedildi.", Toast.LENGTH_SHORT).show()
+                                                } else {
+                                                    Toast.makeText(context, sanitizeUserErrorMessage(res.exceptionOrNull()), Toast.LENGTH_LONG).show()
+                                                }
+                                            } catch (ce: CancellationException) {
+                                                throw ce
+                                            } finally {
+                                                processingTeamId = null
+                                            }
+                                        }
+                                    },
+                                    enabled = !isBusy,
+                                    shape = RoundedCornerShape(8.dp),
+                                    border = BorderStroke(1.dp, ext.cardBorder),
+                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                                    modifier = Modifier.heightIn(min = 38.dp)
+                                ) {
+                                    Icon(Icons.Default.Block, contentDescription = null, tint = ext.textSecondary, modifier = Modifier.size(15.dp))
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text("İtirazı Reddet", fontSize = 12.sp, color = ext.textSecondary)
+                                }
+                            }
+
+                            OutlinedButton(
+                                onClick = { teamToDeleteStep1 = team },
+                                enabled = !isBusy,
+                                shape = RoundedCornerShape(8.dp),
+                                border = BorderStroke(1.dp, ext.dangerText.copy(alpha = 0.5f)),
+                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                                modifier = Modifier
+                                    .heightIn(min = 38.dp)
+                                    .testTag("remove_platform_team_${team.id}")
+                            ) {
+                                Icon(Icons.Default.DeleteForever, contentDescription = null, tint = ext.dangerText, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("Kaldır", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = ext.dangerText)
+                            }
+                        }
+                    }
                 }
             }
         }
+    }
+
+    moderationTarget?.let { (targetTeam, action) ->
+        val isSuspend = action == PlatformTeamModerationAction.SUSPEND
+        val isBusy = processingTeamId == targetTeam.id
+        AlertDialog(
+            onDismissRequest = { if (!isBusy) moderationTarget = null },
+            icon = {
+                Icon(
+                    imageVector = if (isSuspend) Icons.Default.PauseCircle else Icons.Default.ReportProblem,
+                    contentDescription = null,
+                    tint = if (isSuspend) ext.dangerText else ext.amberText,
+                    modifier = Modifier.size(30.dp)
+                )
+            },
+            title = {
+                Text(
+                    text = if (isSuspend) "${targetTeam.name} Çalışma Alanını Durdur" else "${targetTeam.name} Takımını İncelemeye Al",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 16.sp
+                )
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        text = if (isSuspend) {
+                            "Bu takımın sohbet, dosya, fikir ve görev alanı durdurulacaktır. Takım üyelerine uyarı ve itiraz ekranı gösterilir."
+                        } else {
+                            "Bu takım inceleme moduna alınacaktır. İnceleme tamamlanana kadar çalışma alanı kapatılır ve üyeler itiraz gönderebilir."
+                        },
+                        fontSize = 12.sp,
+                        color = ext.textSecondary,
+                        lineHeight = 18.sp
+                    )
+                    OutlinedTextField(
+                        value = moderationReasonInput,
+                        onValueChange = { if (it.length <= 500) moderationReasonInput = it },
+                        label = { Text("Gerekçe / Açıklama (İsteğe Bağlı)") },
+                        placeholder = { Text("Takıma gösterilecek açıklama...") },
+                        minLines = 2,
+                        maxLines = 4,
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        processingTeamId = targetTeam.id
+                        scope.launch {
+                            try {
+                                val res = if (isSuspend) {
+                                    repository.suspendTeamWorkspace(targetTeam, moderationReasonInput)
+                                } else {
+                                    repository.markTeamUnderReview(targetTeam, moderationReasonInput)
+                                }
+                                if (res.isSuccess) {
+                                    moderationTarget = null
+                                    Toast.makeText(
+                                        context,
+                                        if (isSuspend) "${targetTeam.name} durduruldu." else "${targetTeam.name} incelemeye alındı.",
+                                        Toast.LENGTH_SHORT
+                                    ).show()
+                                } else {
+                                    Toast.makeText(context, sanitizeUserErrorMessage(res.exceptionOrNull()), Toast.LENGTH_LONG).show()
+                                }
+                            } catch (ce: CancellationException) {
+                                throw ce
+                            } finally {
+                                processingTeamId = null
+                            }
+                        }
+                    },
+                    enabled = !isBusy,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (isSuspend) ext.dangerSolid else ext.amberText,
+                        contentColor = Color.White
+                    )
+                ) {
+                    if (isBusy) {
+                        CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.White, strokeWidth = 2.dp)
+                    } else {
+                        Text(if (isSuspend) "Durdur" else "İncelemeye Al", fontWeight = FontWeight.Bold)
+                    }
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { moderationTarget = null }, enabled = !isBusy) {
+                    Text("Vazgeç")
+                }
+            }
+        )
+    }
+
+    teamToDeleteStep1?.let { targetTeam ->
+        AlertDialog(
+            onDismissRequest = { teamToDeleteStep1 = null },
+            icon = {
+                Icon(
+                    imageVector = Icons.Default.DeleteForever,
+                    contentDescription = null,
+                    tint = ext.dangerText,
+                    modifier = Modifier.size(30.dp)
+                )
+            },
+            title = { Text("${targetTeam.name} Takımını Kaldır", fontWeight = FontWeight.Bold) },
+            text = {
+                Text(
+                    text = "${targetTeam.name} platformdan kaldırılacak ve tüm takım üyelikleri silinecektir. Sonraki adımda kalıcı silme onayı istenecektir.",
+                    fontSize = 13.sp,
+                    color = ext.textSecondary,
+                    lineHeight = 19.sp
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        teamToDeleteStep1 = null
+                        teamToDeleteStep2 = targetTeam
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = ext.dangerSolid, contentColor = Color.White)
+                ) {
+                    Text("Devam Et", fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { teamToDeleteStep1 = null }) {
+                    Text("Vazgeç")
+                }
+            }
+        )
+    }
+
+    teamToDeleteStep2?.let { targetTeam ->
+        val isDeleting = processingTeamId == targetTeam.id
+        AlertDialog(
+            onDismissRequest = { if (!isDeleting) teamToDeleteStep2 = null },
+            icon = {
+                Icon(
+                    imageVector = Icons.Default.DeleteForever,
+                    contentDescription = null,
+                    tint = ext.dangerText,
+                    modifier = Modifier.size(32.dp)
+                )
+            },
+            title = {
+                Text(
+                    text = "Son Onay: Takımı Kaldır",
+                    fontWeight = FontWeight.Bold,
+                    color = ext.dangerText
+                )
+            },
+            text = {
+                Text(
+                    text = "Bu işlem geri alınamaz! ${targetTeam.name} kalıcı olarak platformdan kaldırılacaktır. Emin misiniz?",
+                    fontSize = 13.sp,
+                    color = ext.textSecondary,
+                    lineHeight = 19.sp
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        processingTeamId = targetTeam.id
+                        scope.launch {
+                            try {
+                                val res = repository.deleteTeamCompletely(targetTeam.id)
+                                if (res.isSuccess) {
+                                    teamToDeleteStep2 = null
+                                    Toast.makeText(context, "${targetTeam.name} kalıcı olarak kaldırıldı.", Toast.LENGTH_LONG).show()
+                                } else {
+                                    Toast.makeText(
+                                        context,
+                                        sanitizeUserErrorMessage(res.exceptionOrNull(), "Takım kaldırılamadı."),
+                                        Toast.LENGTH_LONG
+                                    ).show()
+                                }
+                            } catch (ce: CancellationException) {
+                                throw ce
+                            } finally {
+                                processingTeamId = null
+                            }
+                        }
+                    },
+                    enabled = !isDeleting,
+                    colors = ButtonDefaults.buttonColors(containerColor = ext.dangerSolid, contentColor = Color.White)
+                ) {
+                    if (isDeleting) {
+                        CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.White, strokeWidth = 2.dp)
+                    } else {
+                        Text("Evet, Kaldır", fontWeight = FontWeight.Bold)
+                    }
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { teamToDeleteStep2 = null }, enabled = !isDeleting) {
+                    Text("İptal")
+                }
+            }
+        )
     }
 }
 

@@ -163,7 +163,7 @@ fun SupportCenterButtonCard(
                         color = MaterialTheme.colorScheme.onSurface
                     )
                     Text(
-                        text = "Hazır çözümler, SSS ve yönetici destek formu",
+                        text = "Hazır çözümler, SSS ve BlackSea Robotics destek formu",
                         fontSize = 11.sp,
                         color = ext.textMuted,
                         maxLines = 1,
@@ -537,7 +537,7 @@ fun HelpAndSupportCenterCard(
                 ) {
                     Icon(imageVector = Icons.AutoMirrored.Filled.Send, contentDescription = null, modifier = Modifier.size(16.dp))
                     Spacer(modifier = Modifier.width(8.dp))
-                    Text("Yöneticiye Destek Talebi / Sorun Bildir", fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                    Text("BlackSea Yönetimine Destek Talebi Gönder", fontSize = 13.sp, fontWeight = FontWeight.Bold)
                 }
             }
 
@@ -593,7 +593,7 @@ fun HelpAndSupportCenterCard(
                             showTicketFormDialog = false
                             Toast.makeText(
                                 context,
-                                "Destek talebiniz yöneticilere iletildi!",
+                                "Destek talebiniz BlackSea Robotics yöneticilerine iletildi!",
                                 Toast.LENGTH_LONG
                             ).show()
                         } else {
@@ -647,7 +647,7 @@ fun SupportTicketFormDialog(
         },
         title = {
             Text(
-                text = "Yöneticiye Destek Talebi Gönder",
+                text = "BlackSea Yönetimine Destek Talebi",
                 fontWeight = FontWeight.Bold,
                 fontSize = 17.sp
             )

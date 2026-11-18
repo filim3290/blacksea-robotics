@@ -193,13 +193,13 @@ test("Pending or revoked user can reapply and send member_pending notification t
   );
 });
 
-test("Active manager can revoke or delete non-self/non-founder users while normal users cannot", async () => {
+test("Platform founder can revoke or delete non-founder users; Yetkili Öğretmen can revoke BSR membership without deleting global user", async () => {
   await testEnv.withSecurityRulesDisabled(async (ctx) => {
-    await ctx.firestore().collection("users").doc("mgr1").set({
-      userId: "mgr1",
-      email: "mgr1@example.com",
-      role: "Yönetici",
-      roles: ["Yönetici"],
+    await ctx.firestore().collection("users").doc("teacher1").set({
+      userId: "teacher1",
+      email: "teacher1@example.com",
+      role: "Yetkili Öğretmen",
+      roles: ["Yetkili Öğretmen"],
       status: "approved",
       isSuperAdmin: true
     });
@@ -217,17 +217,22 @@ test("Active manager can revoke or delete non-self/non-founder users while norma
       role: "Yönetici",
       roles: ["Yönetici"],
       status: "active",
-      isSuperAdmin: true
+      isSuperAdmin: true,
+      isPlatformAdmin: true
     });
   });
 
-  const mgrDb = testEnv.authenticatedContext("mgr1", { email: "mgr1@example.com" }).firestore();
-  const memberDb = testEnv.authenticatedContext("member1", { email: "member1@example.com" }).firestore();
+  const teacherDb = testEnv.authenticatedContext("teacher1", { email: "teacher1@example.com", email_verified: true }).firestore();
+  const founderDb = testEnv.authenticatedContext("founder1", { email: "filim3290@gmail.com", email_verified: true }).firestore();
+  const memberDb = testEnv.authenticatedContext("member1", { email: "member1@example.com", email_verified: true }).firestore();
 
-  await assertFails(memberDb.collection("users").doc("mgr1").delete());
-  await assertFails(mgrDb.collection("users").doc("founder1").delete());
-  await assertSucceeds(mgrDb.collection("users").doc("member1").update({ status: "revoked" }));
-  await assertSucceeds(mgrDb.collection("users").doc("member1").delete());
+  await assertFails(memberDb.collection("users").doc("teacher1").delete());
+  await assertFails(teacherDb.collection("users").doc("founder1").delete());
+  await assertFails(teacherDb.collection("users").doc("member1").delete());
+  // Yetkili Öğretmen cannot escalate role to 'Yönetici'
+  await assertFails(teacherDb.collection("users").doc("member1").update({ role: "Yönetici", roles: ["Yönetici"] }));
+  await assertSucceeds(teacherDb.collection("users").doc("member1").update({ status: "revoked" }));
+  await assertSucceeds(founderDb.collection("users").doc("member1").delete());
 });
 
 test("Any user can delete own account and personal notifications", async () => {
@@ -368,7 +373,7 @@ test("Message sender can edit text within 1 hour, denied after 1 hour, and non-o
   );
 });
 
-test("Support tickets: owner creates and lists own, managers update reply/status, cross-user access denied", async () => {
+test("Support tickets: owner creates and lists own, ONLY BlackSea founder (filim3290@gmail.com) reads/replies all, non-founder teachers & cross-users denied", async () => {
   const created = new Date(Date.now() - 5000);
   await testEnv.withSecurityRulesDisabled(async (ctx) => {
     const db = ctx.firestore();
@@ -388,22 +393,33 @@ test("Support tickets: owner creates and lists own, managers update reply/status
       status: "approved",
       isSuperAdmin: false
     });
-    await db.collection("users").doc("mgr_s").set({
-      userId: "mgr_s",
-      email: "mgrs@example.com",
-      role: "Yönetici",
-      roles: ["Yönetici"],
+    await db.collection("users").doc("teacher_s").set({
+      userId: "teacher_s",
+      email: "teachers@example.com",
+      role: "Yetkili Öğretmen",
+      roles: ["Yetkili Öğretmen"],
       status: "approved",
       isSuperAdmin: true
     });
+    await db.collection("users").doc("founder_s").set({
+      userId: "founder_s",
+      email: "filim3290@gmail.com",
+      role: "Yönetici",
+      roles: ["Yönetici"],
+      status: "active",
+      isSuperAdmin: true,
+      isPlatformAdmin: true
+    });
   });
 
-  const memberADb = testEnv.authenticatedContext("member_a", { email: "a@example.com" }).firestore();
-  const memberBDb = testEnv.authenticatedContext("member_b", { email: "b@example.com" }).firestore();
-  const mgrDb = testEnv.authenticatedContext("mgr_s", { email: "mgrs@example.com" }).firestore();
+  const memberADb = testEnv.authenticatedContext("member_a", { email: "a@example.com", email_verified: true }).firestore();
+  const memberBDb = testEnv.authenticatedContext("member_b", { email: "b@example.com", email_verified: true }).firestore();
+  const teacherDb = testEnv.authenticatedContext("teacher_s", { email: "teachers@example.com", email_verified: true }).firestore();
+  const founderDb = testEnv.authenticatedContext("founder_s", { email: "filim3290@gmail.com", email_verified: true }).firestore();
 
   await assertSucceeds(
     memberADb.collection("support_tickets").doc("ticket_1").set({
+      teamId: "blacksea_robotics",
       userId: "member_a",
       userName: "Ahmet Yılmaz",
       userEmail: "a@example.com",
@@ -418,6 +434,14 @@ test("Support tickets: owner creates and lists own, managers update reply/status
       repliedByName: "",
       createdAt: created,
       updatedAt: created
+    })
+  );
+
+  // Team-scoped subcollection support_tickets is disabled
+  await assertFails(
+    memberADb.collection("teams").doc("team_fatsa").collection("support_tickets").doc("t_sub").set({
+      userId: "member_a",
+      subject: "Test"
     })
   );
 
@@ -445,11 +469,23 @@ test("Support tickets: owner creates and lists own, managers update reply/status
   await assertFails(memberBDb.collection("support_tickets").get());
   await assertFails(memberBDb.collection("support_tickets").where("userId", "==", "member_a").get());
 
-  await assertSucceeds(mgrDb.collection("support_tickets").get());
-  await assertSucceeds(
-    mgrDb.collection("support_tickets").doc("ticket_1").update({
+  // Non-founder Yetkili Öğretmen CANNOT read or reply to centralized support tickets
+  await assertFails(teacherDb.collection("support_tickets").get());
+  await assertFails(
+    teacherDb.collection("support_tickets").doc("ticket_1").update({
       status: "resolved",
-      adminReply: "Arka plan servisi güncellendi, pil kısıtlamasını kapatabilirsiniz.",
+      adminReply: "Yetkisiz yanıt",
+      repliedByName: "Öğretmen",
+      updatedAt: new Date(Date.now() - 1000)
+    })
+  );
+
+  // Platform founder (filim3290@gmail.com) CAN read and reply to all support tickets
+  await assertSucceeds(founderDb.collection("support_tickets").get());
+  await assertSucceeds(
+    founderDb.collection("support_tickets").doc("ticket_1").update({
+      status: "resolved",
+      adminReply: "Arka plan servisi güncellendi, bildirimler anlık iletiliyor.",
       repliedByName: "Yönetici",
       updatedAt: new Date(Date.now() - 1000)
     })
@@ -460,7 +496,7 @@ test("Support tickets: owner creates and lists own, managers update reply/status
 // MULTI-TEAM PLATFORM TESTS (TEAM APPLICATIONS, APPROVALS, ISOLATION)
 // =========================================================================
 
-test("New team creation requires pending status and BlackSea Robotics platform admin approval", async () => {
+test("New team creation requires pending status and BlackSea Robotics founder (filim3290@gmail.com) approval", async () => {
   const now = new Date(Date.now() - 2000);
   await testEnv.withSecurityRulesDisabled(async (ctx) => {
     const db = ctx.firestore();
@@ -472,19 +508,32 @@ test("New team creation requires pending status and BlackSea Robotics platform a
       isSuperAdmin: false,
       isPlatformAdmin: false
     });
+    await db.collection("users").doc("bsr_teacher").set({
+      userId: "bsr_teacher",
+      email: "teacher@example.com",
+      displayName: "BSR Öğretmen",
+      role: "Yetkili Öğretmen",
+      roles: ["Yetkili Öğretmen"],
+      status: "active",
+      isSuperAdmin: true,
+      isPlatformAdmin: false
+    });
     await db.collection("users").doc("bsr_admin").set({
       userId: "bsr_admin",
-      email: "bsr@example.com",
-      displayName: "BSR Kaptan",
+      email: "filim3290@gmail.com",
+      displayName: "BSR Ana Yönetici",
+      role: "Yönetici",
+      roles: ["Yönetici"],
       status: "active",
       isSuperAdmin: true,
       isPlatformAdmin: true
     });
   });
 
-  const founderDb = testEnv.authenticatedContext("fatsa_founder", { email: "fatsa@example.com" }).firestore();
-  const bsrAdminDb = testEnv.authenticatedContext("bsr_admin", { email: "bsr@example.com" }).firestore();
-  const randomStudentDb = testEnv.authenticatedContext("student_x", { email: "x@example.com" }).firestore();
+  const founderDb = testEnv.authenticatedContext("fatsa_founder", { email: "fatsa@example.com", email_verified: true }).firestore();
+  const bsrTeacherDb = testEnv.authenticatedContext("bsr_teacher", { email: "teacher@example.com", email_verified: true }).firestore();
+  const bsrAdminDb = testEnv.authenticatedContext("bsr_admin", { email: "filim3290@gmail.com", email_verified: true }).firestore();
+  const randomStudentDb = testEnv.authenticatedContext("student_x", { email: "x@example.com", email_verified: true }).firestore();
 
   // Cannot self-create an already approved team
   await assertFails(
@@ -549,20 +598,27 @@ test("New team creation requires pending status and BlackSea Robotics platform a
     })
   );
 
-  // Pending team is hidden from random students, visible to founder & BSR platform admins
+  // Pending team is hidden from random students and non-founder teachers, visible to founder & BSR founder platform admin
   await assertFails(randomStudentDb.collection("teams").doc("team_fatsa").get());
+  await assertFails(bsrTeacherDb.collection("teams").doc("team_fatsa").get());
   await assertSucceeds(founderDb.collection("teams").where("founderId", "==", "fatsa_founder").get());
   await assertSucceeds(bsrAdminDb.collection("teams").get());
 
-  // Founder cannot self-approve
+  // Founder and non-founder Yetkili Öğretmen CANNOT approve teams
   await assertFails(
     founderDb.collection("teams").doc("team_fatsa").update({
       status: "approved",
       updatedAt: new Date(Date.now() - 1000)
     })
   );
+  await assertFails(
+    bsrTeacherDb.collection("teams").doc("team_fatsa").update({
+      status: "approved",
+      updatedAt: new Date(Date.now() - 1000)
+    })
+  );
 
-  // BSR platform admin approves Fatsa Robotik and creates founder membership
+  // BSR founder platform admin approves Fatsa Robotik and creates Yetkili Öğretmen membership
   await assertSucceeds(
     bsrAdminDb.collection("teams").doc("team_fatsa").update({
       status: "approved",
@@ -578,11 +634,11 @@ test("New team creation requires pending status and BlackSea Robotics platform a
       userEmail: "fatsa@example.com",
       userPhotoUrl: "",
       subTeam: "Genel Yönetim",
-      role: "Yönetici",
-      roles: ["Yönetici", "Takım Kaptanı"],
+      role: "Yetkili Öğretmen",
+      roles: ["Yetkili Öğretmen", "Takım Kaptanı"],
       status: "active",
       isTeamAdmin: true,
-      joinNote: "Takım kurucu yöneticisi",
+      joinNote: "Takım kurucu yetkilisi",
       createdAt: now,
       updatedAt: now
     })
@@ -605,6 +661,17 @@ test("New team creation requires pending status and BlackSea Robotics platform a
       joinNote: "Katılmak istiyorum",
       createdAt: now,
       updatedAt: now
+    })
+  );
+
+  // Team Yetkili Öğretmen cannot assign 'Yönetici' role to members
+  await assertFails(
+    founderDb.collection("team_memberships").doc("team_fatsa_student_x").update({
+      status: "active",
+      role: "Yönetici",
+      roles: ["Yönetici"],
+      isTeamAdmin: true,
+      updatedAt: new Date(Date.now() - 500)
     })
   );
 
@@ -684,7 +751,7 @@ test("Complete workspace isolation across teams (messages, files, ideas, tasks, 
     });
     await db.collection("users").doc("bsr_admin_only").set({
       userId: "bsr_admin_only",
-      email: "bsradmin@example.com",
+      email: "filim3290@gmail.com",
       role: "Yönetici",
       roles: ["Yönetici"],
       status: "active",
@@ -729,9 +796,9 @@ test("Complete workspace isolation across teams (messages, files, ideas, tasks, 
     });
   });
 
-  const fatsaMgrDb = testEnv.authenticatedContext("fatsa_mgr", { email: "fk@example.com" }).firestore();
-  const unyeMemberDb = testEnv.authenticatedContext("unye_member", { email: "um@example.com" }).firestore();
-  const bsrAdminDb = testEnv.authenticatedContext("bsr_admin_only", { email: "bsradmin@example.com" }).firestore();
+  const fatsaMgrDb = testEnv.authenticatedContext("fatsa_mgr", { email: "fk@example.com", email_verified: true }).firestore();
+  const unyeMemberDb = testEnv.authenticatedContext("unye_member", { email: "um@example.com", email_verified: true }).firestore();
+  const bsrAdminDb = testEnv.authenticatedContext("bsr_admin_only", { email: "filim3290@gmail.com", email_verified: true }).firestore();
 
   // Fatsa manager CAN access team_fatsa workspace and create tasks
   await assertSucceeds(fatsaMgrDb.collection("teams").doc("team_fatsa").collection("rooms").doc("general").collection("messages").get());
@@ -822,7 +889,7 @@ test("Active member leaving updates memberCount, team manager can update logoUrl
     });
     await db.collection("users").doc("bsr_admin_only").set({
       userId: "bsr_admin_only",
-      email: "bsradmin@example.com",
+      email: "filim3290@gmail.com",
       role: "Yönetici",
       roles: ["Yönetici"],
       status: "active",
@@ -831,9 +898,9 @@ test("Active member leaving updates memberCount, team manager can update logoUrl
     });
   });
 
-  const fatsaMgrDb = testEnv.authenticatedContext("fatsa_mgr", { email: "fk@example.com" }).firestore();
-  const studentADb = testEnv.authenticatedContext("student_a", { email: "sa@example.com" }).firestore();
-  const bsrAdminDb = testEnv.authenticatedContext("bsr_admin_only", { email: "bsradmin@example.com" }).firestore();
+  const fatsaMgrDb = testEnv.authenticatedContext("fatsa_mgr", { email: "fk@example.com", email_verified: true }).firestore();
+  const studentADb = testEnv.authenticatedContext("student_a", { email: "sa@example.com", email_verified: true }).firestore();
+  const bsrAdminDb = testEnv.authenticatedContext("bsr_admin_only", { email: "filim3290@gmail.com", email_verified: true }).firestore();
 
   // Active member leaving team can sync memberCount down BEFORE deleting own membership,
   // but cannot alter name/status/logoUrl.
@@ -873,5 +940,236 @@ test("Active member leaving updates memberCount, team manager can update logoUrl
 
   // Fatsa team manager can delete their non-main team
   await assertSucceeds(fatsaMgrDb.collection("teams").doc("team_fatsa").delete());
+});
+
+test("Founder can suspend, mark under_review, and resume teams; blocked teams deny workspace writes while allowing appeals", async () => {
+  const created = new Date(Date.now() - 5000);
+  await testEnv.withSecurityRulesDisabled(async (ctx) => {
+    const db = ctx.firestore();
+    await db.collection("teams").doc("blacksea_robotics").set({
+      name: "BlackSea Robotics",
+      shortCode: "BSR",
+      competition: "TEKNOFEST",
+      schoolName: "Ünye Fen Lisesi",
+      city: "Ordu",
+      description: "Ana takım",
+      managerName: "Platform Yöneticisi",
+      managerContact: "filim3290@gmail.com",
+      founderId: "founder_u",
+      founderEmail: "filim3290@gmail.com",
+      status: "approved",
+      isMainTeam: true,
+      memberCount: 2,
+      createdAt: created,
+      updatedAt: created
+    });
+    await db.collection("teams").doc("team_fatsa").set({
+      name: "Fatsa Robotik",
+      shortCode: "FATSA",
+      competition: "TEKNOFEST",
+      schoolName: "Fatsa Fen Lisesi",
+      city: "Ordu",
+      description: "Fatsa ekibi",
+      managerName: "Fatsa Yetkili",
+      managerContact: "fk@example.com",
+      founderId: "fatsa_mgr",
+      founderEmail: "fk@example.com",
+      status: "approved",
+      isMainTeam: false,
+      memberCount: 2,
+      createdAt: created,
+      updatedAt: created
+    });
+    await db.collection("team_memberships").doc("team_fatsa_fatsa_mgr").set({
+      teamId: "team_fatsa",
+      userId: "fatsa_mgr",
+      userName: "Fatsa Yetkili",
+      userEmail: "fk@example.com",
+      subTeam: "Genel Yönetim",
+      role: "Yetkili Öğretmen",
+      roles: ["Yetkili Öğretmen"],
+      status: "active",
+      isTeamAdmin: true,
+      createdAt: created,
+      updatedAt: created
+    });
+    await db.collection("team_memberships").doc("team_fatsa_student_a").set({
+      teamId: "team_fatsa",
+      userId: "student_a",
+      userName: "Öğrenci A",
+      userEmail: "sa@example.com",
+      subTeam: "Yazılım Ekibi",
+      role: "Yazılım Üyesi",
+      roles: ["Yazılım Üyesi"],
+      status: "active",
+      isTeamAdmin: false,
+      createdAt: created,
+      updatedAt: created
+    });
+    await db.collection("team_memberships").doc("blacksea_robotics_bsr_teacher").set({
+      teamId: "blacksea_robotics",
+      userId: "bsr_teacher",
+      userName: "BSR Öğretmen",
+      userEmail: "bsrteacher@example.com",
+      subTeam: "Genel Yönetim",
+      role: "Yetkili Öğretmen",
+      roles: ["Yetkili Öğretmen"],
+      status: "active",
+      isTeamAdmin: true,
+      createdAt: created,
+      updatedAt: created
+    });
+  });
+
+  const founderDb = testEnv.authenticatedContext("founder_u", { email: "filim3290@gmail.com", email_verified: true }).firestore();
+  const bsrTeacherDb = testEnv.authenticatedContext("bsr_teacher", { email: "bsrteacher@example.com", email_verified: true }).firestore();
+  const fatsaMgrDb = testEnv.authenticatedContext("fatsa_mgr", { email: "fk@example.com", email_verified: true }).firestore();
+  const studentADb = testEnv.authenticatedContext("student_a", { email: "sa@example.com", email_verified: true }).firestore();
+
+  // Main blacksea_robotics team cannot be suspended even by founder
+  await assertFails(
+    founderDb.collection("teams").doc("blacksea_robotics").update({
+      status: "suspended",
+      updatedAt: new Date(Date.now() - 1000)
+    })
+  );
+
+  // Non-founder Yetkili Öğretmen CANNOT suspend or place other teams under review, and cannot write app_config
+  await assertFails(
+    bsrTeacherDb.collection("teams").doc("team_fatsa").update({
+      status: "suspended",
+      moderationReason: "Yetkisiz işlem",
+      updatedAt: new Date(Date.now() - 1000)
+    })
+  );
+  await assertFails(
+    bsrTeacherDb.collection("app_config").doc("latest_release").set({ versionCode: 99 })
+  );
+
+  // Founder suspends team_fatsa with moderationReason and notifies team
+  await assertSucceeds(
+    founderDb.collection("teams").doc("team_fatsa").update({
+      status: "suspended",
+      moderationReason: "Güvenlik incelemesi sebebiyle geçici durdurma.",
+      reviewedBy: "founder_u",
+      appealStatus: "",
+      updatedAt: new Date(Date.now() - 1000)
+    })
+  );
+  await assertSucceeds(
+    founderDb.collection("notifications").doc("notif_susp_1").set({
+      teamId: "team_fatsa",
+      recipientUserId: "all",
+      type: "team_suspended",
+      targetId: "team_fatsa",
+      senderId: "founder_u",
+      title: "Fatsa Robotik Çalışma Alanı Durduruldu",
+      message: "Güvenlik incelemesi",
+      isRead: false,
+      createdAt: new Date(Date.now() - 1000)
+    })
+  );
+
+  // Blocked team members CAN read their team document to see warning + moderationReason
+  await assertSucceeds(studentADb.collection("teams").doc("team_fatsa").get());
+
+  // Blocked team members and Yetkili Öğretmen CANNOT post messages/ideas/files/tasks/announcements
+  await assertFails(
+    studentADb.collection("teams").doc("team_fatsa").collection("rooms").doc("general").collection("messages").doc("msg_blocked").set({
+      roomId: "general",
+      senderId: "student_a",
+      senderName: "Öğrenci A",
+      text: "Durdurulmuş odada mesaj",
+      isPinned: false,
+      createdAt: new Date(Date.now() - 1000),
+      updatedAt: new Date(Date.now() - 1000)
+    })
+  );
+  await assertFails(
+    fatsaMgrDb.collection("teams").doc("team_fatsa").collection("tasks").doc("task_blocked").set({
+      teamId: "team_fatsa",
+      title: "Bloklu görev",
+      subTeam: "Yazılım Ekibi",
+      createdById: "fatsa_mgr",
+      createdByName: "Fatsa Yetkili",
+      status: "todo",
+      createdAt: new Date(Date.now() - 1000),
+      updatedAt: new Date(Date.now() - 1000)
+    })
+  );
+
+  // Blocked team member/leader CANNOT self-restore status="approved", but CAN submit appeal + team_appeal alert
+  await assertFails(
+    fatsaMgrDb.collection("teams").doc("team_fatsa").update({
+      status: "approved",
+      updatedAt: new Date(Date.now() - 500)
+    })
+  );
+  await assertSucceeds(
+    fatsaMgrDb.collection("teams").doc("team_fatsa").update({
+      appealText: "Eksik belgelerimizi tamamladık ve gerekli düzenlemeleri yaptık.",
+      appealStatus: "pending",
+      appealByUserId: "fatsa_mgr",
+      appealByName: "Fatsa Yetkili",
+      appealSubmittedAt: new Date(Date.now() - 500),
+      updatedAt: new Date(Date.now() - 500)
+    })
+  );
+  await assertSucceeds(
+    fatsaMgrDb.collection("notifications").doc("notif_appeal_1").set({
+      teamId: "platform_admin",
+      recipientUserId: "platform_admins",
+      type: "team_appeal",
+      targetId: "team_fatsa",
+      senderId: "fatsa_mgr",
+      title: "Takım İtirazı: Fatsa Robotik",
+      message: "Düzenleme yapıldı.",
+      isRead: false,
+      createdAt: new Date(Date.now() - 500)
+    })
+  );
+
+  // Founder moves team to under_review, then resumes to approved -> workspace writes succeed again
+  await assertSucceeds(
+    founderDb.collection("teams").doc("team_fatsa").update({
+      status: "under_review",
+      moderationReason: "İtirazınız inceleniyor.",
+      updatedAt: new Date(Date.now() - 300)
+    })
+  );
+  await assertFails(
+    studentADb.collection("teams").doc("team_fatsa").collection("rooms").doc("general").collection("messages").doc("msg_review").set({
+      roomId: "general",
+      senderId: "student_a",
+      senderName: "Öğrenci A",
+      text: "İnceleme sırasında mesaj",
+      isPinned: false,
+      createdAt: new Date(Date.now() - 300),
+      updatedAt: new Date(Date.now() - 300)
+    })
+  );
+
+  await assertSucceeds(
+    founderDb.collection("teams").doc("team_fatsa").update({
+      status: "approved",
+      moderationReason: "",
+      appealText: "",
+      appealStatus: "",
+      appealByUserId: "",
+      appealByName: "",
+      updatedAt: new Date(Date.now() - 100)
+    })
+  );
+  await assertSucceeds(
+    studentADb.collection("teams").doc("team_fatsa").collection("rooms").doc("general").collection("messages").doc("msg_ok").set({
+      roomId: "general",
+      senderId: "student_a",
+      senderName: "Öğrenci A",
+      text: "Takım açıldı!",
+      isPinned: false,
+      createdAt: new Date(Date.now() - 100),
+      updatedAt: new Date(Date.now() - 100)
+    })
+  );
 });
 

@@ -56,7 +56,6 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.ScrollableTabRow
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -88,6 +87,7 @@ import com.example.model.TeamInfo
 import com.example.model.TeamMembership
 import com.example.model.TeamType
 import com.example.model.UserProfile
+import com.example.model.UserRole
 import com.example.model.UserStatus
 import com.example.ui.components.AdminSupportTab
 import com.example.ui.components.RoleBadge
@@ -95,7 +95,6 @@ import com.example.ui.components.TeamBadge
 import com.example.ui.theme.ElectricBlue
 import com.example.ui.theme.PhoenixAmber
 import com.example.ui.theme.blackseaColors
-import com.example.util.AppMessages
 import com.example.util.sanitizeUserErrorMessage
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.flowOf
@@ -109,8 +108,7 @@ enum class AdminSection(val key: String, val label: String) {
     TEAM_INFO("team_info", "Takım Bilgileri"),
     SUPPORT("support", "Destek"),
     TEAM_APPLICATIONS("team_applications", "Takım Başvuruları"),
-    PLATFORM_TEAMS("platform_teams", "Platform Takımları"),
-    UPDATES("updates", "Uygulama Güncellemesi")
+    PLATFORM_TEAMS("platform_teams", "Platform Takımları")
 }
 
 @OptIn(ExperimentalLayoutApi::class)
@@ -120,8 +118,10 @@ fun AdminScreen(
     currentUserProfile: UserProfile?,
     activeTeam: TeamInfo = TeamInfo.mainBlackseaTeam(),
     isPlatformAdmin: Boolean = false,
+    @Suppress("UNUSED_PARAMETER")
     updateManager: com.example.update.AppUpdateManager? = null,
     initialSectionKey: String = "members",
+    @Suppress("UNUSED_PARAMETER")
     onShowUpdateDialog: (com.example.update.AppReleaseInfo) -> Unit = {},
     onTeamDeleted: () -> Unit = {},
     modifier: Modifier = Modifier
@@ -135,7 +135,9 @@ fun AdminScreen(
 
     val teamMemberships by repository.observeTeamMemberships(activeTeamId).collectAsState(initial = emptyList())
     val announcements by repository.observeAnnouncements(activeTeamId).collectAsState(initial = emptyList())
-    val supportTickets by repository.observeAllSupportTickets(activeTeamId).collectAsState(initial = emptyList())
+    val supportTickets by remember(isBsrPlatformAdminSession, activeTeamId) {
+        if (isBsrPlatformAdminSession) repository.observeAllSupportTickets(activeTeamId) else flowOf(emptyList())
+    }.collectAsState(initial = emptyList())
 
     val pendingTeamApplications by remember(isBsrPlatformAdminSession) {
         if (isBsrPlatformAdminSession) repository.observePendingTeamApplications() else flowOf(emptyList())
@@ -156,7 +158,7 @@ fun AdminScreen(
     fun isProtectedMember(member: TeamMembership): Boolean {
         val targetId = member.userId
         return (currentUid.isNotBlank() && targetId == currentUid) ||
-            (activeTeamId == PLATFORM_MAIN_TEAM_ID && member.userEmail.equals(PLATFORM_FOUNDER_EMAIL, ignoreCase = true))
+            (activeTeamId == PLATFORM_MAIN_TEAM_ID && member.userEmail.trim().equals(PLATFORM_FOUNDER_EMAIL, ignoreCase = true))
     }
 
     val sections = remember(isBsrPlatformAdminSession) {
@@ -166,11 +168,10 @@ fun AdminScreen(
             add(AdminSection.BROADCAST)
             add(AdminSection.ANNOUNCEMENTS)
             add(AdminSection.TEAM_INFO)
-            add(AdminSection.SUPPORT)
             if (isBsrPlatformAdminSession) {
+                add(AdminSection.SUPPORT)
                 add(AdminSection.TEAM_APPLICATIONS)
                 add(AdminSection.PLATFORM_TEAMS)
-                add(AdminSection.UPDATES)
             }
         }
     }
@@ -199,7 +200,6 @@ fun AdminScreen(
     var announcementToDelete by remember { mutableStateOf<TeamAnnouncement?>(null) }
     var isPerformingUserAction by remember { mutableStateOf(false) }
     var showNewAnnouncementDialog by remember { mutableStateOf(false) }
-    var showBroadcastUpdateDialog by remember { mutableStateOf(false) }
 
     Column(
         modifier = modifier
@@ -224,7 +224,7 @@ fun AdminScreen(
                         modifier = Modifier.size(24.dp)
                     )
                     Text(
-                        text = "${activeTeam.name} • Yönetici Paneli",
+                        text = "${activeTeam.name} • ${if (isPlatformAdmin) "Yönetici Paneli" else "Yetkili Öğretmen Paneli"}",
                         fontSize = 17.sp,
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.onSurface,
@@ -235,9 +235,9 @@ fun AdminScreen(
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
                     text = if (isBsrPlatformAdminSession) {
-                        "Takım üyelerini, duyuruları ve yeni takım oluşturma başvurularını buradan yönetebilirsiniz."
+                        "Takım üyelerini, destek taleplerini, takım başvurularını ve tüm platform takımlarını yönetebilirsiniz."
                     } else {
-                        "${activeTeam.name} üyelerini, alt ekiplerini, duyurularını ve destek taleplerini yönetin."
+                        "${activeTeam.name} üyelerini, alt ekiplerini, takım bilgilerini ve duyurularını yönetin."
                     },
                     fontSize = 12.sp,
                     color = ext.textSecondary
@@ -790,7 +790,7 @@ fun AdminScreen(
                                                 repository.sendBroadcastNotification(
                                                     title = broadcastTitle.trim(),
                                                     message = broadcastMessage.trim(),
-                                                    senderName = currentUserProfile?.getFullName() ?: "Yönetici",
+                                                    senderName = currentUserProfile?.getFullName() ?: if (isPlatformAdmin) "Yönetici" else "Yetkili Öğretmen",
                                                     teamId = activeTeamId,
                                                     teamName = activeTeam.name
                                                 )
@@ -906,210 +906,9 @@ fun AdminScreen(
 
             AdminSection.PLATFORM_TEAMS -> {
                 PlatformTeamsOverviewTab(
-                    teams = allPlatformTeams
+                    teams = allPlatformTeams,
+                    repository = repository
                 )
-            }
-
-            AdminSection.UPDATES -> {
-                val mgr = updateManager ?: remember { com.example.update.AppUpdateManager(context) }
-                var latestRelease by remember { mutableStateOf<com.example.update.AppReleaseInfo?>(null) }
-                var isChecking by remember { mutableStateOf(false) }
-                var checkStatusMessage by remember { mutableStateOf<String?>(null) }
-
-                LaunchedEffect(Unit) {
-                    isChecking = true
-                    val res = mgr.checkLatestReleaseDetailed(forceRefresh = false)
-                    isChecking = false
-                    when (res) {
-                        is com.example.update.UpdateCheckResult.UpdateAvailable -> {
-                            latestRelease = res.release
-                            checkStatusMessage = "Yeni sürüm bulundu: v${res.release.versionName}"
-                        }
-                        is com.example.update.UpdateCheckResult.UpToDate -> {
-                            latestRelease = null
-                            checkStatusMessage = "Uygulamanız güncel (v${res.currentVersionName})"
-                            com.example.notifications.TeamNotificationDispatcher.clearPendingUpdateNotification(context)
-                        }
-                        is com.example.update.UpdateCheckResult.NoReleaseFound -> {
-                            latestRelease = null
-                            checkStatusMessage = "Uygulamanız güncel."
-                            com.example.notifications.TeamNotificationDispatcher.clearPendingUpdateNotification(context)
-                        }
-                        is com.example.update.UpdateCheckResult.ApkAssetMissing,
-                        is com.example.update.UpdateCheckResult.NetworkError,
-                        is com.example.update.UpdateCheckResult.ApiError -> {
-                            checkStatusMessage = AppMessages.UPDATE_CHECK_ERROR
-                        }
-                    }
-                }
-
-                LazyColumn(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(horizontal = 16.dp),
-                    contentPadding = PaddingValues(vertical = 16.dp),
-                    verticalArrangement = Arrangement.spacedBy(14.dp)
-                ) {
-                    item {
-                        Card(
-                            modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(14.dp),
-                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                            border = BorderStroke(1.dp, ext.cardBorder),
-                            elevation = CardDefaults.cardElevation(defaultElevation = if (ext.isDark) 2.dp else 1.dp)
-                        ) {
-                            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Text("Mevcut Uygulama Sürümü", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurface)
-                                    Surface(shape = RoundedCornerShape(6.dp), color = ext.accentBlueContainer) {
-                                        Text(
-                                            text = "v${mgr.getCurrentVersionName()}",
-                                            color = ext.accentBlue,
-                                            fontWeight = FontWeight.Bold,
-                                            fontSize = 12.sp,
-                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                                        )
-                                    }
-                                }
-
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Text("Güncelleme Durumu", fontSize = 13.sp, color = ext.textSecondary)
-                                    Text(
-                                        text = checkStatusMessage ?: "Kontrol ediliyor...",
-                                        fontSize = 12.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        color = if (latestRelease != null) ext.emeraldText else ext.textMuted
-                                    )
-                                }
-
-                                Spacer(modifier = Modifier.height(4.dp))
-
-                                Button(
-                                    onClick = {
-                                        isChecking = true
-                                        checkStatusMessage = "Kontrol ediliyor..."
-                                        scope.launch {
-                                            val res = mgr.checkLatestReleaseDetailed(forceRefresh = true)
-                                            isChecking = false
-                                            when (res) {
-                                                is com.example.update.UpdateCheckResult.UpdateAvailable -> {
-                                                    latestRelease = res.release
-                                                    checkStatusMessage = "Yeni sürüm bulundu: v${res.release.versionName}"
-                                                    onShowUpdateDialog(res.release)
-                                                }
-                                                is com.example.update.UpdateCheckResult.UpToDate -> {
-                                                    latestRelease = null
-                                                    checkStatusMessage = "Uygulamanız güncel (v${res.currentVersionName})"
-                                                    com.example.notifications.TeamNotificationDispatcher.clearPendingUpdateNotification(context)
-                                                    Toast.makeText(context, "Uygulamanız güncel (v${res.currentVersionName})", Toast.LENGTH_SHORT).show()
-                                                }
-                                                is com.example.update.UpdateCheckResult.NoReleaseFound -> {
-                                                    latestRelease = null
-                                                    checkStatusMessage = "Uygulamanız güncel."
-                                                    com.example.notifications.TeamNotificationDispatcher.clearPendingUpdateNotification(context)
-                                                    Toast.makeText(context, "Uygulamanız güncel.", Toast.LENGTH_SHORT).show()
-                                                }
-                                                is com.example.update.UpdateCheckResult.ApkAssetMissing,
-                                                is com.example.update.UpdateCheckResult.NetworkError,
-                                                is com.example.update.UpdateCheckResult.ApiError -> {
-                                                    checkStatusMessage = AppMessages.UPDATE_CHECK_ERROR
-                                                    Toast.makeText(context, AppMessages.UPDATE_CHECK_ERROR, Toast.LENGTH_LONG).show()
-                                                }
-                                            }
-                                        }
-                                    },
-                                    enabled = !isChecking,
-                                    modifier = Modifier.fillMaxWidth().height(44.dp),
-                                    shape = RoundedCornerShape(10.dp),
-                                    colors = ButtonDefaults.buttonColors(containerColor = ext.accentBlueSolid, contentColor = Color.White)
-                                ) {
-                                    if (isChecking) {
-                                        CircularProgressIndicator(modifier = Modifier.size(18.dp), color = Color.White, strokeWidth = 2.dp)
-                                    } else {
-                                        Text("Güncellemeleri Kontrol Et", fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                                    }
-                                }
-
-                                Button(
-                                    onClick = { showBroadcastUpdateDialog = true },
-                                    modifier = Modifier.fillMaxWidth().height(42.dp),
-                                    shape = RoundedCornerShape(10.dp),
-                                    colors = ButtonDefaults.buttonColors(containerColor = PhoenixAmber, contentColor = Color.Black)
-                                ) {
-                                    Text("Yeni Sürüm Duyurusu Gönder", fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                                }
-                            }
-                        }
-                    }
-
-                    if (latestRelease != null) {
-                        item {
-                            val rel = latestRelease!!
-                            Card(
-                                modifier = Modifier.fillMaxWidth(),
-                                shape = RoundedCornerShape(14.dp),
-                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                                border = BorderStroke(1.dp, ext.cardBorder),
-                                elevation = CardDefaults.cardElevation(defaultElevation = if (ext.isDark) 2.dp else 1.dp)
-                            ) {
-                                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Text(
-                                            text = "Yeni sürüm bulundu: v${rel.versionName}",
-                                            fontWeight = FontWeight.Bold,
-                                            fontSize = 15.sp,
-                                            color = MaterialTheme.colorScheme.onSurface
-                                        )
-                                        Surface(
-                                            shape = RoundedCornerShape(6.dp),
-                                            color = if (rel.isForceUpdate) ext.dangerSolid else ext.emeraldSolid
-                                        ) {
-                                            Text(
-                                                text = if (rel.isForceUpdate) "ZORUNLU" else "YENİ",
-                                                color = Color.White,
-                                                fontSize = 10.sp,
-                                                fontWeight = FontWeight.Bold,
-                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                                            )
-                                        }
-                                    }
-
-                                    Surface(
-                                        shape = RoundedCornerShape(8.dp),
-                                        color = MaterialTheme.colorScheme.surfaceVariant,
-                                        border = BorderStroke(1.dp, ext.cardBorder),
-                                        modifier = Modifier.fillMaxWidth()
-                                    ) {
-                                        Text(text = rel.changelog, fontSize = 12.sp, color = ext.textSecondary, modifier = Modifier.padding(10.dp))
-                                    }
-
-                                    Spacer(modifier = Modifier.height(4.dp))
-
-                                    Button(
-                                        onClick = { onShowUpdateDialog(rel) },
-                                        modifier = Modifier.fillMaxWidth().height(42.dp),
-                                        shape = RoundedCornerShape(10.dp),
-                                        colors = ButtonDefaults.buttonColors(containerColor = ext.emeraldSolid, contentColor = Color.White)
-                                    ) {
-                                        Text("Güncelle", fontWeight = FontWeight.Bold)
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
             }
         }
     }
@@ -1119,6 +918,7 @@ fun AdminScreen(
         val member = memberToEdit!!
         EditMemberRolesDialog(
             member = member,
+            isPlatformAdmin = isPlatformAdmin,
             onDismiss = { memberToEdit = null },
             onSave = { newSubTeam, updatedRoles ->
                 scope.launch {
@@ -1150,7 +950,7 @@ fun AdminScreen(
                         repository.addAnnouncement(
                             title = title,
                             content = content,
-                            authorName = currentUserProfile?.getFullName() ?: "Yönetici",
+                            authorName = currentUserProfile?.getFullName() ?: if (isPlatformAdmin) "Yönetici" else "Yetkili Öğretmen",
                             isPinned = isPinned,
                             teamId = activeTeamId,
                             teamName = activeTeam.name
@@ -1162,115 +962,6 @@ fun AdminScreen(
                     } catch (e: Exception) {
                         Toast.makeText(context, sanitizeUserErrorMessage(e), Toast.LENGTH_SHORT).show()
                     }
-                }
-            }
-        )
-    }
-
-    // Broadcast Update Dialog (Platform Admin Only)
-    if (showBroadcastUpdateDialog) {
-        val mgr = updateManager ?: remember { com.example.update.AppUpdateManager(context) }
-        val currentVerName = remember { mgr.getCurrentVersionName() }
-        val nextVerCode = remember { mgr.getCurrentVersionCode() + 1 }
-        var vName by remember { mutableStateOf(currentVerName) }
-        var vTitle by remember { mutableStateOf("Blacksea Robotics v$currentVerName Yayında") }
-        var vChangelog by remember { mutableStateOf("• Çoklu takım platformu desteği eklendi\n• Otomatik uygulama güncelleme sistemi geliştirildi\n• Kararlılık iyileştirmeleri") }
-        var isForce by remember { mutableStateOf(false) }
-        var isBroadcasting by remember { mutableStateOf(false) }
-
-        AlertDialog(
-            onDismissRequest = { if (!isBroadcasting) showBroadcastUpdateDialog = false },
-            title = { Text("Yeni Sürüm Duyurusu Gönder", fontWeight = FontWeight.Bold, fontSize = 16.sp) },
-            text = {
-                Column(
-                    modifier = Modifier.verticalScroll(rememberScrollState()),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    Text("Tüm platform üyelerine yeni sürüm bildirimini ve değişiklik notlarını iletir.", fontSize = 12.sp, color = ext.textSecondary)
-
-                    OutlinedTextField(
-                        value = vName,
-                        onValueChange = { vName = it },
-                        label = { Text("Sürüm") },
-                        placeholder = { Text("1.1.0") },
-                        modifier = Modifier.fillMaxWidth()
-                    )
-
-                    OutlinedTextField(
-                        value = vTitle,
-                        onValueChange = { vTitle = it },
-                        label = { Text("Güncelleme Başlığı") },
-                        modifier = Modifier.fillMaxWidth()
-                    )
-
-                    OutlinedTextField(
-                        value = vChangelog,
-                        onValueChange = { vChangelog = it },
-                        label = { Text("Yenilikler / Değişiklikler") },
-                        minLines = 3,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text("Zorunlu Güncelleme", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                        Switch(checked = isForce, onCheckedChange = { isForce = it })
-                    }
-                }
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        val cleanVName = vName.trim()
-                        val resolvedUrl = mgr.normalizeDownloadUrl(null, cleanVName)
-                        isBroadcasting = true
-                        scope.launch {
-                            val res = updateManager?.broadcastUpdateToTeam(
-                                versionName = cleanVName,
-                                versionCode = nextVerCode,
-                                title = vTitle.trim(),
-                                changelog = vChangelog.trim(),
-                                apkDownloadUrl = resolvedUrl,
-                                isForceUpdate = isForce
-                            )
-                            isBroadcasting = false
-                            showBroadcastUpdateDialog = false
-                            if (res != null && res.isSuccess) {
-                                Toast.makeText(context, "Yeni sürüm duyurusu tüm üyelere gönderildi!", Toast.LENGTH_LONG).show()
-                                val rel = com.example.update.AppReleaseInfo(
-                                    tagName = "v$cleanVName",
-                                    versionName = cleanVName,
-                                    versionCode = nextVerCode,
-                                    title = vTitle.trim(),
-                                    changelog = vChangelog.trim(),
-                                    publishedAt = "Bugün",
-                                    apkDownloadUrl = resolvedUrl,
-                                    apkFileName = "BlackseaRobotics-v$cleanVName.apk",
-                                    apkSize = 20 * 1024 * 1024L,
-                                    isForceUpdate = isForce
-                                )
-                                onShowUpdateDialog(rel)
-                            } else {
-                                Toast.makeText(context, AppMessages.GENERIC_ERROR, Toast.LENGTH_SHORT).show()
-                            }
-                        }
-                    },
-                    enabled = !isBroadcasting && vName.isNotBlank(),
-                    colors = ButtonDefaults.buttonColors(containerColor = PhoenixAmber, contentColor = Color.Black)
-                ) {
-                    if (isBroadcasting) {
-                        CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.Black)
-                    } else {
-                        Text("Yayınla ve Bildir", fontWeight = FontWeight.Bold)
-                    }
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showBroadcastUpdateDialog = false }, enabled = !isBroadcasting) {
-                    Text("İptal")
                 }
             }
         )
@@ -1428,9 +1119,11 @@ fun AdminScreen(
 @Composable
 fun EditMemberRolesDialog(
     member: TeamMembership,
+    isPlatformAdmin: Boolean = false,
     onDismiss: () -> Unit,
     onSave: (newTeam: String, updatedRoles: List<String>) -> Unit
 ) {
+    val context = LocalContext.current
     var selectedTeam by remember { mutableStateOf(member.subTeam.ifBlank { TeamType.GENERAL.displayName }) }
     var currentRoles by remember { mutableStateOf(member.roles.ifEmpty { listOf(member.role.ifBlank { "Takım Üyesi" }) }) }
     var customRoleInput by remember { mutableStateOf("") }
@@ -1444,20 +1137,14 @@ fun EditMemberRolesDialog(
         TeamType.PR.displayName
     )
 
-    val quickRoles = listOf(
-        "Yetkili Öğretmen",
-        "Takım Kaptanı",
-        "Takım Yardımcısı",
-        "Yönetici",
-        "Yazılım Üyesi",
-        "Mekanik Üyesi",
-        "PR Üyesi",
-        "Genel Yönetim Üyesi",
-        "Elektronik Sorumlusu",
-        "Tasarım Sorumlusu",
-        "Sosyal Medya Sorumlusu",
-        "Proje Sorumlusu"
-    )
+    val quickRoles = remember(isPlatformAdmin) {
+        val managementRoles = if (isPlatformAdmin) {
+            PredefinedRoles.MANAGEMENT_ROLES
+        } else {
+            PredefinedRoles.ASSIGNABLE_MANAGEMENT_ROLES
+        }
+        managementRoles + PredefinedRoles.TEAM_ROLES + PredefinedRoles.SPECIAL_ROLES
+    }
 
     val ext = MaterialTheme.blackseaColors
 
@@ -1562,7 +1249,13 @@ fun EditMemberRolesDialog(
                     IconButton(
                         onClick = {
                             val trimmed = customRoleInput.trim()
-                            if (trimmed.isNotBlank() && !currentRoles.contains(trimmed)) {
+                            if (!isPlatformAdmin && trimmed.equals(UserRole.ADMIN.displayName, ignoreCase = true)) {
+                                Toast.makeText(
+                                    context,
+                                    "'Yönetici' rolü yalnızca sistem yöneticisi tarafından atanabilir.",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            } else if (trimmed.isNotBlank() && !currentRoles.contains(trimmed)) {
                                 currentRoles = currentRoles + trimmed
                                 customRoleInput = ""
                             }

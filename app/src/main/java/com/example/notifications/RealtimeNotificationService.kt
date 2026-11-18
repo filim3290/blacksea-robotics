@@ -1,6 +1,10 @@
 package com.example.notifications
 
 import android.content.Context
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import com.example.data.BlackseaRepository
 import com.example.data.UserProfileLoadState
 import com.example.model.PLATFORM_FOUNDER_EMAIL
@@ -20,13 +24,17 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Always-on process-level notification & update listener coordinator.
@@ -39,15 +47,68 @@ object RealtimeNotificationService {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var mainJob: Job? = null
+    private val networkObserverRegistered = AtomicBoolean(false)
 
     private val _isRunning = MutableStateFlow(false)
     val isRunning: StateFlow<Boolean> = _isRunning.asStateFlow()
 
+    private data class ListenerConfigKey(
+        val uid: String,
+        val isPlatformAdmin: Boolean,
+        val activeTeamsSig: String,
+        val joinMs: Long
+    )
+
+    private data class ListenerConfig(
+        val key: ListenerConfigKey,
+        val membershipsByTeam: Map<String, TeamMembership>,
+        val stopSession: Boolean = false
+    ) {
+        override fun equals(other: Any?): Boolean {
+            if (this === other) return true
+            if (other !is ListenerConfig) return false
+            return key == other.key && stopSession == other.stopSession
+        }
+
+        override fun hashCode(): Int {
+            var result = key.hashCode()
+            result = 31 * result + stopSession.hashCode()
+            return result
+        }
+    }
+
     @Suppress("UNUSED_PARAMETER")
     fun isContinuousSyncEnabled(context: Context): Boolean = true
 
+    fun registerNetworkObserver(context: Context) {
+        val appCtx = context.applicationContext
+        if (!networkObserverRegistered.compareAndSet(false, true)) return
+        try {
+            val cm = appCtx.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            if (cm == null) {
+                networkObserverRegistered.set(false)
+                return
+            }
+            val request = NetworkRequest.Builder()
+                .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                .build()
+            cm.registerNetworkCallback(request, object : ConnectivityManager.NetworkCallback() {
+                override fun onAvailable(network: Network) {
+                    if (Firebase.auth.currentUser != null) {
+                        startIfEnabled(appCtx)
+                        BackgroundNotificationWorker.triggerImmediateSync(appCtx)
+                    }
+                }
+            })
+        } catch (e: Exception) {
+            networkObserverRegistered.set(false)
+            logDebugWarn(TAG, "Network observer registration skipped", e)
+        }
+    }
+
     fun startIfEnabled(context: Context) {
         val appCtx = context.applicationContext
+        registerNetworkObserver(appCtx)
         if (Firebase.auth.currentUser == null) return
         synchronized(this) {
             if (mainJob?.isActive == true) {
@@ -73,22 +134,29 @@ object RealtimeNotificationService {
                             combine(
                                 repository.observeUserProfileState(uid),
                                 repository.observeMyMemberships(uid)
-                            ) { profileState, memberships ->
-                                profileState to memberships
-                            }.collectLatest { (state, memberships) ->
+                            ) { state, memberships ->
                                 when (state) {
-                                    is UserProfileLoadState.Loading -> Unit
+                                    is UserProfileLoadState.Loading -> null
                                     is UserProfileLoadState.Missing -> {
                                         val isFounderEmail = Firebase.auth.currentUser?.email
+                                            ?.trim()
                                             .equals(PLATFORM_FOUNDER_EMAIL, ignoreCase = true)
                                         if (!isFounderEmail) {
-                                            stop(appCtx)
+                                            ListenerConfig(
+                                                key = ListenerConfigKey(uid, false, "", 0L),
+                                                membershipsByTeam = emptyMap(),
+                                                stopSession = true
+                                            )
+                                        } else {
+                                            null
                                         }
                                     }
                                     is UserProfileLoadState.Found -> {
                                         val profile = state.profile
                                         val isPlatformAdmin = profile.isPlatformManagerAccount() ||
-                                            Firebase.auth.currentUser?.email.equals(PLATFORM_FOUNDER_EMAIL, ignoreCase = true)
+                                            Firebase.auth.currentUser?.email
+                                                ?.trim()
+                                                .equals(PLATFORM_FOUNDER_EMAIL, ignoreCase = true)
 
                                         val membershipsByTeam = memberships
                                             .filter { it.teamId.isNotBlank() }
@@ -126,38 +194,70 @@ object RealtimeNotificationService {
                                             TeamNotificationDispatcher.getUserJoinTimestampMs(appCtx, uid)
                                         }
 
-                                        if (!TeamNotificationDispatcher.hasSeededBaseline(appCtx, uid)) {
-                                            val initialSnapshot = repository.fetchNotificationsOnceForUser(
-                                                userId = uid,
-                                                membershipsByTeam = membershipsByTeam,
-                                                isPlatformAdmin = isPlatformAdmin,
-                                                userCreatedAtMs = effectiveJoinMs
-                                            )
-                                            if (initialSnapshot != null) {
-                                                TeamNotificationDispatcher.syncBaselineSilently(
-                                                    context = appCtx,
-                                                    userId = uid,
-                                                    notifications = initialSnapshot
-                                                )
+                                        val activeSig = membershipsByTeam.values
+                                            .filter { it.isActive() }
+                                            .sortedBy { it.teamId }
+                                            .joinToString("|") { m ->
+                                                "${m.teamId}:${m.subTeam}:${m.isManagerInTeam()}:${m.role}:${m.roles.joinToString(",")}"
                                             }
-                                        }
 
-                                        repository.observeNotificationsForUser(
-                                            userId = uid,
-                                            membershipsByTeam = membershipsByTeam,
-                                            isPlatformAdmin = isPlatformAdmin,
-                                            userCreatedAtMs = effectiveJoinMs
-                                        ).collect { notifications ->
-                                            TeamNotificationDispatcher.processNotifications(
-                                                context = appCtx,
-                                                userId = uid,
-                                                notifications = notifications,
-                                                userCreatedAtMs = effectiveJoinMs
-                                            )
-                                        }
+                                        ListenerConfig(
+                                            key = ListenerConfigKey(
+                                                uid = uid,
+                                                isPlatformAdmin = isPlatformAdmin,
+                                                activeTeamsSig = activeSig,
+                                                joinMs = effectiveJoinMs
+                                            ),
+                                            membershipsByTeam = membershipsByTeam.toMap(),
+                                            stopSession = false
+                                        )
                                     }
                                 }
                             }
+                                .distinctUntilChanged()
+                                .collectLatest { config ->
+                                    if (config == null) return@collectLatest
+                                    if (config.stopSession) {
+                                        stop(appCtx)
+                                        return@collectLatest
+                                    }
+
+                                    val key = config.key
+                                    if (!TeamNotificationDispatcher.hasSeededBaseline(appCtx, key.uid)) {
+                                        var initialSnapshot: List<com.example.model.TeamNotification>? = null
+                                        for (attempt in 0 until 2) {
+                                            initialSnapshot = repository.fetchNotificationsOnceForUser(
+                                                userId = key.uid,
+                                                membershipsByTeam = config.membershipsByTeam,
+                                                isPlatformAdmin = key.isPlatformAdmin,
+                                                userCreatedAtMs = key.joinMs
+                                            )
+                                            if (initialSnapshot != null) break
+                                            delay(600L)
+                                        }
+                                        if (initialSnapshot != null) {
+                                            TeamNotificationDispatcher.syncBaselineSilently(
+                                                context = appCtx,
+                                                userId = key.uid,
+                                                notifications = initialSnapshot
+                                            )
+                                        }
+                                    }
+
+                                    repository.observeNotificationsForUser(
+                                        userId = key.uid,
+                                        membershipsByTeam = config.membershipsByTeam,
+                                        isPlatformAdmin = key.isPlatformAdmin,
+                                        userCreatedAtMs = key.joinMs
+                                    ).collect { notifications ->
+                                        TeamNotificationDispatcher.processNotifications(
+                                            context = appCtx,
+                                            userId = key.uid,
+                                            notifications = notifications,
+                                            userCreatedAtMs = key.joinMs
+                                        )
+                                    }
+                                }
                         } catch (ce: CancellationException) {
                             throw ce
                         } catch (e: Exception) {

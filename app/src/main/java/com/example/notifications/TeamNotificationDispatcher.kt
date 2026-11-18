@@ -280,7 +280,7 @@ object TeamNotificationDispatcher {
     fun resolveChannelId(type: String): String {
         return when (type.lowercase()) {
             "update" -> CHANNEL_UPDATES
-            "broadcast", "announcement" -> CHANNEL_ANNOUNCEMENTS
+            "broadcast", "announcement", "team_suspended", "team_under_review" -> CHANNEL_ANNOUNCEMENTS
             "message" -> CHANNEL_MESSAGES
             else -> CHANNEL_TEAM
         }
@@ -521,6 +521,7 @@ object TeamNotificationDispatcher {
                             "$teamPrefix${roomDisplayName(roomKey)} • $totalUnreadInRoom yeni mesaj"
                         }
                         val bodyText = latestMsg.message.ifBlank { latestMsg.title.ifBlank { "Yeni mesaj" } }
+                        val eventTimeMs = latestMsg.createdAt?.toDate()?.time ?: System.currentTimeMillis()
                         val builder = NotificationCompat.Builder(appCtx, CHANNEL_MESSAGES)
                             .setSmallIcon(R.drawable.ic_notification)
                             .setContentTitle(titleText)
@@ -528,7 +529,12 @@ object TeamNotificationDispatcher {
                             .setStyle(NotificationCompat.BigTextStyle().bigText(bodyText))
                             .setNumber(totalUnreadInRoom)
                             .setPriority(NotificationCompat.PRIORITY_HIGH)
+                            .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+                            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
                             .setDefaults(NotificationCompat.DEFAULT_ALL)
+                            .setOnlyAlertOnce(false)
+                            .setWhen(eventTimeMs)
+                            .setShowWhen(true)
                             .setContentIntent(pendingIntent)
                             .setAutoCancel(true)
 
@@ -578,13 +584,19 @@ object TeamNotificationDispatcher {
                 ) {
                     "[${notif.teamName}] "
                 } else ""
+                val eventTimeMs = notif.createdAt?.toDate()?.time ?: System.currentTimeMillis()
                 val builder = NotificationCompat.Builder(appCtx, channelId)
                     .setSmallIcon(R.drawable.ic_notification)
                     .setContentTitle("$teamPrefix${notif.title.ifBlank { "BLACKSEA ROBOTICS" }}")
                     .setContentText(bodyText)
                     .setStyle(NotificationCompat.BigTextStyle().bigText(bodyText))
                     .setPriority(NotificationCompat.PRIORITY_HIGH)
+                    .setCategory(NotificationCompat.CATEGORY_STATUS)
+                    .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
                     .setDefaults(NotificationCompat.DEFAULT_ALL)
+                    .setOnlyAlertOnce(false)
+                    .setWhen(eventTimeMs)
+                    .setShowWhen(true)
                     .setContentIntent(pendingIntent)
                     .setAutoCancel(true)
 

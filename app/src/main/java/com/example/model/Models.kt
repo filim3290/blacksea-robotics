@@ -32,6 +32,12 @@ enum class UserRole(val displayName: String) {
 }
 
 object PredefinedRoles {
+    val ASSIGNABLE_MANAGEMENT_ROLES = listOf(
+        "Yetkili Öğretmen",
+        "Takım Kaptanı",
+        "Takım Yardımcısı"
+    )
+
     val MANAGEMENT_ROLES = listOf(
         "Yetkili Öğretmen",
         "Takım Kaptanı",
@@ -114,18 +120,39 @@ enum class UserStatus(val value: String) {
 object TeamStatus {
     const val PENDING = "pending"
     const val APPROVED = "approved"
+    const val SUSPENDED = "suspended"
+    const val UNDER_REVIEW = "under_review"
     const val REJECTED = "rejected"
 
-    val ALL = listOf(PENDING, APPROVED, REJECTED)
+    val ALL = listOf(PENDING, APPROVED, SUSPENDED, UNDER_REVIEW, REJECTED)
 
     fun isApproved(status: String?): Boolean = status.equals(APPROVED, ignoreCase = true)
     fun isPending(status: String?): Boolean = status.equals(PENDING, ignoreCase = true)
+    fun isSuspended(status: String?): Boolean = status.equals(SUSPENDED, ignoreCase = true)
+    fun isUnderReview(status: String?): Boolean = status.equals(UNDER_REVIEW, ignoreCase = true)
     fun isRejected(status: String?): Boolean = status.equals(REJECTED, ignoreCase = true)
+    fun isWorkspaceBlocked(status: String?): Boolean = isSuspended(status) || isUnderReview(status)
 
     fun displayName(status: String?): String = when {
         isApproved(status) -> "Onaylandı"
+        isSuspended(status) -> "Durduruldu"
+        isUnderReview(status) -> "İncelemede"
         isRejected(status) -> "Reddedildi"
         else -> "Onay Bekliyor"
+    }
+}
+
+object TeamAppealStatus {
+    const val NONE = ""
+    const val PENDING = "pending"
+    const val REVIEWED = "reviewed"
+    const val REJECTED = "rejected"
+
+    fun displayName(status: String?): String = when {
+        status.equals(PENDING, ignoreCase = true) -> "İtiraz İnceleniyor"
+        status.equals(REVIEWED, ignoreCase = true) -> "İtiraz Değerlendirildi"
+        status.equals(REJECTED, ignoreCase = true) -> "İtiraz Reddedildi"
+        else -> ""
     }
 }
 
@@ -190,13 +217,22 @@ data class TeamInfo(
     val isMainTeam: Boolean = false,
     val memberCount: Long = 1L,
     val rejectionReason: String = "",
+    val moderationReason: String = "",
     val reviewedBy: String = "",
+    val appealText: String = "",
+    val appealStatus: String = "",
+    val appealByUserId: String = "",
+    val appealByName: String = "",
+    val appealSubmittedAt: Timestamp? = null,
     @ServerTimestamp val createdAt: Timestamp? = null,
     @ServerTimestamp val updatedAt: Timestamp? = null
 ) {
     fun isApproved(): Boolean = TeamStatus.isApproved(status)
     fun isPending(): Boolean = TeamStatus.isPending(status)
+    fun isSuspended(): Boolean = TeamStatus.isSuspended(status)
+    fun isUnderReview(): Boolean = TeamStatus.isUnderReview(status)
     fun isRejected(): Boolean = TeamStatus.isRejected(status)
+    fun isWorkspaceBlocked(): Boolean = TeamStatus.isWorkspaceBlocked(status)
 
     companion object {
         fun mainBlackseaTeam(): TeamInfo = TeamInfo(
@@ -345,19 +381,14 @@ data class UserProfile(
     fun isRevoked(): Boolean = UserStatus.isRevoked(status)
 
     fun isPlatformManagerAccount(): Boolean {
-        return isPlatformAdmin ||
-            email.equals(PLATFORM_FOUNDER_EMAIL, ignoreCase = true) ||
-            (!isTeamContextApplied && isSuperAdmin)
+        return email.trim().equals(PLATFORM_FOUNDER_EMAIL, ignoreCase = true)
     }
 
     fun isManagerAccount(): Boolean {
-        val inPlatformMainContext = activeTeamId.isBlank() || activeTeamId == PLATFORM_MAIN_TEAM_ID
-        return (inPlatformMainContext && isPlatformManagerAccount()) ||
+        return isPlatformManagerAccount() ||
             isSuperAdmin ||
-            role == UserRole.ADMIN.displayName ||
-            roles.any {
-                it in listOf("Yönetici", "Takım Kaptanı", "Yetkili Öğretmen")
-            }
+            role in PredefinedRoles.MANAGEMENT_ROLES ||
+            roles.any { it in PredefinedRoles.MANAGEMENT_ROLES }
     }
 }
 
@@ -369,14 +400,14 @@ fun UserProfile.withTeamContext(
     membership: TeamMembership?
 ): UserProfile {
     if (membership == null) return this
-    val wasPlatformAdmin = isPlatformManagerAccount()
+    val isFounder = isPlatformManagerAccount()
     return copy(
         team = membership.subTeam.ifBlank { team },
         role = membership.role.ifBlank { role },
         roles = membership.roles.ifEmpty { roles },
         status = membership.status.ifBlank { status },
-        isSuperAdmin = membership.isTeamAdmin || (teamId == PLATFORM_MAIN_TEAM_ID && wasPlatformAdmin),
-        isPlatformAdmin = wasPlatformAdmin,
+        isSuperAdmin = membership.isTeamAdmin || (teamId == PLATFORM_MAIN_TEAM_ID && isFounder),
+        isPlatformAdmin = isFounder,
         isTeamContextApplied = true,
         activeTeamId = teamId
     )

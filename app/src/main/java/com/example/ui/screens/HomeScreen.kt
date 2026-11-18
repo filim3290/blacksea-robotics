@@ -199,7 +199,7 @@ fun HomeScreen(
                                         modifier = Modifier.size(16.dp)
                                     )
                                     Text(
-                                        text = "${activeTeam.name} Yönetici Paneli",
+                                        text = "${activeTeam.name} ${if (currentUserProfile?.isPlatformManagerAccount() == true) "Yönetici Paneli" else "Yetkili Öğretmen Paneli"}",
                                         fontSize = 12.sp,
                                         fontWeight = FontWeight.Bold,
                                         color = ext.adminRedText

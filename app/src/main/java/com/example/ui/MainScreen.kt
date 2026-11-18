@@ -50,9 +50,12 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.material.icons.filled.Gavel
 import androidx.compose.material.icons.filled.Lightbulb
 import androidx.compose.material.icons.filled.Notifications
+import androidx.compose.material.icons.filled.PauseCircle
 import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.ReportProblem
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.SupportAgent
 import androidx.compose.material.icons.filled.SystemUpdate
@@ -112,6 +115,7 @@ import com.example.model.UserStatus
 import com.example.model.withTeamContext
 import com.example.ui.components.BlackseaLogo
 import com.example.ui.components.TeamLogoBadge
+import com.example.ui.components.TeamModerationWarningScreen
 import com.example.ui.components.parseTeamColor
 import com.example.ui.screens.AdminScreen
 import com.example.ui.screens.FilesScreen
@@ -161,7 +165,7 @@ fun MainScreen(
 
     val isPlatformAdmin = remember(currentUserProfile) {
         currentUserProfile?.isPlatformManagerAccount() == true ||
-            Firebase.auth.currentUser?.email.equals(PLATFORM_FOUNDER_EMAIL, ignoreCase = true)
+            Firebase.auth.currentUser?.email?.trim().equals(PLATFORM_FOUNDER_EMAIL, ignoreCase = true)
     }
 
     LaunchedEffect(currentUserId, currentUserProfile?.email, isPlatformAdmin) {
@@ -200,6 +204,24 @@ fun MainScreen(
         set.toSet()
     }
 
+    val myKnownTeams by remember(activeTeamIds) {
+        if (activeTeamIds.isEmpty()) flowOf(emptyList())
+        else repository.observeTeamsByIds(activeTeamIds)
+    }.collectAsState(initial = emptyList())
+
+    val knownTeamsById = remember(approvedTeams, myKnownTeams) {
+        val map = approvedTeams.associateBy { it.id }.toMutableMap()
+        myKnownTeams.forEach { team ->
+            if (team.id.isNotBlank()) {
+                map[team.id] = team
+            }
+        }
+        if (!map.containsKey(PLATFORM_MAIN_TEAM_ID)) {
+            map[PLATFORM_MAIN_TEAM_ID] = TeamInfo.mainBlackseaTeam()
+        }
+        map
+    }
+
     var activeTeamId by rememberSaveable(currentUserId) { mutableStateOf<String?>(null) }
     var currentTab by remember { mutableStateOf(NavItem.HOME) }
     var selectedRoomIdForNavigation by remember { mutableStateOf("general") }
@@ -216,10 +238,13 @@ fun MainScreen(
         }
     }
 
-    // Ensure deleted non-main teams also exit cleanly back to Team Hub
-    LaunchedEffect(activeTeamId, approvedTeams) {
+    // Ensure deleted non-main teams also exit cleanly back to Team Hub while keeping suspended/under_review teams visible
+    LaunchedEffect(activeTeamId, approvedTeams, myKnownTeams, knownTeamsById) {
         val selected = activeTeamId ?: return@LaunchedEffect
-        if (selected != PLATFORM_MAIN_TEAM_ID && approvedTeams.isNotEmpty() && approvedTeams.none { it.id == selected }) {
+        if (selected != PLATFORM_MAIN_TEAM_ID &&
+            (approvedTeams.isNotEmpty() || myKnownTeams.isNotEmpty()) &&
+            !knownTeamsById.containsKey(selected)
+        ) {
             activeTeamId = null
             currentTab = NavItem.HOME
         }
@@ -228,10 +253,10 @@ fun MainScreen(
     fun navigateForNotification(type: String, roomId: String, targetTeamId: String) {
         val lower = type.lowercase()
         when (lower) {
-            "team_application_pending" -> {
+            "team_application_pending", "team_appeal" -> {
                 if (isPlatformAdmin) {
                     activeTeamId = PLATFORM_MAIN_TEAM_ID
-                    adminInitialSection = "team_applications"
+                    adminInitialSection = if (lower == "team_appeal") "platform_teams" else "team_applications"
                     currentTab = NavItem.ADMIN
                 } else {
                     activeTeamId = null
@@ -242,12 +267,28 @@ fun MainScreen(
                 activeTeamId = null
                 return
             }
-            "team_application_approved" -> {
+            "team_application_approved", "team_suspended", "team_under_review", "team_resumed" -> {
                 if (targetTeamId.isNotBlank() && targetTeamId in activeTeamIds) {
                     activeTeamId = targetTeamId
                     currentTab = NavItem.HOME
                 } else {
                     activeTeamId = null
+                }
+                return
+            }
+            "support_ticket" -> {
+                if (isPlatformAdmin) {
+                    activeTeamId = PLATFORM_MAIN_TEAM_ID
+                    adminInitialSection = "support"
+                    currentTab = NavItem.ADMIN
+                } else {
+                    val fallbackTeam = activeTeamId ?: activeTeamIds.firstOrNull()
+                    if (fallbackTeam != null) {
+                        activeTeamId = fallbackTeam
+                        currentTab = NavItem.PROFILE
+                    } else {
+                        activeTeamId = null
+                    }
                 }
                 return
             }
@@ -277,14 +318,6 @@ fun MainScreen(
                     currentTab = NavItem.ADMIN
                 } else {
                     currentTab = NavItem.HOME
-                }
-            }
-            "support_ticket" -> {
-                if (isManagerInTarget) {
-                    adminInitialSection = "support"
-                    currentTab = NavItem.ADMIN
-                } else {
-                    currentTab = NavItem.PROFILE
                 }
             }
             "support_reply" -> currentTab = NavItem.PROFILE
@@ -355,6 +388,7 @@ fun MainScreen(
             currentUserId = currentUserId,
             currentUserProfile = currentUserProfile,
             approvedTeams = approvedTeams,
+            myKnownTeams = myKnownTeams,
             myMemberships = myMemberships,
             myTeamApplications = myTeamApplications,
             repository = repository,
@@ -401,7 +435,10 @@ fun MainScreen(
                 selectedRoomIdForNavigation = "general"
                 scope.launch {
                     repository.setActiveTeamId(currentUserId, selectedTeamId)
-                    repository.ensureDefaultRoomsExist(selectedTeamId)
+                    val targetTeam = knownTeamsById[selectedTeamId]
+                    if (targetTeam == null || !targetTeam.isWorkspaceBlocked()) {
+                        repository.ensureDefaultRoomsExist(selectedTeamId)
+                    }
                 }
             },
             onOpenPlatformAdminReview = if (isPlatformAdmin) {
@@ -417,8 +454,8 @@ fun MainScreen(
         return
     }
 
-    val activeTeam = remember(approvedTeams, activeTeamIdNonNull) {
-        approvedTeams.firstOrNull { it.id == activeTeamIdNonNull }
+    val activeTeam = remember(knownTeamsById, activeTeamIdNonNull) {
+        knownTeamsById[activeTeamIdNonNull]
             ?: if (activeTeamIdNonNull == PLATFORM_MAIN_TEAM_ID) TeamInfo.mainBlackseaTeam()
             else TeamInfo(id = activeTeamIdNonNull, name = "Takım Alanı", shortCode = "TKM")
     }
@@ -430,6 +467,20 @@ fun MainScreen(
         activeMembership?.isManagerInTeam() == true ||
             (activeTeamIdNonNull == PLATFORM_MAIN_TEAM_ID && isPlatformAdmin)
     }
+
+    if (activeTeam.isWorkspaceBlocked() && !isPlatformAdmin) {
+        TeamModerationWarningScreen(
+            team = activeTeam,
+            repository = repository,
+            currentUserProfile = effectiveProfile ?: currentUserProfile,
+            onBackToHub = {
+                activeTeamId = null
+                currentTab = NavItem.HOME
+            }
+        )
+        return
+    }
+
     val teamAccent = parseTeamColor(activeTeam.accentColorHex, ext.accentBlue)
 
     // BackHandler: When on sub-tabs, return to HOME; when on HOME, return to TeamHubScreen
@@ -524,14 +575,15 @@ fun MainScreen(
                         )
 
                         if (isAdmin) {
+                            val leaderLabel = if (isPlatformAdmin) "Yönetici" else "Yetkili"
                             NavigationRailItem(
                                 selected = currentTab == NavItem.ADMIN,
                                 onClick = {
                                     adminInitialSection = "members"
                                     currentTab = NavItem.ADMIN
                                 },
-                                icon = { Icon(Icons.Default.Security, contentDescription = "Yönetici") },
-                                label = { Text("Yönetici", fontSize = 11.sp) },
+                                icon = { Icon(Icons.Default.Security, contentDescription = leaderLabel) },
+                                label = { Text(leaderLabel, fontSize = 11.sp) },
                                 colors = NavigationRailItemDefaults.colors(
                                     selectedIconColor = ext.adminRedText,
                                     selectedTextColor = ext.adminRedText,
@@ -690,6 +742,7 @@ fun MainScreen(
                                     }
 
                                     if (isAdmin) {
+                                        val leaderLabel = if (isPlatformAdmin) "Yönetici" else "Yetkili"
                                         Surface(
                                             shape = RoundedCornerShape(20.dp),
                                             color = if (currentTab == NavItem.ADMIN) ext.adminRedSolid else ext.adminRedSolid.copy(alpha = 0.14f),
@@ -710,12 +763,12 @@ fun MainScreen(
                                             ) {
                                                 Icon(
                                                     imageVector = Icons.Default.Security,
-                                                    contentDescription = "Yönetici Paneli",
+                                                    contentDescription = if (isPlatformAdmin) "Yönetici Paneli" else "Yetkili Öğretmen Paneli",
                                                     tint = if (currentTab == NavItem.ADMIN) Color.White else ext.adminRedText,
                                                     modifier = Modifier.size(15.dp)
                                                 )
                                                 Text(
-                                                    text = "Yönetici",
+                                                    text = leaderLabel,
                                                     color = if (currentTab == NavItem.ADMIN) Color.White else ext.adminRedText,
                                                     fontSize = 11.sp,
                                                     fontWeight = FontWeight.Bold
@@ -1230,13 +1283,15 @@ fun TeamNotificationsDialog(
                             ) { _, notif ->
                                 val isRead = notif.isReadBy(currentUserId) || locallyReadIds.contains(notif.id)
                                 val (notifIcon, notifTint) = when (notif.type.lowercase()) {
-                                    "broadcast", "announcement" -> Pair(Icons.Default.Campaign, ext.amberText)
+                                    "broadcast", "announcement", "team_resumed" -> Pair(Icons.Default.Campaign, ext.amberText)
                                     "update" -> Pair(Icons.Default.SystemUpdate, ext.emeraldText)
                                     "idea", "comment" -> Pair(Icons.Default.Lightbulb, ext.amberText)
                                     "file" -> Pair(Icons.Default.Folder, if (ext.isDark) Color(0xFFA78BFA) else Color(0xFF6D28D9))
                                     "new_member", "member_pending", "member_approved" -> Pair(Icons.Default.GroupAdd, ext.emeraldText)
                                     "support_ticket", "support_reply" -> Pair(Icons.Default.SupportAgent, ext.accentBlue)
-                                    "access_revoked" -> Pair(Icons.Default.Block, ext.dangerText)
+                                    "team_suspended", "access_revoked" -> Pair(Icons.Default.Block, ext.dangerText)
+                                    "team_under_review" -> Pair(Icons.Default.ReportProblem, ext.amberText)
+                                    "team_appeal" -> Pair(Icons.Default.Gavel, ext.accentBlue)
                                     else -> Pair(Icons.Default.ChatBubble, ext.accentBlue)
                                 }
                                 Card(

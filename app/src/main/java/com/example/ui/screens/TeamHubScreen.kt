@@ -115,6 +115,7 @@ fun TeamHubScreen(
     currentUserId: String,
     currentUserProfile: UserProfile?,
     approvedTeams: List<TeamInfo>,
+    myKnownTeams: List<TeamInfo> = emptyList(),
     myMemberships: List<TeamMembership>,
     myTeamApplications: List<TeamInfo>,
     repository: BlackseaRepository,
@@ -161,8 +162,13 @@ fun TeamHubScreen(
         myMemberships.filter { it.isActive() }
     }
 
-    val teamMap = remember(approvedTeams) {
+    val teamMap = remember(approvedTeams, myKnownTeams) {
         val map = approvedTeams.associateBy { it.id }.toMutableMap()
+        myKnownTeams.forEach { team ->
+            if (team.id.isNotBlank()) {
+                map[team.id] = team
+            }
+        }
         if (!map.containsKey(PLATFORM_MAIN_TEAM_ID)) {
             map[PLATFORM_MAIN_TEAM_ID] = TeamInfo.mainBlackseaTeam()
         }
@@ -957,6 +963,8 @@ private fun MyActiveTeamCard(
 ) {
     val ext = MaterialTheme.blackseaColors
     val accent = parseTeamColor(team.accentColorHex, ext.accentBlue)
+    val isBlocked = team.isWorkspaceBlocked()
+    val blockColor = if (team.isSuspended()) ext.dangerText else ext.amberText
 
     Card(
         modifier = Modifier
@@ -964,7 +972,10 @@ private fun MyActiveTeamCard(
             .clickable { onEnterClick() }
             .testTag("my_team_card_${team.id}"),
         shape = RoundedCornerShape(18.dp),
-        border = BorderStroke(1.2.dp, accent.copy(alpha = 0.45f)),
+        border = BorderStroke(
+            width = 1.2.dp,
+            color = if (isBlocked) blockColor.copy(alpha = 0.55f) else accent.copy(alpha = 0.45f)
+        ),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         elevation = CardDefaults.cardElevation(defaultElevation = if (ext.isDark) 2.dp else 2.dp)
     ) {
@@ -1036,13 +1047,27 @@ private fun MyActiveTeamCard(
                 verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
                 TeamBadge(teamName = membership.subTeam.ifBlank { TeamType.GENERAL.displayName })
+                if (isBlocked) {
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = blockColor.copy(alpha = 0.14f)
+                    ) {
+                        Text(
+                            text = TeamStatus.displayName(team.status),
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = blockColor,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                        )
+                    }
+                }
                 if (membership.isManagerInTeam()) {
                     Surface(
                         shape = RoundedCornerShape(8.dp),
                         color = ext.adminRedSolid.copy(alpha = 0.14f)
                     ) {
                         Text(
-                            text = "Takım Yöneticisi",
+                            text = "Yetkili Öğretmen / Kaptan",
                             fontSize = 11.sp,
                             fontWeight = FontWeight.Bold,
                             color = ext.adminRedText,
@@ -1086,11 +1111,15 @@ private fun MyActiveTeamCard(
                     .heightIn(min = 44.dp),
                 shape = RoundedCornerShape(12.dp),
                 colors = ButtonDefaults.buttonColors(
-                    containerColor = accent,
+                    containerColor = if (isBlocked) blockColor else accent,
                     contentColor = Color.White
                 )
             ) {
-                Text("Çalışma Alanına Gir", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                Text(
+                    text = if (isBlocked) "Durumu Görüntüle / İtiraz Et" else "Çalışma Alanına Gir",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 13.sp
+                )
                 Spacer(modifier = Modifier.width(6.dp))
                 Icon(
                     imageVector = Icons.AutoMirrored.Filled.ArrowForward,
@@ -1294,7 +1323,7 @@ private fun MyTeamApplicationStatusCard(team: TeamInfo) {
     val ext = MaterialTheme.blackseaColors
     val (statusBg, statusFg) = when {
         team.isApproved() -> ext.emeraldSolid.copy(alpha = 0.14f) to ext.emeraldText
-        team.isRejected() -> ext.dangerSolid.copy(alpha = 0.14f) to ext.dangerText
+        team.isSuspended() || team.isRejected() -> ext.dangerSolid.copy(alpha = 0.14f) to ext.dangerText
         else -> ext.amberText.copy(alpha = 0.14f) to ext.amberText
     }
 

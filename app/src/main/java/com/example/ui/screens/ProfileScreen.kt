@@ -221,7 +221,15 @@ fun ProfileScreen(
                     ) {
                         Icon(imageVector = Icons.Default.Security, contentDescription = null, modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(6.dp))
-                        Text("Yönetici Paneline Git", fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                        Text(
+                            text = if (currentUserProfile?.isPlatformManagerAccount() == true) {
+                                "Yönetici Paneline Git"
+                            } else {
+                                "Yetkili Öğretmen Paneline Git"
+                            },
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold
+                        )
                     }
                 }
             }

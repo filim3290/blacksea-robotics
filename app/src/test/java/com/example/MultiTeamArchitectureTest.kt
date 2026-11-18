@@ -1,7 +1,10 @@
 package com.example
 
 import com.example.data.shouldUserReceiveNotification
+import com.example.model.PLATFORM_FOUNDER_EMAIL
 import com.example.model.PLATFORM_MAIN_TEAM_ID
+import com.example.model.PredefinedRoles
+import com.example.model.TeamAppealStatus
 import com.example.model.TeamInfo
 import com.example.model.TeamMembership
 import com.example.model.TeamNotification
@@ -36,8 +39,41 @@ class MultiTeamArchitectureTest {
 
         assertEquals("Onay Bekliyor", TeamStatus.displayName(TeamStatus.PENDING))
         assertEquals("Onaylandı", TeamStatus.displayName(TeamStatus.APPROVED))
+        assertEquals("Durduruldu", TeamStatus.displayName(TeamStatus.SUSPENDED))
+        assertEquals("İncelemede", TeamStatus.displayName(TeamStatus.UNDER_REVIEW))
         assertEquals("Reddedildi", TeamStatus.displayName(TeamStatus.REJECTED))
         assertEquals("Onay Bekliyor", TeamStatus.displayName("unknown"))
+
+        val suspendedTeam = main.copy(id = "team_test", isMainTeam = false, status = TeamStatus.SUSPENDED)
+        assertTrue(suspendedTeam.isSuspended())
+        assertTrue(suspendedTeam.isWorkspaceBlocked())
+        assertFalse(suspendedTeam.isUnderReview())
+
+        val reviewTeam = main.copy(id = "team_test2", isMainTeam = false, status = TeamStatus.UNDER_REVIEW)
+        assertTrue(reviewTeam.isUnderReview())
+        assertTrue(reviewTeam.isWorkspaceBlocked())
+        assertEquals("İtiraz İnceleniyor", TeamAppealStatus.displayName(TeamAppealStatus.PENDING))
+        assertFalse(PredefinedRoles.ASSIGNABLE_MANAGEMENT_ROLES.contains("Yönetici"))
+        assertTrue(PredefinedRoles.ASSIGNABLE_MANAGEMENT_ROLES.contains("Yetkili Öğretmen"))
+    }
+
+    @Test
+    fun `isPlatformManagerAccount returns true strictly for founder email`() {
+        val fakeAdmin = UserProfile(
+            id = "u_fake",
+            userId = "u_fake",
+            email = "teacher@example.com",
+            role = "Yetkili Öğretmen",
+            roles = listOf("Yetkili Öğretmen"),
+            isPlatformAdmin = true,
+            isSuperAdmin = true
+        )
+        assertFalse(fakeAdmin.isPlatformManagerAccount())
+        assertTrue(fakeAdmin.isManagerAccount())
+
+        val founder = fakeAdmin.copy(email = "  $PLATFORM_FOUNDER_EMAIL ")
+        assertTrue(founder.isPlatformManagerAccount())
+        assertTrue(founder.isManagerAccount())
     }
 
     @Test
@@ -236,6 +272,37 @@ class MultiTeamArchitectureTest {
         assertFalse(shouldUserReceiveNotification(teamAppPending, "other_team_admin", emptyMap(), isPlatformAdmin = false))
         assertFalse(shouldUserReceiveNotification(teamAppPending, "founder_1", emptyMap(), isPlatformAdmin = true))
 
+        val supportTicketNotif = TeamNotification(
+            id = "n_sup_1",
+            teamId = "platform_admin",
+            recipientUserId = "platform_admins",
+            type = "support_ticket",
+            senderId = "student_a"
+        )
+        val appealNotif = TeamNotification(
+            id = "n_app_appeal",
+            teamId = "platform_admin",
+            recipientUserId = "platform_admins",
+            type = "team_appeal",
+            senderId = "fatsa_teacher"
+        )
+        val nonFounderBsrTeacher = mapOf(
+            PLATFORM_MAIN_TEAM_ID to TeamMembership(
+                teamId = PLATFORM_MAIN_TEAM_ID,
+                userId = "bsr_teacher",
+                role = "Yetkili Öğretmen",
+                roles = listOf("Yetkili Öğretmen"),
+                status = UserStatus.ACTIVE.value,
+                isTeamAdmin = true
+            )
+        )
+        assertTrue(shouldUserReceiveNotification(supportTicketNotif, "founder_admin", emptyMap(), isPlatformAdmin = true))
+        assertFalse("Yetkili Öğretmen in BSR must NOT receive platform support_ticket alerts",
+            shouldUserReceiveNotification(supportTicketNotif, "bsr_teacher", nonFounderBsrTeacher, isPlatformAdmin = false))
+        assertTrue(shouldUserReceiveNotification(appealNotif, "founder_admin", emptyMap(), isPlatformAdmin = true))
+        assertFalse("Yetkili Öğretmen must NOT receive team_appeal alerts",
+            shouldUserReceiveNotification(appealNotif, "bsr_teacher", nonFounderBsrTeacher, isPlatformAdmin = false))
+
         assertTrue(shouldUserReceiveNotification(appApprovedPersonal, "founder_1", emptyMap(), isPlatformAdmin = false))
         assertFalse(shouldUserReceiveNotification(appApprovedPersonal, "stranger", emptyMap(), isPlatformAdmin = false))
 
@@ -253,6 +320,8 @@ class MultiTeamArchitectureTest {
 
         assertEquals(TeamNotificationDispatcher.CHANNEL_TEAM, TeamNotificationDispatcher.resolveChannelId("team_application_pending"))
         assertEquals(TeamNotificationDispatcher.CHANNEL_TEAM, TeamNotificationDispatcher.resolveChannelId("team_application_approved"))
+        assertEquals(TeamNotificationDispatcher.CHANNEL_ANNOUNCEMENTS, TeamNotificationDispatcher.resolveChannelId("team_suspended"))
+        assertEquals(TeamNotificationDispatcher.CHANNEL_ANNOUNCEMENTS, TeamNotificationDispatcher.resolveChannelId("team_under_review"))
         assertEquals(TeamNotificationDispatcher.CHANNEL_TEAM, TeamNotificationDispatcher.resolveChannelId("task"))
     }
 }

@@ -8,6 +8,7 @@ import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.ExistingWorkPolicy
 import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.OutOfQuotaPolicy
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
@@ -78,7 +79,7 @@ class BackgroundNotificationWorker(
             triggerOneTimeUpdateCheck(context, delaySeconds = 0L)
         }
 
-        fun triggerOneTimeUpdateCheck(context: Context, delaySeconds: Long = 15L) {
+        fun triggerOneTimeUpdateCheck(context: Context, delaySeconds: Long = 0L) {
             try {
                 val appCtx = context.applicationContext
                 val constraints = Constraints.Builder()
@@ -89,6 +90,8 @@ class BackgroundNotificationWorker(
                     .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.SECONDS)
                 if (delaySeconds > 0L) {
                     builder.setInitialDelay(delaySeconds, TimeUnit.SECONDS)
+                } else {
+                    builder.setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
                 }
 
                 WorkManager.getInstance(appCtx).enqueueUniqueWork(
@@ -113,6 +116,7 @@ class BackgroundNotificationWorker(
     }
 
     override suspend fun doWork(): Result {
+        TeamNotificationDispatcher.ensureNotificationChannels(applicationContext)
         val repository = BlackseaRepository(applicationContext)
         val updateManager = AppUpdateManager(applicationContext)
         var shouldRetry = false
@@ -123,7 +127,7 @@ class BackgroundNotificationWorker(
             try {
                 val profile = repository.getUserProfile(currentUser.uid)
                 val isPlatformAdmin = profile?.isPlatformManagerAccount() == true ||
-                    currentUser.email.equals(PLATFORM_FOUNDER_EMAIL, ignoreCase = true)
+                    currentUser.email?.trim().equals(PLATFORM_FOUNDER_EMAIL, ignoreCase = true)
 
                 if (profile != null || isPlatformAdmin) {
                     val membershipSnap = try {
@@ -167,14 +171,26 @@ class BackgroundNotificationWorker(
                         membershipsByTeam = membershipsByTeam,
                         isPlatformAdmin = isPlatformAdmin,
                         userCreatedAtMs = joinMs
-                    ).orEmpty()
-
-                    TeamNotificationDispatcher.processNotifications(
-                        context = applicationContext,
-                        userId = currentUser.uid,
-                        notifications = filtered,
-                        userCreatedAtMs = joinMs
                     )
+
+                    if (filtered != null) {
+                        if (!TeamNotificationDispatcher.hasSeededBaseline(applicationContext, currentUser.uid)) {
+                            TeamNotificationDispatcher.syncBaselineSilently(
+                                context = applicationContext,
+                                userId = currentUser.uid,
+                                notifications = filtered
+                            )
+                        } else {
+                            TeamNotificationDispatcher.processNotifications(
+                                context = applicationContext,
+                                userId = currentUser.uid,
+                                notifications = filtered,
+                                userCreatedAtMs = joinMs
+                            )
+                        }
+                    } else {
+                        shouldRetry = true
+                    }
                     RealtimeNotificationService.startIfEnabled(applicationContext)
                 }
             } catch (ce: CancellationException) {

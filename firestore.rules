@@ -97,12 +97,15 @@ service cloud.firestore {
     }
 
     function isPlatformAdmin() {
-      return isAuthenticated() && (
-        isFounderEmail() ||
-        (hasUserDoc() && userDataIsManager(getUserData())) ||
-        (hasMembership('blacksea_robotics', request.auth.uid) &&
-          membershipIsManager(getMembership('blacksea_robotics', request.auth.uid)))
-      );
+      return isFounderEmail();
+    }
+
+    function teamIsApproved(teamId) {
+      return teamId == 'blacksea_robotics'
+        ? (!exists(/databases/$(database)/documents/teams/blacksea_robotics) ||
+           get(/databases/$(database)/documents/teams/blacksea_robotics).data.status == 'approved')
+        : (exists(/databases/$(database)/documents/teams/$(teamId)) &&
+           get(/databases/$(database)/documents/teams/$(teamId)).data.status == 'approved');
     }
 
     function isValidTeamDoc(data) {
@@ -116,7 +119,7 @@ service cloud.firestore {
         data.managerContact is string && data.managerContact.size() >= 3 && data.managerContact.size() <= 120 &&
         data.founderId is string && data.founderId.size() > 0 && data.founderId.size() <= 128 &&
         data.founderEmail is string && data.founderEmail.size() <= 150 &&
-        data.status in ['pending', 'approved', 'rejected'] &&
+        data.status in ['pending', 'approved', 'suspended', 'under_review', 'rejected'] &&
         data.isMainTeam is bool &&
         (!('motto' in data) || (data.motto is string && data.motto.size() <= 120)) &&
         (!('logoKey' in data) || (data.logoKey is string && data.logoKey.size() <= 40)) &&
@@ -124,7 +127,13 @@ service cloud.firestore {
         (!('accentColorHex' in data) || (data.accentColorHex is string && data.accentColorHex.size() <= 12)) &&
         (!('memberCount' in data) || (data.memberCount is int && data.memberCount >= 0)) &&
         (!('rejectionReason' in data) || (data.rejectionReason is string && data.rejectionReason.size() <= 500)) &&
+        (!('moderationReason' in data) || (data.moderationReason is string && data.moderationReason.size() <= 500)) &&
         (!('reviewedBy' in data) || (data.reviewedBy is string && data.reviewedBy.size() <= 128)) &&
+        (!('appealText' in data) || (data.appealText is string && data.appealText.size() <= 1000)) &&
+        (!('appealStatus' in data) || (data.appealStatus is string && data.appealStatus in ['', 'pending', 'reviewed', 'rejected'])) &&
+        (!('appealByUserId' in data) || (data.appealByUserId is string && data.appealByUserId.size() <= 128)) &&
+        (!('appealByName' in data) || (data.appealByName is string && data.appealByName.size() <= 120)) &&
+        (!('appealSubmittedAt' in data) || (data.appealSubmittedAt is timestamp && data.appealSubmittedAt <= request.time)) &&
         (!('createdAt' in data) || (data.createdAt is timestamp && data.createdAt <= request.time)) &&
         (!('updatedAt' in data) || (data.updatedAt is timestamp && data.updatedAt <= request.time));
     }
@@ -188,7 +197,11 @@ service cloud.firestore {
           request.resource.data.get('isPlatformAdmin', false) == false));
 
       allow update: if isAuthenticated() && (
-        (isManager() && isActiveUser()) ||
+        isPlatformAdmin() ||
+        (isTeamManager('blacksea_robotics') &&
+         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['team', 'role', 'roles', 'status', 'updatedAt']) &&
+         request.resource.data.get('role', '') != 'Yönetici' &&
+         !('Yönetici' in request.resource.data.get('roles', []))) ||
         (isOwner(userId) &&
          (!('status' in request.resource.data) ||
           request.resource.data.status == resource.data.get('status', 'pending') ||
@@ -211,7 +224,8 @@ service cloud.firestore {
       allow read: if isAuthenticated() && (
         resource.data.status == 'approved' ||
         resource.data.founderId == request.auth.uid ||
-        isPlatformAdmin()
+        isPlatformAdmin() ||
+        (resource.data.status in ['suspended', 'under_review'] && isActiveTeamMember(teamId))
       );
 
       allow create: if isAuthenticated() && isValidId(teamId) && isValidTeamDoc(request.resource.data) && (
@@ -225,12 +239,13 @@ service cloud.firestore {
          isPlatformAdmin())
       );
 
-      allow update: if isAuthenticated() && isValidTeamDoc(request.resource.data) && (
+      allow update: if isAuthenticated() &&
+        isValidTeamDoc(request.resource.data) && (
         (isPlatformAdmin() &&
          request.resource.data.createdAt == resource.data.createdAt &&
-         request.resource.data.isMainTeam == resource.data.isMainTeam) ||
-        (isTeamManager(teamId) &&
-         resource.data.status == 'approved' &&
+         request.resource.data.isMainTeam == resource.data.isMainTeam &&
+         (teamId != 'blacksea_robotics' || request.resource.data.status == 'approved')) ||
+        (resource.data.status == 'approved' &&
          request.resource.data.status == resource.data.status &&
          request.resource.data.founderId == resource.data.founderId &&
          request.resource.data.isMainTeam == resource.data.isMainTeam &&
@@ -239,14 +254,28 @@ service cloud.firestore {
            'name', 'shortCode', 'competition', 'schoolName', 'city',
            'description', 'motto', 'logoKey', 'logoUrl', 'accentColorHex',
            'managerName', 'managerContact', 'memberCount', 'updatedAt'
-         ])) ||
-        (isActiveTeamMember(teamId) &&
-         resource.data.status == 'approved' &&
-         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['memberCount', 'updatedAt']) &&
-         request.resource.data.memberCount is int &&
-         request.resource.data.memberCount >= 0 &&
-         request.resource.data.updatedAt is timestamp &&
-         request.resource.data.updatedAt <= request.time)
+         ]) &&
+         isTeamManager(teamId)) ||
+        ((
+          (resource.data.status == 'approved' &&
+           request.resource.data.diff(resource.data).affectedKeys().hasOnly(['memberCount', 'updatedAt']) &&
+           request.resource.data.memberCount is int &&
+           request.resource.data.memberCount >= 0 &&
+           request.resource.data.updatedAt is timestamp &&
+           request.resource.data.updatedAt <= request.time) ||
+          (resource.data.status in ['suspended', 'under_review'] &&
+           request.resource.data.status == resource.data.status &&
+           request.resource.data.founderId == resource.data.founderId &&
+           request.resource.data.isMainTeam == resource.data.isMainTeam &&
+           request.resource.data.createdAt == resource.data.createdAt &&
+           request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+             'appealText', 'appealStatus', 'appealByUserId', 'appealByName', 'appealSubmittedAt', 'updatedAt'
+           ]) &&
+           request.resource.data.appealText is string &&
+           request.resource.data.appealText.size() >= 10 &&
+           request.resource.data.appealStatus == 'pending' &&
+           request.resource.data.appealByUserId == request.auth.uid)
+        ) && isActiveTeamMember(teamId))
       );
 
       allow delete: if isAuthenticated() && teamId != 'blacksea_robotics' && (
@@ -258,14 +287,14 @@ service cloud.firestore {
       // --- ISOLATED WORKSPACE SUBCOLLECTIONS FOR APPROVED TEAMS (teamId != blacksea_robotics) ---
       match /rooms/{roomId} {
         allow read: if isActiveTeamMember(teamId);
-        allow create: if isActiveTeamMember(teamId) || (isPlatformAdmin() && roomId in ['general', 'software', 'mechanic', 'pr']);
-        allow update: if isActiveTeamMember(teamId);
+        allow create: if (isActiveTeamMember(teamId) && teamIsApproved(teamId)) || (isPlatformAdmin() && roomId in ['general', 'software', 'mechanic', 'pr']);
+        allow update: if isActiveTeamMember(teamId) && teamIsApproved(teamId);
         allow delete: if isTeamManager(teamId);
 
         match /messages/{messageId} {
           allow read: if isActiveTeamMember(teamId);
-          allow create: if isActiveTeamMember(teamId) && request.resource.data.senderId == request.auth.uid;
-          allow update: if isActiveTeamMember(teamId) && (
+          allow create: if isActiveTeamMember(teamId) && teamIsApproved(teamId) && request.resource.data.senderId == request.auth.uid;
+          allow update: if isActiveTeamMember(teamId) && teamIsApproved(teamId) && (
             (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isPinned', 'updatedAt']) &&
               (resource.data.senderId == request.auth.uid || isTeamManager(teamId))) ||
             (resource.data.senderId == request.auth.uid &&
@@ -277,44 +306,46 @@ service cloud.firestore {
               request.resource.data.text is string &&
               request.resource.data.text.size() > 0)
           );
-          allow delete: if isActiveTeamMember(teamId) && (resource.data.senderId == request.auth.uid || isTeamManager(teamId));
+          allow delete: if isTeamManager(teamId) || (isActiveTeamMember(teamId) && teamIsApproved(teamId) && resource.data.senderId == request.auth.uid);
         }
       }
 
       match /ideas/{ideaId} {
         allow read: if isActiveTeamMember(teamId);
-        allow create: if isActiveTeamMember(teamId) && request.resource.data.authorId == request.auth.uid;
-        allow update: if isActiveTeamMember(teamId);
-        allow delete: if isActiveTeamMember(teamId) && (resource.data.authorId == request.auth.uid || isTeamManager(teamId));
+        allow create: if isActiveTeamMember(teamId) && teamIsApproved(teamId) && request.resource.data.authorId == request.auth.uid;
+        allow update: if isActiveTeamMember(teamId) && teamIsApproved(teamId);
+        allow delete: if isTeamManager(teamId) || (isActiveTeamMember(teamId) && teamIsApproved(teamId) && resource.data.authorId == request.auth.uid);
 
         match /comments/{commentId} {
           allow read: if isActiveTeamMember(teamId);
-          allow create: if isActiveTeamMember(teamId) && request.resource.data.authorId == request.auth.uid;
-          allow delete: if isActiveTeamMember(teamId) && (resource.data.authorId == request.auth.uid || isTeamManager(teamId));
+          allow create: if isActiveTeamMember(teamId) && teamIsApproved(teamId) && request.resource.data.authorId == request.auth.uid;
+          allow delete: if isTeamManager(teamId) || (isActiveTeamMember(teamId) && teamIsApproved(teamId) && resource.data.authorId == request.auth.uid);
         }
       }
 
       match /files/{fileId} {
         allow read: if isActiveTeamMember(teamId);
-        allow create: if isActiveTeamMember(teamId) && request.resource.data.uploadedById == request.auth.uid;
-        allow update: if isActiveTeamMember(teamId) && (resource.data.uploadedById == request.auth.uid || isTeamManager(teamId));
-        allow delete: if isActiveTeamMember(teamId) && (resource.data.uploadedById == request.auth.uid || isTeamManager(teamId));
+        allow create: if isActiveTeamMember(teamId) && teamIsApproved(teamId) && request.resource.data.uploadedById == request.auth.uid;
+        allow update: if isActiveTeamMember(teamId) && teamIsApproved(teamId) && (resource.data.uploadedById == request.auth.uid || isTeamManager(teamId));
+        allow delete: if isTeamManager(teamId) || (isActiveTeamMember(teamId) && teamIsApproved(teamId) && resource.data.uploadedById == request.auth.uid);
       }
 
       match /announcements/{announcementId} {
         allow read: if isActiveTeamMember(teamId);
-        allow create, update: if isActiveTeamMember(teamId) && (isTeamManager(teamId) || request.resource.data.authorId == request.auth.uid);
-        allow delete: if isActiveTeamMember(teamId) && (resource.data.authorId == request.auth.uid || isTeamManager(teamId));
+        allow create, update: if isActiveTeamMember(teamId) && teamIsApproved(teamId) && (isTeamManager(teamId) || request.resource.data.authorId == request.auth.uid);
+        allow delete: if isTeamManager(teamId) || (isActiveTeamMember(teamId) && teamIsApproved(teamId) && resource.data.authorId == request.auth.uid);
       }
 
       match /tasks/{taskId} {
         allow read: if isActiveTeamMember(teamId);
         allow create: if isActiveTeamMember(teamId) &&
+          teamIsApproved(teamId) &&
           isValidId(taskId) &&
           request.resource.data.teamId == teamId &&
           request.resource.data.createdById == request.auth.uid &&
           isValidTeamTask(request.resource.data);
         allow update: if isActiveTeamMember(teamId) &&
+          teamIsApproved(teamId) &&
           isValidId(taskId) &&
           isValidTeamTask(request.resource.data) &&
           request.resource.data.teamId == teamId &&
@@ -323,39 +354,12 @@ service cloud.firestore {
            resource.data.createdById == request.auth.uid ||
            resource.data.assignedToId == request.auth.uid ||
            request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'updatedAt']));
-        allow delete: if isActiveTeamMember(teamId) && (isTeamManager(teamId) || resource.data.createdById == request.auth.uid);
+        allow delete: if isTeamManager(teamId) || (isActiveTeamMember(teamId) && teamIsApproved(teamId) && resource.data.createdById == request.auth.uid);
       }
 
       match /support_tickets/{ticketId} {
-        allow get: if isActiveTeamMember(teamId) && isValidId(ticketId) && (
-          resource.data.userId == request.auth.uid || isTeamManager(teamId)
-        );
-        allow list: if isActiveTeamMember(teamId) && (
-          resource.data.userId == request.auth.uid || isTeamManager(teamId)
-        );
-        allow create: if isActiveTeamMember(teamId) &&
-          isValidId(ticketId) &&
-          request.resource.data.keys().hasAll([
-            'userId', 'userName', 'userEmail', 'userTeam', 'category',
-            'subject', 'description', 'appVersion', 'deviceInfo',
-            'status', 'adminReply', 'repliedByName', 'createdAt', 'updatedAt'
-          ]) &&
-          isValidSupportTicket(request.resource.data) &&
-          request.resource.data.userId == request.auth.uid &&
-          request.resource.data.status == 'open' &&
-          request.resource.data.adminReply == '' &&
-          request.resource.data.repliedByName == '';
-        allow update: if isTeamManager(teamId) &&
-          isValidId(ticketId) &&
-          isValidSupportTicket(request.resource.data) &&
-          request.resource.data.userId == resource.data.userId &&
-          request.resource.data.createdAt == resource.data.createdAt &&
-          request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-            'status', 'adminReply', 'repliedByName', 'updatedAt'
-          ]);
-        allow delete: if isActiveTeamMember(teamId) && isValidId(ticketId) && (
-          resource.data.userId == request.auth.uid || isTeamManager(teamId)
-        );
+        // Support tickets are centralized to root /support_tickets managed exclusively by BlackSea Robotics platform admin
+        allow read, write: if false;
       }
     }
 
@@ -382,7 +386,9 @@ service cloud.firestore {
            request.resource.data.teamId == 'blacksea_robotics' &&
            (isFounderEmail() || (isActiveUser() && request.resource.data.isTeamAdmin == false && !(request.resource.data.role in ['Yönetici', 'Takım Kaptanı', 'Yetkili Öğretmen'])))) ||
           isPlatformAdmin() ||
-          isTeamManager(request.resource.data.teamId)
+          (isTeamManager(request.resource.data.teamId) &&
+           request.resource.data.role != 'Yönetici' &&
+           !('Yönetici' in request.resource.data.roles))
         );
 
       allow update: if isAuthenticated() &&
@@ -390,7 +396,11 @@ service cloud.firestore {
         request.resource.data.teamId == resource.data.teamId &&
         request.resource.data.userId == resource.data.userId && (
           (isTeamManager(resource.data.teamId) &&
-           !(resource.data.teamId == 'blacksea_robotics' && resource.data.userEmail == 'filim3290@gmail.com' && (request.resource.data.status != 'active' || request.resource.data.isTeamAdmin == false))) ||
+           !(resource.data.teamId == 'blacksea_robotics' && resource.data.userEmail == 'filim3290@gmail.com' && (request.resource.data.status != 'active' || request.resource.data.isTeamAdmin == false)) &&
+           (isPlatformAdmin() ||
+            ((request.resource.data.role != 'Yönetici' && !('Yönetici' in request.resource.data.roles)) ||
+             (request.resource.data.role == resource.data.get('role', '') &&
+              request.resource.data.roles == resource.data.get('roles', []))))) ||
           (resource.data.userId == request.auth.uid &&
            request.resource.data.isTeamAdmin == resource.data.isTeamAdmin &&
            request.resource.data.role == resource.data.role &&
@@ -475,12 +485,16 @@ service cloud.firestore {
         (request.resource.data.get('type', '') == 'member_pending' &&
          request.resource.data.get('recipientUserId', '') == 'managers' &&
          request.resource.data.get('senderId', '') == request.auth.uid) ||
-        (request.resource.data.get('type', '') == 'team_application_pending' &&
+        (request.resource.data.get('type', '') in ['team_application_pending', 'support_ticket', 'team_appeal'] &&
          request.resource.data.get('teamId', '') == 'platform_admin' &&
          request.resource.data.get('recipientUserId', '') == 'platform_admins' &&
          request.resource.data.get('senderId', '') == request.auth.uid) ||
         (isPlatformAdmin() &&
-         request.resource.data.get('type', '') in ['team_application_approved', 'team_application_rejected', 'update'])
+         request.resource.data.get('type', '') in [
+           'team_application_approved', 'team_application_rejected',
+           'team_suspended', 'team_under_review', 'team_resumed',
+           'support_reply', 'update'
+         ])
       );
 
       allow update: if isAuthenticated() && (
@@ -505,13 +519,13 @@ service cloud.firestore {
       allow write: if isPlatformAdmin();
     }
 
-    // --- BLACKSEA ROBOTICS MAIN TEAM SUPPORT TICKETS ---
+    // --- CENTRALIZED SUPPORT TICKETS (MANAGED EXCLUSIVELY BY BLACKSEA FOUNDER PLATFORM ADMIN) ---
     match /support_tickets/{ticketId} {
       allow get: if isAuthenticated() && isValidId(ticketId) && (
-        resource.data.userId == request.auth.uid || isTeamManager('blacksea_robotics')
+        resource.data.userId == request.auth.uid || isPlatformAdmin()
       );
       allow list: if isAuthenticated() && (
-        resource.data.userId == request.auth.uid || isTeamManager('blacksea_robotics')
+        resource.data.userId == request.auth.uid || isPlatformAdmin()
       );
       allow create: if isAuthenticated() &&
         isValidId(ticketId) &&
@@ -531,7 +545,7 @@ service cloud.firestore {
         request.resource.data.status == 'open' &&
         request.resource.data.adminReply == '' &&
         request.resource.data.repliedByName == '';
-      allow update: if isTeamManager('blacksea_robotics') &&
+      allow update: if isPlatformAdmin() &&
         isValidId(ticketId) &&
         isValidSupportTicket(request.resource.data) &&
         request.resource.data.userId == resource.data.userId &&
@@ -540,7 +554,7 @@ service cloud.firestore {
           'status', 'adminReply', 'repliedByName', 'updatedAt'
         ]);
       allow delete: if isAuthenticated() && isValidId(ticketId) && (
-        resource.data.userId == request.auth.uid || isTeamManager('blacksea_robotics')
+        resource.data.userId == request.auth.uid || isPlatformAdmin()
       );
     }
   }
