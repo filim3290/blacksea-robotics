@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -78,6 +79,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.BlackseaRepository
+import com.example.model.BLACKSEA_AUTHORIZED_TEACHER_EMAIL
 import com.example.model.PLATFORM_FOUNDER_EMAIL
 import com.example.model.PLATFORM_MAIN_TEAM_ID
 import com.example.model.PredefinedRoles
@@ -127,7 +129,10 @@ fun AdminScreen(
 
     val activeTeamId = activeTeam.id.ifBlank { PLATFORM_MAIN_TEAM_ID }
 
-    val teamMemberships by repository.observeTeamMemberships(activeTeamId).collectAsState(initial = emptyList())
+    val teamMembershipsState by remember(activeTeamId) {
+        repository.observeTeamMemberships(activeTeamId)
+    }.collectAsState(initial = null)
+    val teamMemberships = teamMembershipsState.orEmpty()
     val announcements by repository.observeAnnouncements(activeTeamId).collectAsState(initial = emptyList())
 
     val pendingMembers = teamMemberships.filter { it.isPending() }
@@ -135,10 +140,22 @@ fun AdminScreen(
     val restrictedMembers = teamMemberships.filter { it.isRevoked() || it.isRejected() }
     val currentUid = currentUserProfile?.userId?.ifBlank { currentUserProfile.id }.orEmpty()
 
+    LaunchedEffect(activeTeamId, teamMembershipsState) {
+        val loaded = teamMembershipsState ?: return@LaunchedEffect
+        val liveActiveCount = loaded.count { it.isActive() }.toLong()
+        if (activeTeam.memberCount != liveActiveCount) {
+            repository.syncTeamMemberCountIfDrifted(activeTeamId, liveActiveCount)
+        }
+    }
+
     fun isProtectedMember(member: TeamMembership): Boolean {
         val targetId = member.userId
-        return (currentUid.isNotBlank() && targetId == currentUid) ||
-            (activeTeamId == PLATFORM_MAIN_TEAM_ID && member.userEmail.trim().equals(PLATFORM_FOUNDER_EMAIL, ignoreCase = true))
+        val email = member.userEmail.trim()
+        val isBsrProtectedAccount = activeTeamId == PLATFORM_MAIN_TEAM_ID && (
+            email.equals(PLATFORM_FOUNDER_EMAIL, ignoreCase = true) ||
+                (!isPlatformAdmin && email.equals(BLACKSEA_AUTHORIZED_TEACHER_EMAIL, ignoreCase = true))
+            )
+        return (currentUid.isNotBlank() && targetId == currentUid) || isBsrProtectedAccount
     }
 
     val sections = remember {
@@ -515,10 +532,12 @@ fun AdminScreen(
                                         horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
                                         verticalArrangement = Arrangement.spacedBy(8.dp)
                                     ) {
-                                        OutlinedButton(onClick = { memberToRemove = member }, shape = RoundedCornerShape(8.dp)) {
-                                            Icon(imageVector = Icons.Default.Delete, contentDescription = null, tint = ext.dangerText, modifier = Modifier.size(16.dp))
-                                            Spacer(modifier = Modifier.width(4.dp))
-                                            Text("Sil", color = ext.dangerText, fontSize = 12.sp)
+                                        if (!isProtectedMember(member)) {
+                                            OutlinedButton(onClick = { memberToRemove = member }, shape = RoundedCornerShape(8.dp)) {
+                                                Icon(imageVector = Icons.Default.Delete, contentDescription = null, tint = ext.dangerText, modifier = Modifier.size(16.dp))
+                                                Spacer(modifier = Modifier.width(4.dp))
+                                                Text("Sil", color = ext.dangerText, fontSize = 12.sp)
+                                            }
                                         }
 
                                         if (isRevoked && member.hasPendingAppeal()) {
@@ -898,7 +917,15 @@ fun AdminScreen(
                                         horizontalArrangement = Arrangement.SpaceBetween,
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
-                                        Text(text = announcement.title, fontWeight = FontWeight.Bold, fontSize = 15.sp, color = MaterialTheme.colorScheme.onSurface)
+                                        Text(
+                                            text = announcement.title,
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 15.sp,
+                                            color = MaterialTheme.colorScheme.onSurface,
+                                            maxLines = 2,
+                                            overflow = TextOverflow.Ellipsis,
+                                            modifier = Modifier.weight(1f)
+                                        )
                                         IconButton(onClick = { announcementToDelete = announcement }) {
                                             Icon(imageVector = Icons.Default.Delete, contentDescription = "Duyuruyu Sil", tint = ext.dangerText)
                                         }
@@ -1188,7 +1215,9 @@ fun EditMemberRolesDialog(
         },
         text = {
             Column(
-                modifier = Modifier.verticalScroll(rememberScrollState()),
+                modifier = Modifier
+                    .verticalScroll(rememberScrollState())
+                    .imePadding(),
                 verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
                 ExposedDropdownMenuBox(
@@ -1239,9 +1268,9 @@ fun EditMemberRolesDialog(
                                 Text(text = role, fontSize = 11.sp, fontWeight = FontWeight.Bold, color = ext.accentBlue)
                                 IconButton(
                                     onClick = { currentRoles = currentRoles - role },
-                                    modifier = Modifier.size(20.dp)
+                                    modifier = Modifier.size(28.dp)
                                 ) {
-                                    Icon(imageVector = Icons.Default.Close, contentDescription = "Kaldır", modifier = Modifier.size(12.dp))
+                                    Icon(imageVector = Icons.Default.Close, contentDescription = "Rolü Kaldır", modifier = Modifier.size(14.dp))
                                 }
                             }
                         }

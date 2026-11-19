@@ -306,13 +306,14 @@ fun HelpAndSupportCenterCard(
     var showTicketFormDialog by remember { mutableStateOf(false) }
 
     val filteredFaqs = remember(searchQuery, selectedCategory) {
-        val query = searchQuery.trim().lowercase(Locale("tr", "TR"))
+        val trLocale = Locale.forLanguageTag("tr-TR")
+        val query = searchQuery.trim().lowercase(trLocale)
         SupportFaqData.ITEMS.filter { item ->
             val matchesCat = selectedCategory == "Tümü" || item.category == selectedCategory
             val matchesQuery = query.isBlank() ||
-                item.question.lowercase(Locale("tr", "TR")).contains(query) ||
-                item.answer.lowercase(Locale("tr", "TR")).contains(query) ||
-                item.category.lowercase(Locale("tr", "TR")).contains(query)
+                item.question.lowercase(trLocale).contains(query) ||
+                item.answer.lowercase(trLocale).contains(query) ||
+                item.category.lowercase(trLocale).contains(query)
             matchesCat && matchesQuery
         }
     }
@@ -824,7 +825,7 @@ fun SupportTicketSummaryCard(
         SupportTicketStatus.IN_PROGRESS -> Pair(ext.accentBlueContainer, ext.accentBlue)
         else -> Pair(ext.amberText.copy(alpha = 0.16f), ext.amberText)
     }
-    val dateFormat = remember { SimpleDateFormat("dd MMM HH:mm", Locale("tr", "TR")) }
+    val dateFormat = remember { SimpleDateFormat("dd MMM HH:mm", Locale.forLanguageTag("tr-TR")) }
     val dateLabel = remember(ticket.createdAt) {
         ticket.createdAt?.toDate()?.let { dateFormat.format(it) } ?: "Şimdi"
     }
@@ -1056,15 +1057,16 @@ fun AdminSupportTab(
     var ticketToReply by remember { mutableStateOf<SupportTicket?>(null) }
 
     val filteredTickets = remember(tickets, statusFilter, searchQuery) {
-        val q = searchQuery.trim().lowercase(Locale("tr", "TR"))
+        val trLocale = Locale.forLanguageTag("tr-TR")
+        val q = searchQuery.trim().lowercase(trLocale)
         tickets.filter { ticket ->
             val matchesStatus = statusFilter == "all" || SupportTicketStatus.normalize(ticket.status) == statusFilter
             val matchesQuery = q.isBlank() ||
-                ticket.userName.lowercase(Locale("tr", "TR")).contains(q) ||
-                ticket.originTeamName().lowercase(Locale("tr", "TR")).contains(q) ||
-                ticket.originSubTeamName().lowercase(Locale("tr", "TR")).contains(q) ||
-                ticket.subject.lowercase(Locale("tr", "TR")).contains(q) ||
-                ticket.category.lowercase(Locale("tr", "TR")).contains(q)
+                ticket.userName.lowercase(trLocale).contains(q) ||
+                ticket.originTeamName().lowercase(trLocale).contains(q) ||
+                ticket.originSubTeamName().lowercase(trLocale).contains(q) ||
+                ticket.subject.lowercase(trLocale).contains(q) ||
+                ticket.category.lowercase(trLocale).contains(q)
             matchesStatus && matchesQuery
         }
     }

@@ -1631,5 +1631,247 @@ test("Blocked teams remain discoverable with Haber Et watch subscriptions, no jo
   );
 });
 
+test("Yetkili Öğretmen can remove active, revoked, missing/legacy, and missing-email members while blocked from protected accounts", async () => {
+  const created = new Date(Date.now() - 8000);
+  await testEnv.withSecurityRulesDisabled(async (ctx) => {
+    const db = ctx.firestore();
+    await db.collection("teams").doc("blacksea_robotics").set({
+      name: "BlackSea Robotics",
+      shortCode: "BSR",
+      competition: "TEKNOFEST",
+      schoolName: "Ünye Fen Lisesi",
+      city: "Ordu",
+      description: "Ana takım",
+      managerName: "Mehmet İlker Baş",
+      managerContact: "mehmetilkerbas@gmail.com",
+      founderId: "founder_u",
+      founderEmail: "filim3290@gmail.com",
+      status: "approved",
+      isMainTeam: true,
+      memberCount: 4,
+      createdAt: created,
+      updatedAt: created
+    });
+    await db.collection("teams").doc("team_fatsa").set({
+      name: "Fatsa Robotik",
+      shortCode: "FATSA",
+      competition: "TEKNOFEST",
+      schoolName: "Fatsa Fen Lisesi",
+      city: "Ordu",
+      description: "Fatsa ekibi",
+      managerName: "Fatsa Öğretmen",
+      managerContact: "ft@example.com",
+      founderId: "fatsa_teacher",
+      founderEmail: "ft@example.com",
+      status: "approved",
+      isMainTeam: false,
+      memberCount: 3,
+      createdAt: created,
+      updatedAt: created
+    });
+    await db.collection("users").doc("ilker_u").set({
+      userId: "ilker_u",
+      email: "mehmetilkerbas@gmail.com",
+      role: "Yetkili Öğretmen",
+      roles: ["Yetkili Öğretmen"],
+      status: "active",
+      isSuperAdmin: true,
+      isPlatformAdmin: false
+    });
+    await db.collection("team_memberships").doc("blacksea_robotics_ilker_u").set({
+      teamId: "blacksea_robotics",
+      userId: "ilker_u",
+      userName: "Mehmet İlker Baş",
+      userEmail: "mehmetilkerbas@gmail.com",
+      subTeam: "Genel Yönetim",
+      role: "Yetkili Öğretmen",
+      roles: ["Yetkili Öğretmen"],
+      status: "active",
+      isTeamAdmin: true,
+      createdAt: created,
+      updatedAt: created
+    });
+    await db.collection("team_memberships").doc("blacksea_robotics_bsr_student").set({
+      teamId: "blacksea_robotics",
+      userId: "bsr_student",
+      userName: "BSR Öğrenci",
+      userEmail: "bsrstudent@example.com",
+      subTeam: "Yazılım Ekibi",
+      role: "Yazılım Üyesi",
+      roles: ["Yazılım Üyesi"],
+      status: "active",
+      isTeamAdmin: false,
+      createdAt: created,
+      updatedAt: created
+    });
+    // Legacy user without team_memberships doc
+    await db.collection("users").doc("legacy_bsr_student").set({
+      userId: "legacy_bsr_student",
+      email: "legacy@example.com",
+      team: "Mekanik Ekibi",
+      role: "Mekanik Sorumlusu",
+      roles: ["Mekanik Sorumlusu"],
+      status: "active",
+      activeTeamId: "blacksea_robotics"
+    });
+    await db.collection("team_memberships").doc("team_fatsa_fatsa_teacher").set({
+      teamId: "team_fatsa",
+      userId: "fatsa_teacher",
+      userName: "Fatsa Öğretmen",
+      userEmail: "ft@example.com",
+      subTeam: "Genel Yönetim",
+      role: "Yetkili Öğretmen",
+      roles: ["Yetkili Öğretmen"],
+      status: "active",
+      isTeamAdmin: true,
+      createdAt: created,
+      updatedAt: created
+    });
+    // Membership doc intentionally missing userEmail field
+    await db.collection("team_memberships").doc("team_fatsa_fatsa_student").set({
+      teamId: "team_fatsa",
+      userId: "fatsa_student",
+      userName: "Fatsa Öğrenci",
+      userEmail: "",
+      subTeam: "Mekanik Ekibi",
+      role: "Mekanik Üyesi",
+      roles: ["Mekanik Üyesi"],
+      status: "revoked",
+      isTeamAdmin: false,
+      createdAt: created,
+      updatedAt: created
+    });
+  });
+
+  const ilkerDb = testEnv.authenticatedContext("ilker_u", {
+    email: "MehmetIlkerBas@gmail.com",
+    email_verified: true
+  }).firestore();
+  const fatsaTeacherDb = testEnv.authenticatedContext("fatsa_teacher", {
+    email: "ft@example.com",
+    email_verified: true
+  }).firestore();
+
+  // 1. Reading non-existent membership doc for legacy user must succeed (resource == null)
+  await assertSucceeds(ilkerDb.collection("team_memberships").doc("blacksea_robotics_legacy_bsr_student").get());
+
+  // 2. BSR Yetkili Öğretmen can remove active membership and clear legacy user activeTeamId="" & sync count
+  await assertSucceeds(ilkerDb.collection("team_memberships").doc("blacksea_robotics_bsr_student").delete());
+  await assertSucceeds(
+    ilkerDb.collection("users").doc("legacy_bsr_student").update({
+      team: "Genel Ekip",
+      role: "Takım Üyesi",
+      roles: ["Takım Üyesi"],
+      activeTeamId: "",
+      updatedAt: new Date(Date.now() - 500)
+    })
+  );
+  // Cannot assign arbitrary activeTeamId or role="Yönetici" on another user
+  await assertFails(
+    ilkerDb.collection("users").doc("legacy_bsr_student").update({
+      activeTeamId: "team_fatsa",
+      updatedAt: new Date(Date.now() - 400)
+    })
+  );
+  await assertSucceeds(
+    ilkerDb.collection("teams").doc("blacksea_robotics").update({
+      memberCount: 1,
+      updatedAt: new Date(Date.now() - 300)
+    })
+  );
+
+  // 3. Standalone team Yetkili Öğretmen can delete revoked member and sync memberCount
+  await assertSucceeds(fatsaTeacherDb.collection("team_memberships").doc("team_fatsa_fatsa_student").delete());
+  await assertSucceeds(
+    fatsaTeacherDb.collection("teams").doc("team_fatsa").update({
+      memberCount: 1,
+      updatedAt: new Date(Date.now() - 200)
+    })
+  );
+});
+
+test("Users can edit own profile (teamless or multi-team including revoked memberships) and founder can sync drifted team memberCount", async () => {
+  const created = new Date(Date.now() - 8000);
+  await testEnv.withSecurityRulesDisabled(async (ctx) => {
+    const db = ctx.firestore();
+    await db.collection("teams").doc("team_alpha").set({
+      name: "Alpha Robotics",
+      shortCode: "ALP",
+      competition: "FRC",
+      schoolName: "Ordu Fen",
+      city: "Ordu",
+      description: "Alpha takımı",
+      managerName: "Alpha Kaptan",
+      managerContact: "ak@example.com",
+      founderId: "alpha_mgr",
+      founderEmail: "ak@example.com",
+      status: "under_review",
+      isMainTeam: false,
+      memberCount: 4,
+      createdAt: created,
+      updatedAt: created
+    });
+    await db.collection("users").doc("member_edit").set({
+      userId: "member_edit",
+      firstName: "Eski",
+      lastName: "Ad",
+      username: "eskiad",
+      displayName: "Eski Ad",
+      email: "edit@example.com",
+      team: "Genel Ekip",
+      role: "Takım Üyesi",
+      roles: ["Takım Üyesi"],
+      status: "active"
+    });
+    await db.collection("team_memberships").doc("team_alpha_member_edit").set({
+      teamId: "team_alpha",
+      userId: "member_edit",
+      userName: "Eski Ad",
+      userEmail: "edit@example.com",
+      subTeam: "Yazılım Ekibi",
+      role: "Yazılım Üyesi",
+      roles: ["Yazılım Üyesi"],
+      status: "revoked",
+      isTeamAdmin: false,
+      createdAt: created,
+      updatedAt: created
+    });
+  });
+
+  const memberDb = testEnv.authenticatedContext("member_edit", {
+    email: "edit@example.com",
+    email_verified: true
+  }).firestore();
+  const founderDb = testEnv.authenticatedContext("founder_u", {
+    email: "filim3290@gmail.com",
+    email_verified: true
+  }).firestore();
+
+  await assertSucceeds(
+    memberDb.collection("users").doc("member_edit").update({
+      firstName: "Yeni",
+      lastName: "İsim",
+      username: "yeniisim",
+      displayName: "Yeni İsim",
+      team: "Genel Ekip",
+      updatedAt: new Date(Date.now() - 500)
+    })
+  );
+  await assertSucceeds(
+    memberDb.collection("team_memberships").doc("team_alpha_member_edit").update({
+      userName: "Yeni İsim",
+      updatedAt: new Date(Date.now() - 400)
+    })
+  );
+
+  // Founder can reconcile stale memberCount even on under_review/suspended teams
+  await assertSucceeds(
+    founderDb.collection("teams").doc("team_alpha").update({
+      memberCount: 3,
+      updatedAt: new Date(Date.now() - 300)
+    })
+  );
+});
+
 
 

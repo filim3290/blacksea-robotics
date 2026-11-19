@@ -72,6 +72,7 @@ import com.example.model.TeamMembership
 import com.example.model.TeamType
 import com.example.model.UserProfile
 import com.example.ui.components.AppUpdatesCard
+import com.example.ui.components.EditProfileDialog
 import com.example.ui.components.TeamBadge
 import com.example.ui.components.TeamLogoBadge
 import com.example.ui.components.UserRolesRow
@@ -724,119 +725,35 @@ fun ProfileScreen(
     }
 
     if (showEditDialog && currentUserProfile != null && repository != null) {
-        var editFirstName by remember { mutableStateOf(currentUserProfile.firstName) }
-        var editLastName by remember { mutableStateOf(currentUserProfile.lastName) }
-        var editUsername by remember { mutableStateOf(currentUserProfile.username) }
-        var editTeam by remember { mutableStateOf(activeSubTeam) }
-        var teamExpanded by remember { mutableStateOf(false) }
-
-        AlertDialog(
-            onDismissRequest = { showEditDialog = false },
-            title = {
-                Text("Profili Düzenle", fontWeight = FontWeight.Bold, fontSize = 18.sp)
-            },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    OutlinedTextField(
-                        value = editFirstName,
-                        onValueChange = { editFirstName = it },
-                        label = { Text("Ad") },
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(10.dp)
-                    )
-
-                    OutlinedTextField(
-                        value = editLastName,
-                        onValueChange = { editLastName = it },
-                        label = { Text("Soyad") },
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(10.dp)
-                    )
-
-                    OutlinedTextField(
-                        value = editUsername,
-                        onValueChange = { editUsername = it },
-                        label = { Text("Kullanıcı Adı") },
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(10.dp)
-                    )
-
-                    ExposedDropdownMenuBox(
-                        expanded = teamExpanded,
-                        onExpandedChange = { teamExpanded = !teamExpanded },
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        OutlinedTextField(
-                            value = editTeam,
-                            onValueChange = {},
-                            readOnly = true,
-                            label = { Text("Takım İçi Alt Ekip") },
-                            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = teamExpanded) },
-                            modifier = Modifier.fillMaxWidth().menuAnchor(MenuAnchorType.PrimaryNotEditable),
-                            shape = RoundedCornerShape(10.dp)
+        var isSavingProfile by remember { mutableStateOf(false) }
+        EditProfileDialog(
+            currentProfile = currentUserProfile,
+            activeSubTeam = activeSubTeam,
+            showSubTeamPicker = true,
+            isSaving = isSavingProfile,
+            onDismiss = { if (!isSavingProfile) showEditDialog = false },
+            onSave = { trimmedFirst, trimmedLast, trimmedUsername, selectedTeam ->
+                val uid = currentUserProfile.userId.ifBlank { currentUserProfile.id }
+                isSavingProfile = true
+                scope.launch {
+                    try {
+                        repository.updateUserDisplayAcrossTeams(
+                            userId = uid,
+                            firstName = trimmedFirst,
+                            lastName = trimmedLast,
+                            username = trimmedUsername,
+                            activeTeamId = activeTeam.id,
+                            subTeam = selectedTeam
                         )
-
-                        ExposedDropdownMenu(
-                            expanded = teamExpanded,
-                            onDismissRequest = { teamExpanded = false }
-                        ) {
-                            listOf(
-                                TeamType.GENERAL,
-                                TeamType.MANAGEMENT,
-                                TeamType.SOFTWARE,
-                                TeamType.MECHANIC,
-                                TeamType.PR
-                            ).forEach { team ->
-                                DropdownMenuItem(
-                                    text = { Text(team.displayName) },
-                                    onClick = {
-                                        editTeam = team.displayName
-                                        teamExpanded = false
-                                    }
-                                )
-                            }
-                        }
+                        showEditDialog = false
+                        Toast.makeText(context, "Profil güncellendi!", Toast.LENGTH_SHORT).show()
+                    } catch (ce: CancellationException) {
+                        throw ce
+                    } catch (e: Exception) {
+                        Toast.makeText(context, sanitizeUserErrorMessage(e), Toast.LENGTH_LONG).show()
+                    } finally {
+                        isSavingProfile = false
                     }
-                }
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        val trimmedFirst = editFirstName.trim()
-                        val trimmedLast = editLastName.trim()
-                        val uid = currentUserProfile.userId.ifBlank { currentUserProfile.id }
-                        if (trimmedFirst.isNotBlank() && trimmedLast.isNotBlank()) {
-                            scope.launch {
-                                try {
-                                    repository.updateUserDisplayAcrossTeams(
-                                        userId = uid,
-                                        firstName = trimmedFirst,
-                                        lastName = trimmedLast,
-                                        username = editUsername.trim(),
-                                        activeTeamId = activeTeam.id,
-                                        subTeam = editTeam
-                                    )
-                                    showEditDialog = false
-                                    Toast.makeText(context, "Profil güncellendi!", Toast.LENGTH_SHORT).show()
-                                } catch (ce: CancellationException) {
-                                    throw ce
-                                } catch (e: Exception) {
-                                    Toast.makeText(context, sanitizeUserErrorMessage(e), Toast.LENGTH_LONG).show()
-                                }
-                            }
-                        }
-                    },
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = ext.accentBlueSolid,
-                        contentColor = Color.White
-                    )
-                ) {
-                    Text("Kaydet", fontWeight = FontWeight.Bold)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showEditDialog = false }) {
-                    Text("İptal")
                 }
             }
         )

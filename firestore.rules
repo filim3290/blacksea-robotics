@@ -12,14 +12,14 @@ service cloud.firestore {
 
     function isFounderEmail() {
       return isAuthenticated() &&
-        request.auth.token.email == "filim3290@gmail.com" &&
-        request.auth.token.email_verified == true;
+        request.auth.token.get('email', '').lower() == "filim3290@gmail.com" &&
+        request.auth.token.get('email_verified', false) == true;
     }
 
     function isBsrAuthorizedTeacherEmail() {
       return isAuthenticated() &&
-        request.auth.token.email == "mehmetilkerbas@gmail.com" &&
-        request.auth.token.email_verified == true;
+        request.auth.token.get('email', '').lower() == "mehmetilkerbas@gmail.com" &&
+        request.auth.token.get('email_verified', false) == true;
     }
 
     function isValidId(id) {
@@ -215,7 +215,9 @@ service cloud.firestore {
       allow update: if isAuthenticated() && (
         isPlatformAdmin() ||
         (isTeamManager('blacksea_robotics') &&
-         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['team', 'role', 'roles', 'status', 'updatedAt']) &&
+         !(resource.data.get('email', '').lower() in ['filim3290@gmail.com', 'mehmetilkerbas@gmail.com']) &&
+         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['team', 'role', 'roles', 'status', 'activeTeamId', 'updatedAt']) &&
+         (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['activeTeamId']) || request.resource.data.get('activeTeamId', '') == '') &&
          request.resource.data.get('role', '') != 'Yönetici' &&
          !('Yönetici' in request.resource.data.get('roles', []))) ||
         (isOwner(userId) && isBsrAuthorizedTeacherEmail() &&
@@ -258,43 +260,45 @@ service cloud.firestore {
          isPlatformAdmin())
       );
 
-      allow update: if isAuthenticated() &&
-        isValidTeamDoc(request.resource.data) && (
-        (isPlatformAdmin() &&
-         request.resource.data.createdAt == resource.data.createdAt &&
-         request.resource.data.isMainTeam == resource.data.isMainTeam &&
-         (teamId != 'blacksea_robotics' || request.resource.data.status == 'approved')) ||
-        (resource.data.status == 'approved' &&
-         request.resource.data.status == resource.data.status &&
-         request.resource.data.founderId == resource.data.founderId &&
-         request.resource.data.isMainTeam == resource.data.isMainTeam &&
-         request.resource.data.createdAt == resource.data.createdAt &&
-         request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-           'name', 'shortCode', 'competition', 'schoolName', 'city',
-           'description', 'motto', 'logoKey', 'logoUrl', 'accentColorHex',
-           'managerName', 'managerContact', 'memberCount', 'updatedAt'
-         ]) &&
-         isTeamManager(teamId)) ||
-        (resource.data.status == 'approved' &&
-         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['memberCount', 'updatedAt']) &&
+      allow update: if isAuthenticated() && (
+        (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['memberCount', 'updatedAt']) &&
          request.resource.data.memberCount is int &&
          request.resource.data.memberCount >= 0 &&
          request.resource.data.updatedAt is timestamp &&
          request.resource.data.updatedAt <= request.time &&
-         isActiveTeamMember(teamId)) ||
-        (resource.data.status in ['suspended', 'under_review'] &&
-         request.resource.data.status == resource.data.status &&
-         request.resource.data.founderId == resource.data.founderId &&
-         request.resource.data.isMainTeam == resource.data.isMainTeam &&
-         request.resource.data.createdAt == resource.data.createdAt &&
-         request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-           'appealText', 'appealStatus', 'appealByUserId', 'appealByName', 'appealSubmittedAt', 'updatedAt'
-         ]) &&
-         request.resource.data.appealText is string &&
-         request.resource.data.appealText.size() >= 10 &&
-         request.resource.data.appealStatus == 'pending' &&
-         request.resource.data.appealByUserId == request.auth.uid &&
-         isTeamManager(teamId))
+         (isPlatformAdmin() ||
+          isTeamManager(teamId) ||
+          (resource.data.status == 'approved' && isActiveTeamMember(teamId)))) ||
+        (isValidTeamDoc(request.resource.data) && (
+          (isPlatformAdmin() &&
+           request.resource.data.createdAt == resource.data.createdAt &&
+           request.resource.data.isMainTeam == resource.data.isMainTeam &&
+           (teamId != 'blacksea_robotics' || request.resource.data.status == 'approved')) ||
+          (resource.data.status == 'approved' &&
+           request.resource.data.status == resource.data.status &&
+           request.resource.data.founderId == resource.data.founderId &&
+           request.resource.data.isMainTeam == resource.data.isMainTeam &&
+           request.resource.data.createdAt == resource.data.createdAt &&
+           request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+             'name', 'shortCode', 'competition', 'schoolName', 'city',
+             'description', 'motto', 'logoKey', 'logoUrl', 'accentColorHex',
+             'managerName', 'managerContact', 'memberCount', 'updatedAt'
+           ]) &&
+           isTeamManager(teamId)) ||
+          (resource.data.status in ['suspended', 'under_review'] &&
+           request.resource.data.status == resource.data.status &&
+           request.resource.data.founderId == resource.data.founderId &&
+           request.resource.data.isMainTeam == resource.data.isMainTeam &&
+           request.resource.data.createdAt == resource.data.createdAt &&
+           request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+             'appealText', 'appealStatus', 'appealByUserId', 'appealByName', 'appealSubmittedAt', 'updatedAt'
+           ]) &&
+           request.resource.data.appealText is string &&
+           request.resource.data.appealText.size() >= 10 &&
+           request.resource.data.appealStatus == 'pending' &&
+           request.resource.data.appealByUserId == request.auth.uid &&
+           isTeamManager(teamId))
+        ))
       );
 
       allow delete: if isAuthenticated() && teamId != 'blacksea_robotics' && (
@@ -384,7 +388,15 @@ service cloud.firestore {
 
     // --- PER-TEAM MEMBERSHIPS (Doc ID = teamId + '_' + userId) ---
     match /team_memberships/{membershipId} {
-      allow read: if isAuthenticated() && (
+      allow get: if isAuthenticated() && (
+        resource == null ||
+        resource.data.userId == request.auth.uid ||
+        isActiveTeamMember(resource.data.teamId) ||
+        isTeamManager(resource.data.teamId) ||
+        isPlatformAdmin()
+      );
+
+      allow list: if isAuthenticated() && (
         resource.data.userId == request.auth.uid ||
         isActiveTeamMember(resource.data.teamId) ||
         isTeamManager(resource.data.teamId) ||
@@ -422,7 +434,7 @@ service cloud.firestore {
         request.resource.data.userId == resource.data.userId && (
           (isTeamManager(resource.data.teamId) &&
            !(resource.data.teamId == 'blacksea_robotics' &&
-             resource.data.userEmail in ['filim3290@gmail.com', 'mehmetilkerbas@gmail.com'] &&
+             resource.data.get('userEmail', '').lower() in ['filim3290@gmail.com', 'mehmetilkerbas@gmail.com'] &&
              !isPlatformAdmin() &&
              (request.resource.data.status != 'active' || request.resource.data.isTeamAdmin == false)) &&
            (isPlatformAdmin() ||
@@ -433,6 +445,7 @@ service cloud.firestore {
            request.resource.data.isTeamAdmin == resource.data.isTeamAdmin &&
            request.resource.data.role == resource.data.role &&
            request.resource.data.roles == resource.data.roles && (
+             request.resource.data.diff(resource.data).affectedKeys().hasOnly(['userName', 'updatedAt']) ||
              (resource.data.status == 'revoked' &&
               request.resource.data.status == 'revoked' &&
               request.resource.data.diff(resource.data).affectedKeys().hasOnly([
@@ -455,7 +468,7 @@ service cloud.firestore {
         (isTeamManager(resource.data.teamId) &&
          resource.data.userId != request.auth.uid &&
          !(resource.data.teamId == 'blacksea_robotics' &&
-           resource.data.userEmail in ['filim3290@gmail.com', 'mehmetilkerbas@gmail.com'])) ||
+           resource.data.get('userEmail', '').lower() in ['filim3290@gmail.com', 'mehmetilkerbas@gmail.com'])) ||
         isPlatformAdmin()
       );
     }

@@ -80,7 +80,7 @@ fun filterChatDisplayRoles(roles: List<String>): List<String> {
     if (roles.isEmpty()) return emptyList()
     val result = mutableListOf<String>()
     for (raw in roles) {
-        val lower = raw.trim().lowercase(java.util.Locale("tr", "TR"))
+        val lower = raw.trim().lowercase(java.util.Locale.forLanguageTag("tr-TR"))
         when {
             lower.contains("öğretmen") || lower.contains("ogretmen") -> {
                 if ("Öğretmen" !in result) result.add("Öğretmen")
@@ -432,6 +432,70 @@ fun UserProfile.withTeamContext(
         isTeamContextApplied = true,
         activeTeamId = teamId
     )
+}
+
+fun UserProfile.isLegacyBsrMainMember(): Boolean {
+    if (isPlatformManagerAccount()) return false
+    if (isBlackseaAuthorizedTeacherAccount()) return true
+    if (activeTeamId == PLATFORM_MAIN_TEAM_ID) return true
+    return activeTeamId.isBlank() && roles.any {
+        it.isNotBlank() && it != "Takım Üyesi" && !it.equals("Yönetici", ignoreCase = true)
+    }
+}
+
+/**
+ * Single source of truth for active member counts per team.
+ * Matches [BlackseaRepository.observeTeamMemberships] and [BlackseaRepository.syncTeamMemberCount]
+ * identically so Developer Console cards, member inspection dialogs, banners, and team cards
+ * never disagree.
+ */
+fun computeTeamActiveMemberCounts(
+    memberships: List<TeamMembership>,
+    users: List<UserProfile>,
+    excludeUserId: String? = null
+): Map<String, Int> {
+    val cleanExclude = excludeUserId?.trim().orEmpty()
+    val byTeamAndUser = mutableMapOf<String, MutableMap<String, TeamMembership>>()
+
+    for (membership in memberships) {
+        val tId = membership.teamId.trim().ifBlank { PLATFORM_MAIN_TEAM_ID }
+        val uId = membership.userId.trim()
+        if (uId.isBlank() || uId == cleanExclude) continue
+        if (tId == PLATFORM_MAIN_TEAM_ID &&
+            membership.userEmail.trim().equals(PLATFORM_FOUNDER_EMAIL, ignoreCase = true)
+        ) {
+            continue
+        }
+        val teamMap = byTeamAndUser.getOrPut(tId) { mutableMapOf() }
+        val existing = teamMap[uId]
+        if (existing == null || membership.isActive()) {
+            teamMap[uId] = membership
+        }
+    }
+
+    val counts = mutableMapOf<String, Int>()
+    byTeamAndUser.forEach { (teamId, userMap) ->
+        counts[teamId] = userMap.values.count { it.isActive() }
+    }
+
+    // Merge legacy BSR user docs (without explicit team_memberships record) identically to observeTeamMemberships
+    val bsrRecordedUserIds = memberships
+        .filter { it.teamId.trim().ifBlank { PLATFORM_MAIN_TEAM_ID } == PLATFORM_MAIN_TEAM_ID }
+        .mapNotNull { it.userId.trim().takeIf { id -> id.isNotBlank() } }
+        .toSet()
+
+    val legacyExtraBsrCount = users.count { legacy ->
+        val uid = legacy.userId.ifBlank { legacy.id }.trim()
+        uid.isNotBlank() &&
+            uid != cleanExclude &&
+            uid !in bsrRecordedUserIds &&
+            !legacy.isPlatformManagerAccount() &&
+            legacy.isLegacyBsrMainMember() &&
+            (legacy.isBlackseaAuthorizedTeacherAccount() || UserStatus.isActive(legacy.status))
+    }
+
+    counts[PLATFORM_MAIN_TEAM_ID] = (counts[PLATFORM_MAIN_TEAM_ID] ?: 0) + legacyExtraBsrCount
+    return counts
 }
 
 @Keep

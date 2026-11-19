@@ -38,6 +38,7 @@ import androidx.compose.material.icons.filled.AdminPanelSettings
 import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.EmojiEvents
 import androidx.compose.material.icons.filled.Gavel
 import androidx.compose.material.icons.filled.Groups
@@ -58,7 +59,6 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.CenterAlignedTopAppBar
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
@@ -75,6 +75,7 @@ import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -114,6 +115,7 @@ import com.example.ui.TeamNotificationsDialog
 import com.example.ui.components.AdminSupportTab
 import com.example.ui.components.AppUpdatesCard
 import com.example.ui.components.BlackseaLogo
+import com.example.ui.components.EditProfileDialog
 import com.example.ui.components.SupportCenterButtonCard
 import com.example.ui.components.TeamBadge
 import com.example.ui.components.TeamLogoBadge
@@ -173,6 +175,8 @@ fun TeamHubScreen(
     var joinTargetTeam by remember { mutableStateOf<TeamInfo?>(null) }
     var appealTargetPair by remember { mutableStateOf<Pair<TeamInfo, TeamMembership>?>(null) }
     var showAccountSheet by remember { mutableStateOf(false) }
+    var showEditProfileDialog by remember { mutableStateOf(false) }
+    var isSavingProfile by remember { mutableStateOf(false) }
     var showSignOutConfirmation by remember { mutableStateOf(false) }
     var showPlatformConsoleDialog by rememberSaveable { mutableStateOf(false) }
     var platformConsoleTabKey by rememberSaveable { mutableStateOf("applications") }
@@ -202,6 +206,11 @@ fun TeamHubScreen(
         if (isPlatformAdmin) repository.observeAllTeamsForPlatformAdmin()
         else flowOf(emptyList())
     }.collectAsState(initial = emptyList())
+
+    val liveMemberCountsForAdmin by remember(isPlatformAdmin) {
+        if (isPlatformAdmin) repository.observePlatformActiveMemberCounts()
+        else flowOf(null)
+    }.collectAsState(initial = null)
 
     val allSupportTicketsForAdmin by remember(isPlatformAdmin) {
         if (isPlatformAdmin) repository.observeAllSupportTickets(PLATFORM_MAIN_TEAM_ID)
@@ -298,24 +307,28 @@ fun TeamHubScreen(
             .fillMaxSize()
             .testTag("team_hub_screen"),
         topBar = {
-            CenterAlignedTopAppBar(
+            TopAppBar(
                 title = {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         BlackseaLogo(size = 30)
-                        Column {
+                        Column(modifier = Modifier.weight(1f, fill = false)) {
                             Text(
                                 text = "Takımlar Merkezi",
                                 fontSize = 16.sp,
                                 fontWeight = FontWeight.Black,
-                                color = MaterialTheme.colorScheme.onSurface
+                                color = MaterialTheme.colorScheme.onSurface,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
                             Text(
                                 text = if (isPlatformAdmin) "Uygulama Geliştirici Konsolu" else "BlackSea Robotics Platformu",
                                 fontSize = 10.sp,
-                                color = if (isPlatformAdmin) ext.adminRedText else ext.textMuted
+                                color = if (isPlatformAdmin) ext.adminRedText else ext.textMuted,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
                         }
                     }
@@ -386,7 +399,7 @@ fun TeamHubScreen(
                         )
                     }
                 },
-                colors = TopAppBarDefaults.centerAlignedTopAppBarColors(
+                colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.surface
                 )
             )
@@ -1113,6 +1126,16 @@ fun TeamHubScreen(
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
                             )
+                            if (resolvedSupportProfile.username.isNotBlank()) {
+                                Text(
+                                    text = "@${resolvedSupportProfile.username}",
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    color = ext.accentBlue,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
                             if (resolvedSupportProfile.email.isNotBlank()) {
                                 Text(
                                     text = resolvedSupportProfile.email,
@@ -1149,6 +1172,21 @@ fun TeamHubScreen(
                     }
 
                     HorizontalDivider(color = ext.cardBorder)
+
+                    OutlinedButton(
+                        onClick = { showEditProfileDialog = true },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 48.dp)
+                            .testTag("account_dialog_edit_profile_button"),
+                        shape = RoundedCornerShape(12.dp),
+                        border = BorderStroke(1.2.dp, ext.accentBlue.copy(alpha = 0.55f)),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = ext.accentBlue)
+                    ) {
+                        Icon(imageVector = Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Profilini Düzenle", fontWeight = FontWeight.Bold)
+                    }
 
                     AppUpdatesCard(
                         updateManager = resolvedUpdateManager,
@@ -1205,6 +1243,52 @@ fun TeamHubScreen(
                 }
             }
         }
+    }
+
+    if (showEditProfileDialog) {
+        val fallbackAuthUser = Firebase.auth.currentUser
+        val resolvedEditProfile = currentUserProfile ?: UserProfile(
+            id = currentUserId,
+            userId = currentUserId,
+            displayName = fallbackAuthUser?.displayName?.takeIf { it.isNotBlank() } ?: "Kullanıcı",
+            email = fallbackAuthUser?.email.orEmpty(),
+            photoUrl = fallbackAuthUser?.photoUrl?.toString().orEmpty()
+        )
+        val activeTeamForSync = myActiveTeams.firstOrNull()?.first?.id.orEmpty()
+        EditProfileDialog(
+            currentProfile = resolvedEditProfile,
+            showSubTeamPicker = false,
+            isSaving = isSavingProfile,
+            onDismiss = { if (!isSavingProfile) showEditProfileDialog = false },
+            onSave = { trimmedFirst, trimmedLast, trimmedUsername, _ ->
+                val uid = resolvedEditProfile.userId.ifBlank { resolvedEditProfile.id }.ifBlank { currentUserId }
+                isSavingProfile = true
+                scope.launch {
+                    try {
+                        repository.updateUserDisplayAcrossTeams(
+                            userId = uid,
+                            firstName = trimmedFirst,
+                            lastName = trimmedLast,
+                            username = trimmedUsername,
+                            activeTeamId = activeTeamForSync,
+                            subTeam = ""
+                        )
+                        showEditProfileDialog = false
+                        Toast.makeText(context, "Profil güncellendi!", Toast.LENGTH_SHORT).show()
+                    } catch (ce: CancellationException) {
+                        throw ce
+                    } catch (e: Exception) {
+                        Toast.makeText(
+                            context,
+                            sanitizeUserErrorMessage(e, "Profil güncellenemedi."),
+                            Toast.LENGTH_LONG
+                        ).show()
+                    } finally {
+                        isSavingProfile = false
+                    }
+                }
+            }
+        )
     }
 
     if (showSignOutConfirmation) {
@@ -1356,6 +1440,7 @@ fun TeamHubScreen(
             onSelectTab = { platformConsoleTabKey = it },
             pendingApplications = pendingTeamApplicationsForAdmin,
             allTeams = allPlatformTeamsForAdmin,
+            liveMemberCounts = liveMemberCountsForAdmin,
             supportTickets = allSupportTicketsForAdmin,
             openSupportCount = openSupportCountForAdmin,
             currentUserProfile = currentUserProfile,
@@ -1557,7 +1642,7 @@ private fun MyActiveTeamCard(
                 onClick = onEnterClick,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .heightIn(min = 44.dp),
+                    .heightIn(min = 48.dp),
                 shape = RoundedCornerShape(12.dp),
                 colors = ButtonDefaults.buttonColors(
                     containerColor = if (isBlocked) blockColor else accent,
@@ -1699,7 +1784,7 @@ private fun MySuspendedTeamCard(
                 enabled = !isPendingAppeal,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .heightIn(min = 44.dp)
+                    .heightIn(min = 48.dp)
                     .testTag("member_appeal_button_${team.id}"),
                 shape = RoundedCornerShape(12.dp),
                 colors = ButtonDefaults.buttonColors(
@@ -2104,6 +2189,7 @@ private fun PlatformDeveloperConsoleDialog(
     onSelectTab: (String) -> Unit,
     pendingApplications: List<TeamInfo>,
     allTeams: List<TeamInfo>,
+    liveMemberCounts: Map<String, Int>? = null,
     supportTickets: List<SupportTicket>,
     openSupportCount: Int,
     currentUserProfile: UserProfile?,
@@ -2224,6 +2310,7 @@ private fun PlatformDeveloperConsoleDialog(
                         )
                         "teams" -> PlatformTeamsOverviewTab(
                             teams = allTeams,
+                            liveMemberCounts = liveMemberCounts,
                             repository = repository
                         )
                         else -> AdminSupportTab(

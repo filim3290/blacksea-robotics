@@ -435,6 +435,7 @@ private enum class PlatformTeamModerationAction {
 @Composable
 fun PlatformTeamsOverviewTab(
     teams: List<TeamInfo>,
+    liveMemberCounts: Map<String, Int>? = null,
     repository: BlackseaRepository
 ) {
     val context = LocalContext.current
@@ -447,6 +448,16 @@ fun PlatformTeamsOverviewTab(
     var teamToDeleteStep1 by remember { mutableStateOf<TeamInfo?>(null) }
     var teamToDeleteStep2 by remember { mutableStateOf<TeamInfo?>(null) }
     var processingTeamId by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(teams, liveMemberCounts) {
+        val counts = liveMemberCounts ?: return@LaunchedEffect
+        teams.forEach { team ->
+            val liveCount = (counts[team.id] ?: 0).toLong()
+            if (team.memberCount != liveCount) {
+                repository.syncTeamMemberCountIfDrifted(team.id, liveCount)
+            }
+        }
+    }
 
     LazyColumn(
         modifier = Modifier
@@ -571,9 +582,11 @@ fun PlatformTeamsOverviewTab(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(4.dp)
                             ) {
+                                val displayedActiveCount = liveMemberCounts?.get(team.id)
+                                    ?: team.memberCount.toInt().coerceAtLeast(0)
                                 Icon(Icons.Default.Groups, contentDescription = null, tint = ext.accentBlue, modifier = Modifier.size(14.dp))
                                 Text(
-                                    text = "${team.memberCount} Üye • Üyeleri Gör",
+                                    text = "$displayedActiveCount Aktif Üye • Üyeleri Gör",
                                     fontSize = 11.sp,
                                     fontWeight = FontWeight.Bold,
                                     color = ext.accentBlue
@@ -1003,9 +1016,10 @@ fun TeamMembersInspectionDialog(
     onDismiss: () -> Unit
 ) {
     val ext = MaterialTheme.blackseaColors
-    val members by remember(team.id) {
+    val membersState by remember(team.id) {
         repository.observeTeamMemberships(team.id)
-    }.collectAsState(initial = emptyList())
+    }.collectAsState(initial = null)
+    val members = membersState.orEmpty()
 
     var searchQuery by remember(team.id) { mutableStateOf("") }
     var statusFilter by remember(team.id) { mutableStateOf("all") }
@@ -1014,8 +1028,17 @@ fun TeamMembersInspectionDialog(
     val pendingCount = remember(members) { members.count { it.isPending() } }
     val restrictedCount = remember(members) { members.count { it.isRevoked() || it.isRejected() } }
 
+    LaunchedEffect(team.id, membersState) {
+        val loaded = membersState ?: return@LaunchedEffect
+        val liveActive = loaded.count { it.isActive() }.toLong()
+        if (team.memberCount != liveActive) {
+            repository.syncTeamMemberCountIfDrifted(team.id, liveActive)
+        }
+    }
+
     val filteredMembers = remember(members, searchQuery, statusFilter) {
-        val q = searchQuery.trim().lowercase(Locale("tr", "TR"))
+        val trLocale = Locale.forLanguageTag("tr-TR")
+        val q = searchQuery.trim().lowercase(trLocale)
         members.filter { m ->
             val matchesStatus = when (statusFilter) {
                 "active" -> m.isActive()
@@ -1024,11 +1047,11 @@ fun TeamMembersInspectionDialog(
                 else -> true
             }
             val matchesQuery = q.isBlank() ||
-                m.userName.lowercase(Locale("tr", "TR")).contains(q) ||
-                m.userEmail.lowercase(Locale("tr", "TR")).contains(q) ||
-                m.subTeam.lowercase(Locale("tr", "TR")).contains(q) ||
-                m.role.lowercase(Locale("tr", "TR")).contains(q) ||
-                m.roles.any { it.lowercase(Locale("tr", "TR")).contains(q) }
+                m.userName.lowercase(trLocale).contains(q) ||
+                m.userEmail.lowercase(trLocale).contains(q) ||
+                m.subTeam.lowercase(trLocale).contains(q) ||
+                m.role.lowercase(trLocale).contains(q) ||
+                m.roles.any { it.lowercase(trLocale).contains(q) }
             matchesStatus && matchesQuery
         }
     }
@@ -1060,7 +1083,7 @@ fun TeamMembersInspectionDialog(
                     TeamLogoBadge(team = team, size = 40)
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = "${team.name} • Üyeler (${members.size})",
+                            text = "${team.name} • $activeCount Aktif Üye",
                             fontSize = 15.sp,
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.onSurface,

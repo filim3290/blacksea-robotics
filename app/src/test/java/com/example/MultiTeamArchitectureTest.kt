@@ -17,6 +17,8 @@ import com.example.model.TeamTaskStatus
 import com.example.model.TeamType
 import com.example.model.UserProfile
 import com.example.model.UserStatus
+import com.example.model.computeTeamActiveMemberCounts
+import com.example.model.isLegacyBsrMainMember
 import com.example.model.withTeamContext
 import com.example.notifications.TeamNotificationDispatcher
 import org.junit.Assert.assertEquals
@@ -508,5 +510,127 @@ class MultiTeamArchitectureTest {
             shouldUserReceiveNotification(reopenedNotif, "teamless_u", emptyMap(), isPlatformAdmin = false))
         assertTrue("Teamless user must receive personal support_reply alert",
             shouldUserReceiveNotification(supportReplyNotif, "teamless_u", emptyMap(), isPlatformAdmin = false))
+    }
+
+    @Test
+    fun `computeTeamActiveMemberCounts and isLegacyBsrMainMember eliminate count drift across screens`() {
+        val founderProfile = UserProfile(
+            id = "u_founder",
+            userId = "u_founder",
+            email = PLATFORM_FOUNDER_EMAIL,
+            role = "Yönetici",
+            roles = listOf("Yönetici"),
+            status = UserStatus.ACTIVE.value,
+            activeTeamId = PLATFORM_MAIN_TEAM_ID
+        )
+        val bsrTeacherProfile = UserProfile(
+            id = "u_ilker",
+            userId = "u_ilker",
+            email = BLACKSEA_AUTHORIZED_TEACHER_EMAIL,
+            role = "Yetkili Öğretmen",
+            roles = listOf("Yetkili Öğretmen"),
+            status = UserStatus.ACTIVE.value,
+            activeTeamId = ""
+        )
+        val legacyRemovedUser = UserProfile(
+            id = "u_removed_legacy",
+            userId = "u_removed_legacy",
+            email = "removed@example.com",
+            team = TeamType.GENERAL.displayName,
+            role = "Takım Üyesi",
+            roles = listOf("Takım Üyesi"),
+            status = UserStatus.ACTIVE.value,
+            activeTeamId = ""
+        )
+        val revokedLegacyBsrUser = UserProfile(
+            id = "u_revoked_bsr",
+            userId = "u_revoked_bsr",
+            email = "revoked@example.com",
+            role = "Yazılım Üyesi",
+            roles = listOf("Yazılım Üyesi"),
+            status = UserStatus.ACTIVE.value,
+            activeTeamId = PLATFORM_MAIN_TEAM_ID
+        )
+
+        assertFalse("Founder must never count as a legacy BSR member", founderProfile.isLegacyBsrMainMember())
+        assertTrue("Authorized BSR teacher must be recognized in legacy fallback", bsrTeacherProfile.isLegacyBsrMainMember())
+        assertFalse("Reset teamless user must NOT be recognized as BSR member", legacyRemovedUser.isLegacyBsrMainMember())
+
+        val memberships = listOf(
+            // Stray founder doc that must be ignored
+            TeamMembership(
+                teamId = PLATFORM_MAIN_TEAM_ID,
+                userId = "u_founder",
+                userEmail = PLATFORM_FOUNDER_EMAIL,
+                status = UserStatus.ACTIVE.value
+            ),
+            // Two active BSR students
+            TeamMembership(
+                teamId = PLATFORM_MAIN_TEAM_ID,
+                userId = "u_s1",
+                userEmail = "s1@example.com",
+                status = UserStatus.ACTIVE.value
+            ),
+            TeamMembership(
+                teamId = PLATFORM_MAIN_TEAM_ID,
+                userId = "u_s2",
+                userEmail = "s2@example.com",
+                status = UserStatus.ACTIVE.value
+            ),
+            // Pending & revoked BSR docs (must not count, and u_revoked_bsr must not be resurrected from /users)
+            TeamMembership(
+                teamId = PLATFORM_MAIN_TEAM_ID,
+                userId = "u_pending",
+                userEmail = "pending@example.com",
+                status = UserStatus.PENDING.value
+            ),
+            TeamMembership(
+                teamId = PLATFORM_MAIN_TEAM_ID,
+                userId = "u_revoked_bsr",
+                userEmail = "revoked@example.com",
+                status = UserStatus.REVOKED.value
+            ),
+            // Another team with 2 active + 1 pending + 1 rejected
+            TeamMembership(
+                teamId = "team_fatsa",
+                userId = "u_s1",
+                userEmail = "s1@example.com",
+                status = UserStatus.ACTIVE.value
+            ),
+            TeamMembership(
+                teamId = "team_fatsa",
+                userId = "u_f2",
+                userEmail = "f2@example.com",
+                status = UserStatus.ACTIVE.value
+            ),
+            TeamMembership(
+                teamId = "team_fatsa",
+                userId = "u_f_pending",
+                userEmail = "fp@example.com",
+                status = UserStatus.PENDING.value
+            ),
+            TeamMembership(
+                teamId = "team_fatsa",
+                userId = "u_f_rejected",
+                userEmail = "fr@example.com",
+                status = UserStatus.REJECTED.value
+            )
+        )
+
+        val counts = computeTeamActiveMemberCounts(
+            memberships = memberships,
+            users = listOf(founderProfile, bsrTeacherProfile, legacyRemovedUser, revokedLegacyBsrUser)
+        )
+        // Expected BSR: u_s1 + u_s2 + bsrTeacherProfile = 3 (founder ignored, pending/revoked ignored, reset legacy ignored)
+        assertEquals(3, counts[PLATFORM_MAIN_TEAM_ID])
+        assertEquals(2, counts["team_fatsa"])
+
+        val afterRemoval = computeTeamActiveMemberCounts(
+            memberships = memberships,
+            users = listOf(founderProfile, bsrTeacherProfile, legacyRemovedUser, revokedLegacyBsrUser),
+            excludeUserId = "u_s1"
+        )
+        assertEquals(2, afterRemoval[PLATFORM_MAIN_TEAM_ID])
+        assertEquals(1, afterRemoval["team_fatsa"])
     }
 }

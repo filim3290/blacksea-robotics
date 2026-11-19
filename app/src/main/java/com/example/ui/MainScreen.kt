@@ -83,6 +83,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.rememberCoroutineScope
 import kotlinx.coroutines.launch
@@ -675,7 +676,7 @@ fun MainScreen(
                 // Standard Mobile Layout with TopAppBar and NavigationBar
                 Scaffold(
                     topBar = {
-                        CenterAlignedTopAppBar(
+                        TopAppBar(
                             navigationIcon = {
                                 IconButton(
                                     onClick = {
@@ -711,10 +712,10 @@ fun MainScreen(
                                         color = MaterialTheme.colorScheme.onSurface,
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis,
-                                        modifier = Modifier.widthIn(max = 165.dp)
+                                        modifier = Modifier.weight(1f, fill = false)
                                     )
                                     if (activeTeam.shortCode.isNotBlank()) {
-                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Spacer(modifier = Modifier.width(6.dp))
                                         Surface(
                                             shape = RoundedCornerShape(4.dp),
                                             color = teamAccent.copy(alpha = 0.16f)
@@ -800,7 +801,7 @@ fun MainScreen(
                                     }
                                 }
                             },
-                            colors = TopAppBarDefaults.centerAlignedTopAppBarColors(
+                            colors = TopAppBarDefaults.topAppBarColors(
                                 containerColor = MaterialTheme.colorScheme.surface
                             )
                         )
