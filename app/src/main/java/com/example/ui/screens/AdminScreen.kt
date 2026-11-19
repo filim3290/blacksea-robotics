@@ -21,6 +21,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -64,7 +66,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -168,15 +169,17 @@ fun AdminScreen(
         )
     }
 
-    var selectedTabIndex by remember(sections) {
-        mutableIntStateOf(
-            sections.indexOfFirst { it.key == initialSectionKey }.takeIf { it >= 0 } ?: 0
-        )
+    val initialSectionIndex = remember(sections) {
+        sections.indexOfFirst { it.key == initialSectionKey }.takeIf { it >= 0 } ?: 0
     }
+    val pagerState = rememberPagerState(
+        initialPage = initialSectionIndex,
+        pageCount = { sections.size }
+    )
     LaunchedEffect(initialSectionKey, sections) {
         val idx = sections.indexOfFirst { it.key == initialSectionKey }
-        if (idx >= 0) {
-            selectedTabIndex = idx
+        if (idx >= 0 && pagerState.currentPage != idx) {
+            pagerState.scrollToPage(idx)
         }
     }
 
@@ -234,7 +237,7 @@ fun AdminScreen(
         }
 
         // Dynamic Tabs
-        val safeSelectedIndex = selectedTabIndex.coerceIn(0, (sections.size - 1).coerceAtLeast(0))
+        val safeSelectedIndex = pagerState.currentPage.coerceIn(0, (sections.size - 1).coerceAtLeast(0))
         ScrollableTabRow(
             selectedTabIndex = safeSelectedIndex,
             edgePadding = 16.dp,
@@ -243,7 +246,11 @@ fun AdminScreen(
             sections.forEachIndexed { index, section ->
                 Tab(
                     selected = safeSelectedIndex == index,
-                    onClick = { selectedTabIndex = index },
+                    onClick = {
+                        scope.launch {
+                            pagerState.animateScrollToPage(index)
+                        }
+                    },
                     text = {
                         val badge = when (section) {
                             AdminSection.MEMBERS -> " (${approvedMembers.size})"
@@ -260,10 +267,15 @@ fun AdminScreen(
             }
         }
 
-        val currentSection = sections.getOrElse(safeSelectedIndex) { AdminSection.MEMBERS }
-
-        when (currentSection) {
-            AdminSection.MEMBERS -> {
+        HorizontalPager(
+            state = pagerState,
+            beyondViewportPageCount = 1,
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth()
+        ) { pageIndex ->
+            when (sections[pageIndex]) {
+                AdminSection.MEMBERS -> {
                 LazyColumn(
                     modifier = Modifier
                         .fillMaxSize()
@@ -939,12 +951,13 @@ fun AdminScreen(
                 }
             }
 
-            AdminSection.TEAM_INFO -> {
-                TeamInfoEditorTab(
-                    activeTeam = activeTeam,
-                    repository = repository,
-                    onTeamDeleted = onTeamDeleted
-                )
+                AdminSection.TEAM_INFO -> {
+                    TeamInfoEditorTab(
+                        activeTeam = activeTeam,
+                        repository = repository,
+                        onTeamDeleted = onTeamDeleted
+                    )
+                }
             }
         }
     }

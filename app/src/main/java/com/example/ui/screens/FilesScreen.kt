@@ -21,8 +21,10 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -45,6 +47,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -94,7 +97,15 @@ fun FilesScreen(
     val activeTeamName = activeTeam.name.ifBlank { "BlackSea Robotics" }
     val storagePrefix = if (activeTeamId == PLATFORM_MAIN_TEAM_ID) "" else "teams/$activeTeamId/"
 
-    var selectedTypeFilter by remember { mutableStateOf("Hepsi") }
+    val fileTypes = remember {
+        listOf("Hepsi", "Kod", "Görsel", "Video", "Ses", "PDF", "CAD", "ZIP", "Belge")
+    }
+    val pagerState = rememberPagerState(initialPage = 0, pageCount = { fileTypes.size })
+    val chipRowState = rememberLazyListState()
+    LaunchedEffect(pagerState.currentPage) {
+        chipRowState.animateScrollToItem(pagerState.currentPage)
+    }
+
     val files by repository.observeSharedFiles(teamId = activeTeamId).collectAsState(initial = emptyList())
 
     // File Preview Modal & Delete Confirmation
@@ -155,23 +166,6 @@ fun FilesScreen(
         if (uri != null) handlePickedUri(uri)
     }
 
-    val fileTypes = listOf("Hepsi", "Kod", "Görsel", "Video", "Ses", "PDF", "CAD", "ZIP", "Belge")
-
-    val filteredFiles = files.filter { file ->
-        when (selectedTypeFilter) {
-            "Hepsi" -> true
-            "Kod" -> file.fileType == "code"
-            "Görsel" -> file.fileType == "image"
-            "Video" -> file.fileType == "video"
-            "Ses" -> file.fileType == "audio"
-            "PDF" -> file.fileType == "pdf"
-            "CAD" -> file.fileType == "cad"
-            "ZIP" -> file.fileType == "zip"
-            "Belge" -> file.fileType == "doc" || file.fileType == "text"
-            else -> true
-        }
-    }
-
     val isManager = currentUserProfile?.isManagerAccount() == true
 
     Box(
@@ -188,13 +182,19 @@ fun FilesScreen(
             ) {
                 Column(modifier = Modifier.padding(vertical = 8.dp)) {
                     LazyRow(
+                        state = chipRowState,
                         modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        items(fileTypes) { type ->
+                        itemsIndexed(fileTypes) { index, type ->
+                            val selected = pagerState.currentPage == index
                             FilterChip(
-                                selected = selectedTypeFilter == type,
-                                onClick = { selectedTypeFilter = type },
+                                selected = selected,
+                                onClick = {
+                                    scope.launch {
+                                        pagerState.animateScrollToPage(index)
+                                    }
+                                },
                                 label = { Text(type, fontSize = 12.sp) },
                                 colors = FilterChipDefaults.filterChipColors(
                                     selectedContainerColor = ElectricBlue,
@@ -206,58 +206,83 @@ fun FilesScreen(
                 }
             }
 
-            if (filteredFiles.isEmpty()) {
-                Box(
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxWidth(),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Folder,
-                            contentDescription = null,
-                            tint = ext.textMuted,
-                            modifier = Modifier.size(52.dp)
-                        )
-                        Text(
-                            text = "Henüz paylaşılan bir dosya yok",
-                            color = ext.textSecondary,
-                            fontSize = 15.sp,
-                            fontWeight = FontWeight.Medium
-                        )
-                        Text(
-                            text = "Aşağıdaki butona basarak cihazınızdan kod, CAD veya PDF yükleyin",
-                            color = ext.textMuted,
-                            fontSize = 12.sp
-                        )
+            HorizontalPager(
+                state = pagerState,
+                userScrollEnabled = !isUploading && !isDeletingFile,
+                beyondViewportPageCount = 1,
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+            ) { pageIndex ->
+                val pageTypeFilter = fileTypes[pageIndex]
+                val pageFiles = remember(files, pageTypeFilter) {
+                    files.filter { file ->
+                        when (pageTypeFilter) {
+                            "Hepsi" -> true
+                            "Kod" -> file.fileType == "code"
+                            "Görsel" -> file.fileType == "image"
+                            "Video" -> file.fileType == "video"
+                            "Ses" -> file.fileType == "audio"
+                            "PDF" -> file.fileType == "pdf"
+                            "CAD" -> file.fileType == "cad"
+                            "ZIP" -> file.fileType == "zip"
+                            "Belge" -> file.fileType == "doc" || file.fileType == "text"
+                            else -> true
+                        }
                     }
                 }
-            } else {
-                LazyColumn(
-                    modifier = Modifier.weight(1f).fillMaxWidth(),
-                    contentPadding = PaddingValues(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    itemsIndexed(
-                        items = filteredFiles,
-                        key = { index, file -> "${file.id.ifBlank { file.fileName }}_$index" }
-                    ) { _, file ->
-                        val canDelete = isManager || file.uploadedById == currentUserProfile?.userId || file.uploadedById == currentUserProfile?.id
-                        SharedFileCard(
-                            file = file,
-                            onOpenFile = { activePreviewFile = it },
-                            onDownloadFile = {
-                                downloadFileToDevice(context, it.fileName, it.downloadUrl, it.content)
-                            },
-                            canDelete = canDelete,
-                            onDelete = {
-                                fileToDelete = file
-                            }
-                        )
+
+                if (pageFiles.isEmpty()) {
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Folder,
+                                contentDescription = null,
+                                tint = ext.textMuted,
+                                modifier = Modifier.size(52.dp)
+                            )
+                            Text(
+                                text = "Henüz paylaşılan bir dosya yok",
+                                color = ext.textSecondary,
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.Medium
+                            )
+                            Text(
+                                text = "Aşağıdaki butona basarak cihazınızdan kod, CAD veya PDF yükleyin",
+                                color = ext.textMuted,
+                                fontSize = 12.sp
+                            )
+                        }
+                    }
+                } else {
+                    LazyColumn(
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        itemsIndexed(
+                            items = pageFiles,
+                            key = { index, file -> "${file.id.ifBlank { file.fileName }}_$index" }
+                        ) { _, file ->
+                            val canDelete = isManager || file.uploadedById == currentUserProfile?.userId || file.uploadedById == currentUserProfile?.id
+                            SharedFileCard(
+                                file = file,
+                                onOpenFile = { activePreviewFile = it },
+                                onDownloadFile = {
+                                    downloadFileToDevice(context, it.fileName, it.downloadUrl, it.content)
+                                },
+                                canDelete = canDelete,
+                                onDelete = {
+                                    fileToDelete = file
+                                }
+                            )
+                        }
                     }
                 }
             }

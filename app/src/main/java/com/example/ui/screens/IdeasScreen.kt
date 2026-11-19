@@ -30,8 +30,10 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -71,6 +73,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -130,10 +133,23 @@ fun IdeasScreen(
     val activeTeamId = activeTeam.id.ifBlank { PLATFORM_MAIN_TEAM_ID }
     val activeTeamName = activeTeam.name.ifBlank { "BlackSea Robotics" }
 
-    var selectedRoomFilter by remember { mutableStateOf("all") }
+    val roomOptions = remember {
+        listOf(
+            Pair("all", "Tüm Odalar"),
+            Pair("general", "Genel Ekip"),
+            Pair("software", "Yazılım"),
+            Pair("mechanic", "Mekanik"),
+            Pair("pr", "PR")
+        )
+    }
+    val pagerState = rememberPagerState(initialPage = 0, pageCount = { roomOptions.size })
+    val chipRowState = rememberLazyListState()
+    LaunchedEffect(pagerState.currentPage) {
+        chipRowState.animateScrollToItem(pagerState.currentPage)
+    }
 
-    val ideas by repository.observeIdeas(
-        roomId = if (selectedRoomFilter == "all") null else selectedRoomFilter,
+    val allIdeas by repository.observeIdeas(
+        roomId = null,
         teamId = activeTeamId
     ).collectAsState(initial = emptyList())
 
@@ -152,16 +168,6 @@ fun IdeasScreen(
     // File Preview Dialog State
     var activePreviewFile by remember { mutableStateOf<SharedProjectFile?>(null) }
 
-    val roomOptions = listOf(
-        Pair("all", "Tüm Odalar"),
-        Pair("general", "Genel Ekip"),
-        Pair("software", "Yazılım"),
-        Pair("mechanic", "Mekanik"),
-        Pair("pr", "PR")
-    )
-
-    val filteredIdeas = ideas
-
     val isAdminOrLeader = currentUserProfile?.isManagerAccount() == true
 
     val timeFormatter = remember { SimpleDateFormat("dd MMM, HH:mm", Locale.getDefault()) }
@@ -175,15 +181,20 @@ fun IdeasScreen(
                 shadowElevation = 2.dp
             ) {
                 LazyRow(
+                    state = chipRowState,
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(horizontal = 12.dp, vertical = 8.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    items(roomOptions) { (id, label) ->
+                    itemsIndexed(roomOptions) { index, (_, label) ->
                         FilterChip(
-                            selected = selectedRoomFilter == id,
-                            onClick = { selectedRoomFilter = id },
+                            selected = pagerState.currentPage == index,
+                            onClick = {
+                                scope.launch {
+                                    pagerState.animateScrollToPage(index)
+                                }
+                            },
                             label = { Text(text = label, fontSize = 12.sp) },
                             colors = FilterChipDefaults.filterChipColors(
                                 selectedContainerColor = ElectricBlue,
@@ -194,35 +205,44 @@ fun IdeasScreen(
                 }
             }
 
-            // Ideas List
-            LazyColumn(
+            // Ideas List (Swipeable across room filter pages)
+            HorizontalPager(
+                state = pagerState,
+                beyondViewportPageCount = 1,
                 modifier = Modifier
                     .weight(1f)
-                    .fillMaxWidth(),
-                contentPadding = PaddingValues(14.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                if (filteredIdeas.isEmpty()) {
-                    item {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(top = 60.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(
-                                text = "Bu odada henüz fikir bulunmuyor. Yeni bir fikir ekleyin!",
-                                color = ext.textMuted,
-                                fontSize = 14.sp
-                            )
+                    .fillMaxWidth()
+            ) { pageIndex ->
+                val pageRoomId = roomOptions[pageIndex].first
+                val filteredIdeas = remember(allIdeas, pageRoomId) {
+                    if (pageRoomId == "all") allIdeas else allIdeas.filter { it.roomId == pageRoomId }
+                }
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    if (filteredIdeas.isEmpty()) {
+                        item {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(top = 60.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = "Bu odada henüz fikir bulunmuyor. Yeni bir fikir ekleyin!",
+                                    color = ext.textMuted,
+                                    fontSize = 14.sp
+                                )
+                            }
                         }
                     }
-                }
 
-                itemsIndexed(
-                    items = filteredIdeas,
-                    key = { index, idea -> "${idea.id.ifBlank { idea.title }}_$index" }
-                ) { _, idea ->
+                    itemsIndexed(
+                        items = filteredIdeas,
+                        key = { index, idea -> "${idea.id.ifBlank { idea.title }}_$index" }
+                    ) { _, idea ->
                     val isLiked = idea.likes.contains(currentUserProfile?.userId)
                     val canDelete = isAdminOrLeader || idea.authorId == currentUserProfile?.userId
                     val dateFormatted = idea.createdAt?.toDate()?.let { timeFormatter.format(it) } ?: ""
@@ -473,6 +493,7 @@ fun IdeasScreen(
                         }
                     }
                 }
+            }
             }
         }
 

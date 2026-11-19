@@ -17,7 +17,8 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -42,6 +43,8 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -92,6 +95,7 @@ import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -161,9 +165,32 @@ fun RoomsScreen(
     val activeTeamName = activeTeam.name.ifBlank { "BlackSea Robotics" }
     val storagePrefix = if (activeTeamId == com.example.model.PLATFORM_MAIN_TEAM_ID) "" else "teams/$activeTeamId/"
 
-    var selectedRoomId by remember { mutableStateOf(initialRoomId) }
+    val rooms = remember {
+        listOf(
+            Pair("general", "GENEL EKİP ODASI"),
+            Pair("software", "YAZILIM EKİBİ"),
+            Pair("mechanic", "MEKANİK EKİBİ"),
+            Pair("pr", "PR EKİBİ")
+        )
+    }
+    val initialRoomIdx = remember(rooms) {
+        rooms.indexOfFirst { it.first == initialRoomId }.takeIf { it >= 0 } ?: 0
+    }
+    val pagerState = rememberPagerState(
+        initialPage = initialRoomIdx,
+        pageCount = { rooms.size }
+    )
+    val chipRowState = rememberLazyListState()
+    val selectedRoomId = rooms.getOrElse(pagerState.currentPage) { rooms.first() }.first
+
     LaunchedEffect(initialRoomId) {
-        selectedRoomId = initialRoomId
+        val idx = rooms.indexOfFirst { it.first == initialRoomId }
+        if (idx >= 0 && pagerState.currentPage != idx) {
+            pagerState.scrollToPage(idx)
+        }
+    }
+    LaunchedEffect(pagerState.currentPage) {
+        chipRowState.animateScrollToItem(pagerState.currentPage)
     }
     DisposableEffect(selectedRoomId, activeTeamId, currentUserProfile?.userId, currentUserProfile?.id) {
         val activeUid = currentUserProfile?.userId?.ifBlank { currentUserProfile.id }.orEmpty()
@@ -173,8 +200,6 @@ fun RoomsScreen(
         }
     }
     val messages by repository.observeMessages(selectedRoomId, teamId = activeTeamId).collectAsState(initial = emptyList())
-
-    val listState = rememberLazyListState()
 
     // Message Input State
     var messageText by remember { mutableStateOf("") }
@@ -302,20 +327,7 @@ fun RoomsScreen(
         if (uri != null) handlePickedUri(uri)
     }
 
-    // Auto scroll to bottom when new message arrives or keyboard opens
     val isKeyboardVisible = WindowInsets.ime.getBottom(LocalDensity.current) > 0
-    LaunchedEffect(messages.size, isKeyboardVisible) {
-        if (messages.isNotEmpty()) {
-            listState.animateScrollToItem(messages.size - 1)
-        }
-    }
-
-    val rooms = listOf(
-        Pair("general", "GENEL EKİP ODASI"),
-        Pair("software", "YAZILIM EKİBİ"),
-        Pair("mechanic", "MEKANİK EKİBİ"),
-        Pair("pr", "PR EKİBİ")
-    )
 
     val isAdmin = currentUserProfile?.isManagerAccount() == true
     val currentUid = currentUserProfile?.userId.orEmpty()
@@ -372,8 +384,6 @@ fun RoomsScreen(
     BackHandler(enabled = isSelectionMode && !isBulkDeleting) {
         exitSelectionMode()
     }
-
-    val pinnedMessages = messages.filter { it.isPinned }
 
     Column(
         modifier = modifier
@@ -606,20 +616,26 @@ fun RoomsScreen(
                 }
             } else {
                 LazyRow(
+                    state = chipRowState,
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(horizontal = 12.dp, vertical = 6.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    items(rooms) { (id, title) ->
+                    itemsIndexed(rooms) { index, (_, title) ->
+                        val isSelectedRoom = pagerState.currentPage == index
                         FilterChip(
-                            selected = selectedRoomId == id,
-                            onClick = { selectedRoomId = id },
+                            selected = isSelectedRoom,
+                            onClick = {
+                                scope.launch {
+                                    pagerState.animateScrollToPage(index)
+                                }
+                            },
                             label = {
                                 Text(
                                     text = title,
                                     fontSize = 12.sp,
-                                    fontWeight = if (selectedRoomId == id) FontWeight.Bold else FontWeight.Normal
+                                    fontWeight = if (isSelectedRoom) FontWeight.Bold else FontWeight.Normal
                                 )
                             },
                             colors = FilterChipDefaults.filterChipColors(
@@ -632,117 +648,145 @@ fun RoomsScreen(
             }
         }
 
-        // Pinned Messages Banner
-        if (pinnedMessages.isNotEmpty()) {
-            Card(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 6.dp),
-                shape = RoundedCornerShape(10.dp),
-                colors = CardDefaults.cardColors(containerColor = PhoenixAmber.copy(alpha = if (ext.isDark) 0.12f else 0.16f)),
-                border = BorderStroke(1.dp, ext.amberText.copy(alpha = 0.25f))
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.PushPin,
-                        contentDescription = "Sabitli Mesaj",
-                        tint = ext.amberText,
-                        modifier = Modifier.size(16.dp)
-                    )
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "Sabitlenmiş Mesaj: ${pinnedMessages.last().text}",
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            color = MaterialTheme.colorScheme.onSurface,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        Text(
-                            text = "${pinnedMessages.last().senderName} • ${pinnedMessages.last().senderTeam}",
-                            fontSize = 10.sp,
-                            color = ext.textSecondary
-                        )
-                    }
-                }
-            }
-        }
-
-        // Message Stream
-        LazyColumn(
+        // Swipeable Room Pages (Pinned Messages Banner + Message Stream)
+        HorizontalPager(
+            state = pagerState,
+            userScrollEnabled = !isSelectionMode && !isRecordingVoice,
+            beyondViewportPageCount = 1,
             modifier = Modifier
                 .weight(1f)
                 .fillMaxWidth()
-                .padding(horizontal = 12.dp),
-            state = listState,
-            verticalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            if (messages.isEmpty()) {
-                item {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(top = 40.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = "Bu odada henüz mesaj yok. İlk mesajı siz yazın!",
-                            fontSize = 13.sp,
-                            color = ext.textMuted
-                        )
-                    }
+        ) { pageIndex ->
+            val pageRoomId = rooms[pageIndex].first
+            val pageMessages by if (pageRoomId == selectedRoomId) {
+                rememberUpdatedState(messages)
+            } else {
+                remember(pageRoomId, activeTeamId) {
+                    repository.observeMessages(pageRoomId, teamId = activeTeamId)
+                }.collectAsState(initial = emptyList())
+            }
+            val pageListState = rememberLazyListState()
+            LaunchedEffect(pageMessages.size, isKeyboardVisible) {
+                if (pageMessages.isNotEmpty()) {
+                    pageListState.animateScrollToItem(pageMessages.size - 1)
                 }
             }
+            val pinnedMessages = remember(pageMessages) { pageMessages.filter { it.isPinned } }
 
-            itemsIndexed(
-                items = messages,
-                key = { index, msg -> "${msg.id.ifBlank { "msg_${msg.createdAt?.seconds ?: 0}" }}_$index" }
-            ) { _, message ->
-                AnimatedVisibility(
-                    visible = true,
-                    enter = fadeIn() + slideInVertically(initialOffsetY = { 20 })
-                ) {
-                    val isMyMessage = message.senderId == currentUserProfile?.userId
-                    val canSelectMessage = message.id.isNotBlank()
-                    val isMessageSelected = message.id in selectedMessageIds
-                    MessageItemBubble(
-                        message = message,
-                        isMyMessage = isMyMessage,
-                        isSelectionMode = isSelectionMode,
-                        canSelect = canSelectMessage,
-                        isSelected = isMessageSelected,
-                        onToggleSelect = {
-                            if (canSelectMessage) {
-                                val updated = if (isMessageSelected) {
-                                    selectedMessageIds - message.id
-                                } else {
-                                    selectedMessageIds + message.id
-                                }
-                                selectedMessageIds = updated
-                                if (updated.isEmpty()) {
-                                    exitSelectionMode()
-                                }
+            Column(modifier = Modifier.fillMaxSize()) {
+                // Pinned Messages Banner
+                if (pinnedMessages.isNotEmpty()) {
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 6.dp),
+                        shape = RoundedCornerShape(10.dp),
+                        colors = CardDefaults.cardColors(containerColor = PhoenixAmber.copy(alpha = if (ext.isDark) 0.12f else 0.16f)),
+                        border = BorderStroke(1.dp, ext.amberText.copy(alpha = 0.25f))
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.PushPin,
+                                contentDescription = "Sabitli Mesaj",
+                                tint = ext.amberText,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "Sabitlenmiş Mesaj: ${pinnedMessages.last().text}",
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    text = "${pinnedMessages.last().senderName} • ${pinnedMessages.last().senderTeam}",
+                                    fontSize = 10.sp,
+                                    color = ext.textSecondary
+                                )
                             }
-                        },
-                        onEnterSelectionMode = {
-                            if (canSelectMessage && !isRecordingVoice) {
-                                haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                                isSelectionMode = true
-                                selectedMessageIds = setOf(message.id)
-                            }
-                        },
-                        onReply = { replyingTo = message },
-                        onOpenFile = { projectFile ->
-                            activePreviewFile = projectFile
-                        },
-                        onDownloadFile = { url ->
-                            downloadFileToDevice(context, message.fileName.ifBlank { "indirilen_dosya" }, url)
                         }
-                    )
+                    }
+                }
+
+                // Message Stream
+                LazyColumn(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp),
+                    state = pageListState,
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    if (pageMessages.isEmpty()) {
+                        item {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(top = 40.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = "Bu odada henüz mesaj yok. İlk mesajı siz yazın!",
+                                    fontSize = 13.sp,
+                                    color = ext.textMuted
+                                )
+                            }
+                        }
+                    }
+
+                    itemsIndexed(
+                        items = pageMessages,
+                        key = { index, msg -> "${msg.id.ifBlank { "msg_${msg.createdAt?.seconds ?: 0}" }}_$index" }
+                    ) { _, message ->
+                        AnimatedVisibility(
+                            visible = true,
+                            enter = fadeIn() + slideInVertically(initialOffsetY = { 20 })
+                        ) {
+                            val isMyMessage = message.senderId == currentUserProfile?.userId
+                            val canSelectMessage = message.id.isNotBlank()
+                            val isMessageSelected = message.id in selectedMessageIds
+                            MessageItemBubble(
+                                message = message,
+                                isMyMessage = isMyMessage,
+                                isSelectionMode = isSelectionMode,
+                                canSelect = canSelectMessage,
+                                isSelected = isMessageSelected,
+                                onToggleSelect = {
+                                    if (canSelectMessage) {
+                                        val updated = if (isMessageSelected) {
+                                            selectedMessageIds - message.id
+                                        } else {
+                                            selectedMessageIds + message.id
+                                        }
+                                        selectedMessageIds = updated
+                                        if (updated.isEmpty()) {
+                                            exitSelectionMode()
+                                        }
+                                    }
+                                },
+                                onEnterSelectionMode = {
+                                    if (canSelectMessage && !isRecordingVoice) {
+                                        haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                        isSelectionMode = true
+                                        selectedMessageIds = setOf(message.id)
+                                    }
+                                },
+                                onReply = { replyingTo = message },
+                                onOpenFile = { projectFile ->
+                                    activePreviewFile = projectFile
+                                },
+                                onDownloadFile = { url ->
+                                    downloadFileToDevice(context, message.fileName.ifBlank { "indirilen_dosya" }, url)
+                                }
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -1505,51 +1549,75 @@ fun MessageItemBubble(
             .background(rowBackgroundColor, RoundedCornerShape(12.dp))
             .pointerInput(message.id, isSelectionMode) {
                 if (isSelectionMode) return@pointerInput
-                detectHorizontalDragGestures(
-                    onHorizontalDrag = { change, dragAmount ->
-                        val next = (swipeOffsetX.value + dragAmount).coerceIn(0f, maxSwipePx)
-                        if (next > 0f || swipeOffsetX.value > 0f) {
-                            change.consume()
+                val touchSlop = viewConfiguration.touchSlop
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    var dragStarted = false
+                    var replyTriggered = false
+                    var totalDx = 0f
+                    var totalDy = 0f
+                    val pointerId = down.id
+                    try {
+                        while (true) {
+                            val event = awaitPointerEvent()
+                            val change = event.changes.firstOrNull { it.id == pointerId }
+                                ?: event.changes.firstOrNull()
+                                ?: break
+                            if (!change.pressed) {
+                                if (dragStarted && swipeOffsetX.value >= swipeThresholdPx) {
+                                    replyTriggered = true
+                                }
+                                break
+                            }
+                            val delta = change.position - change.previousPosition
+                            if (!dragStarted) {
+                                totalDx += delta.x
+                                totalDy += delta.y
+                                if (kotlin.math.abs(totalDx) > touchSlop || kotlin.math.abs(totalDy) > touchSlop) {
+                                    if (totalDx > 0f && kotlin.math.abs(totalDx) > kotlin.math.abs(totalDy)) {
+                                        dragStarted = true
+                                        change.consume()
+                                        val next = totalDx.coerceIn(0f, maxSwipePx)
+                                        scope.launch { swipeOffsetX.snapTo(next) }
+                                        if (!hapticFiredOnSwipe && next >= swipeThresholdPx) {
+                                            hapticFiredOnSwipe = true
+                                            haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                        }
+                                    } else {
+                                        // Pass vertical scroll and leftward room-switch swipe to parent containers
+                                        break
+                                    }
+                                }
+                            } else {
+                                change.consume()
+                                val next = (swipeOffsetX.value + delta.x).coerceIn(0f, maxSwipePx)
+                                scope.launch { swipeOffsetX.snapTo(next) }
+                                if (!hapticFiredOnSwipe && next >= swipeThresholdPx) {
+                                    hapticFiredOnSwipe = true
+                                    haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                } else if (hapticFiredOnSwipe && next < swipeThresholdPx * 0.75f) {
+                                    hapticFiredOnSwipe = false
+                                }
+                            }
+                        }
+                    } finally {
+                        if (dragStarted) {
+                            hapticFiredOnSwipe = false
                             scope.launch {
-                                swipeOffsetX.snapTo(next)
-                            }
-                            if (!hapticFiredOnSwipe && next >= swipeThresholdPx) {
-                                hapticFiredOnSwipe = true
-                                haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                            } else if (hapticFiredOnSwipe && next < swipeThresholdPx * 0.75f) {
-                                hapticFiredOnSwipe = false
-                            }
-                        }
-                    },
-                    onDragEnd = {
-                        val reachedThreshold = swipeOffsetX.value >= swipeThresholdPx
-                        hapticFiredOnSwipe = false
-                        scope.launch {
-                            swipeOffsetX.animateTo(
-                                targetValue = 0f,
-                                animationSpec = spring(
-                                    dampingRatio = Spring.DampingRatioMediumBouncy,
-                                    stiffness = Spring.StiffnessMedium
+                                swipeOffsetX.animateTo(
+                                    targetValue = 0f,
+                                    animationSpec = spring(
+                                        dampingRatio = Spring.DampingRatioMediumBouncy,
+                                        stiffness = Spring.StiffnessMedium
+                                    )
                                 )
-                            )
-                        }
-                        if (reachedThreshold) {
-                            onReply()
-                        }
-                    },
-                    onDragCancel = {
-                        hapticFiredOnSwipe = false
-                        scope.launch {
-                            swipeOffsetX.animateTo(
-                                targetValue = 0f,
-                                animationSpec = spring(
-                                    dampingRatio = Spring.DampingRatioMediumBouncy,
-                                    stiffness = Spring.StiffnessMedium
-                                )
-                            )
+                            }
+                            if (replyTriggered) {
+                                onReply()
+                            }
                         }
                     }
-                )
+                }
             }
             .combinedClickable(
                 onClick = {

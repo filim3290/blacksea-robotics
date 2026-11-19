@@ -26,6 +26,8 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -84,8 +86,11 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
@@ -2197,6 +2202,7 @@ private fun PlatformDeveloperConsoleDialog(
     onDismiss: () -> Unit
 ) {
     val ext = MaterialTheme.blackseaColors
+    val scope = rememberCoroutineScope()
     val tabs = remember {
         listOf(
             "applications" to "Başvurular",
@@ -2205,6 +2211,28 @@ private fun PlatformDeveloperConsoleDialog(
         )
     }
     val selectedIdx = tabs.indexOfFirst { it.first == selectedTabKey }.takeIf { it >= 0 } ?: 0
+    val pagerState = rememberPagerState(
+        initialPage = selectedIdx,
+        pageCount = { tabs.size }
+    )
+    val latestSelectedTabKey by rememberUpdatedState(selectedTabKey)
+    val latestOnSelectTab by rememberUpdatedState(onSelectTab)
+
+    LaunchedEffect(selectedIdx) {
+        if (pagerState.currentPage != selectedIdx) {
+            pagerState.animateScrollToPage(selectedIdx)
+        }
+    }
+    LaunchedEffect(pagerState) {
+        snapshotFlow { pagerState.settledPage }
+            .distinctUntilChanged()
+            .collect { page ->
+                val key = tabs.getOrNull(page)?.first ?: return@collect
+                if (key != latestSelectedTabKey) {
+                    latestOnSelectTab(key)
+                }
+            }
+    }
 
     Dialog(
         onDismissRequest = onDismiss,
@@ -2273,8 +2301,9 @@ private fun PlatformDeveloperConsoleDialog(
                             }
                         }
 
+                        val activeTabIdx = pagerState.currentPage.coerceIn(0, (tabs.size - 1).coerceAtLeast(0))
                         TabRow(
-                            selectedTabIndex = selectedIdx,
+                            selectedTabIndex = activeTabIdx,
                             containerColor = MaterialTheme.colorScheme.surface
                         ) {
                             tabs.forEachIndexed { index, (key, title) ->
@@ -2284,14 +2313,21 @@ private fun PlatformDeveloperConsoleDialog(
                                     else -> openSupportCount
                                 }
                                 Tab(
-                                    selected = selectedIdx == index,
-                                    onClick = { onSelectTab(key) },
+                                    selected = activeTabIdx == index,
+                                    onClick = {
+                                        scope.launch {
+                                            pagerState.animateScrollToPage(index)
+                                        }
+                                        if (key != latestSelectedTabKey) {
+                                            latestOnSelectTab(key)
+                                        }
+                                    },
                                     text = {
                                         Text(
                                             text = if (count > 0 || key == "teams") "$title ($count)" else title,
                                             fontSize = 12.sp,
-                                            fontWeight = if (selectedIdx == index) FontWeight.Bold else FontWeight.Medium,
-                                            color = if (selectedIdx == index) ext.accentBlue else ext.textMuted,
+                                            fontWeight = if (activeTabIdx == index) FontWeight.Bold else FontWeight.Medium,
+                                            color = if (activeTabIdx == index) ext.accentBlue else ext.textMuted,
                                             maxLines = 1,
                                             overflow = TextOverflow.Ellipsis
                                         )
@@ -2302,8 +2338,14 @@ private fun PlatformDeveloperConsoleDialog(
                     }
                 }
 
-                Box(modifier = Modifier.weight(1f)) {
-                    when (tabs[selectedIdx].first) {
+                HorizontalPager(
+                    state = pagerState,
+                    beyondViewportPageCount = 1,
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                ) { pageIndex ->
+                    when (tabs[pageIndex].first) {
                         "applications" -> TeamApplicationsTab(
                             pendingApplications = pendingApplications,
                             repository = repository
