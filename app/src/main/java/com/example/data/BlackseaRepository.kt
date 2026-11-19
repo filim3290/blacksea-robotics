@@ -9,6 +9,8 @@ import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.util.Base64
 import com.example.R
+import com.example.model.BLACKSEA_AUTHORIZED_TEACHER_EMAIL
+import com.example.model.BLACKSEA_AUTHORIZED_TEACHER_NAME
 import com.example.model.ChatMessage
 import com.example.model.ChatRoom
 import com.example.model.IdeaComment
@@ -774,7 +776,9 @@ class BlackseaRepository(val db: FirebaseFirestore) {
                 docRef.get().await()
             }
 
-            val isFounder = email.equals(PLATFORM_FOUNDER_EMAIL, ignoreCase = true)
+            val cleanEmail = email.trim()
+            val isFounder = cleanEmail.equals(PLATFORM_FOUNDER_EMAIL, ignoreCase = true)
+            val isBsrAuthorizedTeacher = cleanEmail.equals(BLACKSEA_AUTHORIZED_TEACHER_EMAIL, ignoreCase = true)
 
             if (existingSnap.exists()) {
                 val existingProfile = existingSnap.toObject(UserProfile::class.java)
@@ -809,10 +813,20 @@ class BlackseaRepository(val db: FirebaseFirestore) {
                     ensureMainTeamExists()
                     removeFounderAutoBsrMembershipIfNeeded(cleanUid)
                 } else {
-                    migrateLegacyUserToMainTeamMembershipIfNeeded(
-                        profile = existingProfile,
-                        hasActiveTeamField = existingSnap.contains("activeTeamId")
-                    )
+                    if (isBsrAuthorizedTeacher) {
+                        ensureBsrAuthorizedTeacherMembershipIfNeeded(
+                            existingProfile.copy(
+                                id = cleanUid,
+                                userId = cleanUid,
+                                email = existingProfile.email.ifBlank { cleanEmail }
+                            )
+                        )
+                    } else {
+                        migrateLegacyUserToMainTeamMembershipIfNeeded(
+                            profile = existingProfile,
+                            hasActiveTeamField = existingSnap.contains("activeTeamId")
+                        )
+                    }
                 }
                 return Result.success(existingProfile)
             }
@@ -825,6 +839,13 @@ class BlackseaRepository(val db: FirebaseFirestore) {
                 .replace("[^a-z0-9._]".toRegex(), "")
                 .ifBlank { "uye_${cleanUid.take(5)}" }
             val formattedName = displayName.trim().ifBlank { "$firstName $lastName".trim() }
+            val initialTeam = if (isBsrAuthorizedTeacher) TeamType.MANAGEMENT.displayName else TeamType.GENERAL.displayName
+            val initialRole = when {
+                isFounder -> "Yönetici"
+                isBsrAuthorizedTeacher -> "Yetkili Öğretmen"
+                else -> "Takım Üyesi"
+            }
+            val initialRoles = listOf(initialRole)
 
             val payload = mapOf(
                 "userId" to cleanUid,
@@ -833,12 +854,12 @@ class BlackseaRepository(val db: FirebaseFirestore) {
                 "username" to cleanUsername,
                 "displayName" to formattedName,
                 "email" to email,
-                "team" to TeamType.GENERAL.displayName,
-                "role" to if (isFounder) "Yönetici" else "Takım Üyesi",
-                "roles" to if (isFounder) listOf("Yönetici") else listOf("Takım Üyesi"),
+                "team" to initialTeam,
+                "role" to initialRole,
+                "roles" to initialRoles,
                 "status" to UserStatus.ACTIVE.value,
                 "photoUrl" to photoUrl,
-                "isSuperAdmin" to isFounder,
+                "isSuperAdmin" to (isFounder || isBsrAuthorizedTeacher),
                 "isPlatformAdmin" to isFounder,
                 "activeTeamId" to "",
                 "createdAt" to FieldValue.serverTimestamp(),
@@ -855,12 +876,12 @@ class BlackseaRepository(val db: FirebaseFirestore) {
                 username = cleanUsername,
                 displayName = formattedName,
                 email = email,
-                team = TeamType.GENERAL.displayName,
-                role = if (isFounder) "Yönetici" else "Takım Üyesi",
-                roles = if (isFounder) listOf("Yönetici") else listOf("Takım Üyesi"),
+                team = initialTeam,
+                role = initialRole,
+                roles = initialRoles,
                 status = UserStatus.ACTIVE.value,
                 photoUrl = photoUrl,
-                isSuperAdmin = isFounder,
+                isSuperAdmin = (isFounder || isBsrAuthorizedTeacher),
                 isPlatformAdmin = isFounder,
                 activeTeamId = ""
             )
@@ -868,6 +889,8 @@ class BlackseaRepository(val db: FirebaseFirestore) {
             if (isFounder) {
                 ensureMainTeamExists()
                 removeFounderAutoBsrMembershipIfNeeded(cleanUid)
+            } else if (isBsrAuthorizedTeacher) {
+                ensureBsrAuthorizedTeacherMembershipIfNeeded(createdProfile)
             }
 
             Result.success(createdProfile)
@@ -876,6 +899,89 @@ class BlackseaRepository(val db: FirebaseFirestore) {
         } catch (e: Exception) {
             handleFirestoreError(e, OperationType.WRITE, path)
             Result.failure(e)
+        }
+    }
+
+    /**
+     * Automatically provisions and protects [BLACKSEA_AUTHORIZED_TEACHER_EMAIL] as the official
+     * "Yetkili Öğretmen" of BlackSea Robotics (`blacksea_robotics`) without granting platform admin.
+     */
+    suspend fun ensureBsrAuthorizedTeacherMembershipIfNeeded(profile: UserProfile) {
+        val uid = profile.userId.ifBlank { profile.id }.trim()
+        val email = profile.email.trim().ifBlank { auth.currentUser?.email.orEmpty().trim() }
+        if (uid.isBlank() || !email.equals(BLACKSEA_AUTHORIZED_TEACHER_EMAIL, ignoreCase = true)) return
+
+        ensureMainTeamExists()
+
+        val membershipId = "${PLATFORM_MAIN_TEAM_ID}_$uid"
+        val membershipRef = db.collection("team_memberships").document(membershipId)
+        val userRef = db.collection("users").document(uid)
+
+        try {
+            val existingMembershipSnap = try { membershipRef.get().await() } catch (_: Exception) { null }
+            val existingRoles = (existingMembershipSnap?.get("roles") as? List<*>)
+                ?.mapNotNull { it as? String }
+                ?.filter { it.isNotBlank() && !it.equals("Yönetici", ignoreCase = true) }
+                ?: emptyList()
+            val mergedRoles = (listOf("Yetkili Öğretmen") + existingRoles.filter { !it.equals("Takım Üyesi", ignoreCase = true) }).distinct()
+
+            val displayName = profile.getFullName().ifBlank { BLACKSEA_AUTHORIZED_TEACHER_NAME }
+            val subTeam = existingMembershipSnap?.getString("subTeam")
+                ?.takeIf { it.isNotBlank() }
+                ?: TeamType.MANAGEMENT.displayName
+
+            val needsMembershipSync = existingMembershipSnap == null ||
+                !existingMembershipSnap.exists() ||
+                !UserStatus.isActive(existingMembershipSnap.getString("status")) ||
+                existingMembershipSnap.getBoolean("isTeamAdmin") != true ||
+                existingMembershipSnap.getString("role") != "Yetkili Öğretmen" ||
+                existingMembershipSnap.getString("userEmail")?.equals(BLACKSEA_AUTHORIZED_TEACHER_EMAIL, ignoreCase = true) != true
+
+            if (needsMembershipSync) {
+                val payload = buildMap<String, Any> {
+                    put("teamId", PLATFORM_MAIN_TEAM_ID)
+                    put("userId", uid)
+                    put("userName", displayName)
+                    put("userEmail", BLACKSEA_AUTHORIZED_TEACHER_EMAIL)
+                    put("userPhotoUrl", profile.photoUrl)
+                    put("subTeam", subTeam)
+                    put("role", "Yetkili Öğretmen")
+                    put("roles", mergedRoles)
+                    put("status", UserStatus.ACTIVE.value)
+                    put("isTeamAdmin", true)
+                    put("joinNote", "BlackSea Robotics Yetkili Öğretmeni")
+                    put("suspensionReason", "")
+                    put("appealText", "")
+                    put("appealStatus", "")
+                    if (existingMembershipSnap == null || !existingMembershipSnap.exists()) {
+                        put("createdAt", FieldValue.serverTimestamp())
+                    }
+                    put("updatedAt", FieldValue.serverTimestamp())
+                }
+                membershipRef.set(payload, SetOptions.merge()).await()
+                syncTeamMemberCount(PLATFORM_MAIN_TEAM_ID)
+            }
+
+            if (profile.role != "Yetkili Öğretmen" ||
+                !UserStatus.isActive(profile.status) ||
+                !profile.isSuperAdmin ||
+                profile.isPlatformAdmin
+            ) {
+                userRef.set(
+                    mapOf(
+                        "team" to subTeam,
+                        "role" to "Yetkili Öğretmen",
+                        "roles" to mergedRoles,
+                        "status" to UserStatus.ACTIVE.value,
+                        "isSuperAdmin" to true,
+                        "isPlatformAdmin" to false,
+                        "updatedAt" to FieldValue.serverTimestamp()
+                    ),
+                    SetOptions.merge()
+                ).await()
+            }
+        } catch (e: Exception) {
+            logDebugWarn("Repository", "BSR authorized teacher sync skipped", e)
         }
     }
 
@@ -910,6 +1016,10 @@ class BlackseaRepository(val db: FirebaseFirestore) {
         if (uid.isBlank()) return
         val isFounder = profile.email.trim().equals(PLATFORM_FOUNDER_EMAIL, ignoreCase = true)
         if (isFounder) return
+        if (profile.isBlackseaAuthorizedTeacherAccount()) {
+            ensureBsrAuthorizedTeacherMembershipIfNeeded(profile)
+            return
+        }
         val membershipId = "${PLATFORM_MAIN_TEAM_ID}_$uid"
         val membershipRef = db.collection("team_memberships").document(membershipId)
 
@@ -1079,6 +1189,17 @@ class BlackseaRepository(val db: FirebaseFirestore) {
                         "updatedAt" to FieldValue.serverTimestamp()
                     )
                 ).await()
+            } else {
+                val existingContact = snap.getString("managerContact").orEmpty().trim()
+                if (existingContact.isBlank() || existingContact.equals(PLATFORM_FOUNDER_EMAIL, ignoreCase = true)) {
+                    mainRef.update(
+                        mapOf(
+                            "managerName" to BLACKSEA_AUTHORIZED_TEACHER_NAME,
+                            "managerContact" to BLACKSEA_AUTHORIZED_TEACHER_EMAIL,
+                            "updatedAt" to FieldValue.serverTimestamp()
+                        )
+                    ).await()
+                }
             }
         } catch (e: Exception) {
             logDebugWarn("Repository", "Main team seed skipped (may require platform admin)", e)
@@ -1102,6 +1223,82 @@ class BlackseaRepository(val db: FirebaseFirestore) {
                 handleFirestoreError(error, OperationType.LIST, "teams")
                 emit(listOf(TeamInfo.mainBlackseaTeam()))
             }
+    }
+
+    /**
+     * Observes all directory-visible teams (approved as well as suspended / under_review teams)
+     * so blocked teams remain visible in "Diğer Takımlar" with an unavailable banner and "Haber Et"
+     * reopen-watch action rather than disappearing from the directory.
+     */
+    fun observeDiscoverableTeams(): Flow<List<TeamInfo>> {
+        return db.collection("teams")
+            .whereIn("status", listOf(TeamStatus.APPROVED, TeamStatus.SUSPENDED, TeamStatus.UNDER_REVIEW))
+            .snapshots()
+            .map { snapshot ->
+                val list = snapshot.toObjects(TeamInfo::class.java)
+                val hasMain = list.any { it.id == PLATFORM_MAIN_TEAM_ID || it.isMainTeam }
+                val combined = if (hasMain) list else listOf(TeamInfo.mainBlackseaTeam()) + list
+                combined.sortedWith(
+                    compareByDescending<TeamInfo> { it.isMainTeam || it.id == PLATFORM_MAIN_TEAM_ID }
+                        .thenBy { it.isWorkspaceBlocked() }
+                        .thenBy { it.name.lowercase(Locale("tr", "TR")) }
+                )
+            }
+            .catch { error ->
+                handleFirestoreError(error, OperationType.LIST, "teams")
+                emit(listOf(TeamInfo.mainBlackseaTeam()))
+            }
+    }
+
+    fun observeWatchedTeamIds(userId: String): Flow<Set<String>> {
+        val cleanUid = userId.trim()
+        if (cleanUid.isBlank()) return flowOf(emptySet())
+        return db.collection("team_reopen_watchers")
+            .whereEqualTo("userId", cleanUid)
+            .snapshots()
+            .map { snapshot ->
+                snapshot.documents.mapNotNull { it.getString("teamId")?.trim()?.takeIf { id -> id.isNotBlank() } }.toSet()
+            }
+            .catch { error ->
+                handleFirestoreError(error, OperationType.LIST, "team_reopen_watchers")
+                emit(emptySet())
+            }
+    }
+
+    suspend fun setTeamReopenWatch(team: TeamInfo, watch: Boolean): Result<Unit> {
+        val cleanTeamId = team.id.trim()
+        if (cleanTeamId.isBlank()) {
+            return Result.failure(IllegalArgumentException("Geçersiz takım."))
+        }
+        val uid = try {
+            requireUserId()
+        } catch (e: Exception) {
+            return Result.failure(e)
+        }
+        if (watch && !team.isWorkspaceBlocked()) {
+            return Result.failure(IllegalArgumentException("Bu takım çalışma alanı zaten kullanıma açık."))
+        }
+        val watchId = "${cleanTeamId}_$uid"
+        val docRef = db.collection("team_reopen_watchers").document(watchId)
+        return try {
+            if (watch) {
+                docRef.set(
+                    mapOf(
+                        "teamId" to cleanTeamId,
+                        "userId" to uid,
+                        "createdAt" to FieldValue.serverTimestamp()
+                    )
+                ).await()
+            } else {
+                docRef.delete().await()
+            }
+            Result.success(Unit)
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.WRITE, "team_reopen_watchers/$watchId")
+            Result.failure(e)
+        }
     }
 
     fun observePendingTeamApplications(): Flow<List<TeamInfo>> {
@@ -1492,7 +1689,7 @@ class BlackseaRepository(val db: FirebaseFirestore) {
     }
 
     suspend fun resumeTeamWorkspace(team: TeamInfo): Result<Unit> {
-        return moderateTeamStatus(
+        val result = moderateTeamStatus(
             team = team,
             newStatus = TeamStatus.APPROVED,
             reason = "",
@@ -1500,6 +1697,46 @@ class BlackseaRepository(val db: FirebaseFirestore) {
             notifTitle = "${team.name} Yeniden Aktifleştirildi",
             notifBody = { _ -> "${team.name} çalışma alanı tekrar açıldı. Çalışmaya devam edebilirsiniz." }
         )
+        if (result.isSuccess) {
+            val cleanId = team.id.trim()
+            val reviewerUid = auth.currentUser?.uid ?: ""
+            try {
+                val watchersSnap = db.collection("team_reopen_watchers")
+                    .whereEqualTo("teamId", cleanId)
+                    .get()
+                    .await()
+                val watcherDocs = watchersSnap.documents
+                val notifiedUserIds = mutableSetOf<String>()
+                for (doc in watcherDocs) {
+                    val watcherUid = doc.getString("userId")?.trim().orEmpty()
+                    if (watcherUid.isNotBlank() && watcherUid != reviewerUid && notifiedUserIds.add(watcherUid)) {
+                        createNotification(
+                            recipientUserId = watcherUid,
+                            title = "${team.name} Çalışma Alanı Açıldı!",
+                            message = "${team.name} çalışma alanı tekrar kullanıma açıldı. Takımı inceleyebilir ve katılım başvurusunda bulunabilirsiniz.",
+                            type = "team_reopened_watch",
+                            targetId = cleanId,
+                            senderName = "BlackSea Platform Yönetimi",
+                            senderId = reviewerUid,
+                            teamId = cleanId,
+                            teamName = team.name
+                        )
+                    }
+                }
+                if (watcherDocs.isNotEmpty()) {
+                    watcherDocs.chunked(450).forEach { chunk ->
+                        val batch = db.batch()
+                        chunk.forEach { batch.delete(it.reference) }
+                        batch.commit().await()
+                    }
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                logDebugWarn("Repository", "Reopen watcher notification cleanup skipped", e)
+            }
+        }
+        return result
     }
 
     suspend fun dismissTeamAppeal(team: TeamInfo, note: String = ""): Result<Unit> {
@@ -1693,21 +1930,32 @@ class BlackseaRepository(val db: FirebaseFirestore) {
                 val uid = legacy.userId.ifBlank { legacy.id }
                 val isFounder = legacy.email.trim().equals(PLATFORM_FOUNDER_EMAIL, ignoreCase = true)
                 if (uid.isNotBlank() && !isFounder && !byUserId.containsKey(uid)) {
-                    val isBsrLegacyMember = legacy.activeTeamId == PLATFORM_MAIN_TEAM_ID ||
+                    val isBsrTeacher = legacy.isBlackseaAuthorizedTeacherAccount()
+                    val isBsrLegacyMember = isBsrTeacher ||
+                        legacy.activeTeamId == PLATFORM_MAIN_TEAM_ID ||
                         (legacy.activeTeamId.isBlank() && legacy.roles.any { it != "Takım Üyesi" && !it.equals("Yönetici", ignoreCase = true) })
                     if (isBsrLegacyMember) {
+                        val effectiveRoles = if (isBsrTeacher) {
+                            (listOf("Yetkili Öğretmen") + legacy.roles.filter {
+                                !it.equals("Yönetici", ignoreCase = true) && !it.equals("Takım Üyesi", ignoreCase = true)
+                            }).distinct()
+                        } else {
+                            legacy.roles
+                        }
                         byUserId[uid] = TeamMembership(
                             id = "${PLATFORM_MAIN_TEAM_ID}_$uid",
                             teamId = PLATFORM_MAIN_TEAM_ID,
                             userId = uid,
-                            userName = legacy.getFullName(),
+                            userName = legacy.getFullName().ifBlank {
+                                if (isBsrTeacher) BLACKSEA_AUTHORIZED_TEACHER_NAME else "BSR Üyesi"
+                            },
                             userEmail = legacy.email,
                             userPhotoUrl = legacy.photoUrl,
-                            subTeam = legacy.team,
-                            role = legacy.role,
-                            roles = legacy.roles,
-                            status = legacy.status,
-                            isTeamAdmin = legacy.isManagerAccount(),
+                            subTeam = if (isBsrTeacher) TeamType.MANAGEMENT.displayName else legacy.team,
+                            role = if (isBsrTeacher) "Yetkili Öğretmen" else legacy.role,
+                            roles = effectiveRoles,
+                            status = if (isBsrTeacher) UserStatus.ACTIVE.value else legacy.status,
+                            isTeamAdmin = isBsrTeacher || legacy.isManagerAccount(),
                             createdAt = legacy.createdAt,
                             updatedAt = legacy.updatedAt
                         )
@@ -1912,8 +2160,13 @@ class BlackseaRepository(val db: FirebaseFirestore) {
         return try {
             val snap = db.collection("team_memberships").document(membershipId).get().await()
             val email = snap.getString("userEmail").orEmpty()
-            if (team.id == PLATFORM_MAIN_TEAM_ID && email.equals(PLATFORM_FOUNDER_EMAIL, ignoreCase = true)) {
-                return Result.failure(IllegalArgumentException("Kurucu yönetici hesabı korunmaktadır."))
+            val callerIsFounder = auth.currentUser?.email?.trim()
+                .equals(PLATFORM_FOUNDER_EMAIL, ignoreCase = true)
+            if (team.id == PLATFORM_MAIN_TEAM_ID &&
+                (email.equals(PLATFORM_FOUNDER_EMAIL, ignoreCase = true) ||
+                 (!callerIsFounder && email.equals(BLACKSEA_AUTHORIZED_TEACHER_EMAIL, ignoreCase = true)))
+            ) {
+                return Result.failure(IllegalArgumentException("BlackSea Robotics yetkili öğretmen hesabı askıya alınamaz."))
             }
             db.collection("team_memberships").document(membershipId).update(
                 mapOf(
@@ -2054,8 +2307,13 @@ class BlackseaRepository(val db: FirebaseFirestore) {
         return try {
             val snap = db.collection("team_memberships").document(membershipId).get().await()
             val email = snap.getString("userEmail").orEmpty()
-            if (team.id == PLATFORM_MAIN_TEAM_ID && email.equals(PLATFORM_FOUNDER_EMAIL, ignoreCase = true)) {
-                return Result.failure(IllegalArgumentException("Kurucu yönetici kaldırılamaz."))
+            val callerIsFounder = auth.currentUser?.email?.trim()
+                .equals(PLATFORM_FOUNDER_EMAIL, ignoreCase = true)
+            if (team.id == PLATFORM_MAIN_TEAM_ID &&
+                (email.equals(PLATFORM_FOUNDER_EMAIL, ignoreCase = true) ||
+                 (!callerIsFounder && email.equals(BLACKSEA_AUTHORIZED_TEACHER_EMAIL, ignoreCase = true)))
+            ) {
+                return Result.failure(IllegalArgumentException("BlackSea Robotics yetkili öğretmen hesabı ekipten çıkarılamaz."))
             }
             db.collection("team_memberships").document(membershipId).delete().await()
             syncTeamMemberCount(team.id)
@@ -2165,7 +2423,7 @@ class BlackseaRepository(val db: FirebaseFirestore) {
                 }
             }
 
-            // 4. Delete team notifications
+            // 4. Delete team notifications and reopen watchers
             try {
                 val notifsSnap = db.collection("notifications")
                     .whereEqualTo("teamId", cleanTeamId)
@@ -2174,6 +2432,15 @@ class BlackseaRepository(val db: FirebaseFirestore) {
                 deleteCollectionRefs(notifsSnap.documents.map { it.reference })
             } catch (e: Exception) {
                 logDebugWarn("Repository", "Notification cleanup skipped during team delete", e)
+            }
+            try {
+                val watchersSnap = db.collection("team_reopen_watchers")
+                    .whereEqualTo("teamId", cleanTeamId)
+                    .get()
+                    .await()
+                deleteCollectionRefs(watchersSnap.documents.map { it.reference })
+            } catch (e: Exception) {
+                logDebugWarn("Repository", "Watcher cleanup skipped during team delete", e)
             }
 
             // 5. Delete other members' team_memberships while caller still has isTeamManager(cleanTeamId)

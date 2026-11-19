@@ -10,6 +10,8 @@ import com.google.firebase.firestore.ServerTimestamp
 
 const val PLATFORM_MAIN_TEAM_ID = "blacksea_robotics"
 const val PLATFORM_FOUNDER_EMAIL = "filim3290@gmail.com"
+const val BLACKSEA_AUTHORIZED_TEACHER_EMAIL = "mehmetilkerbas@gmail.com"
+const val BLACKSEA_AUTHORIZED_TEACHER_NAME = "Mehmet İlker Baş"
 
 enum class TeamType(val displayName: String, val description: String) {
     GENERAL("Genel Ekip", "Tüm takım üyelerinin ortak iletişim ve çalışma alanı"),
@@ -246,8 +248,8 @@ data class TeamInfo(
             motto = "ONE TEAM. ONE VISION. ONE ROBOT.",
             logoKey = TeamLogoPreset.BSR_PHOENIX.key,
             accentColorHex = "#0284C7",
-            managerName = "BlackSea Yönetimi",
-            managerContact = PLATFORM_FOUNDER_EMAIL,
+            managerName = BLACKSEA_AUTHORIZED_TEACHER_NAME,
+            managerContact = BLACKSEA_AUTHORIZED_TEACHER_EMAIL,
             founderId = PLATFORM_MAIN_TEAM_ID,
             founderEmail = PLATFORM_FOUNDER_EMAIL,
             status = TeamStatus.APPROVED,
@@ -256,6 +258,15 @@ data class TeamInfo(
         )
     }
 }
+
+@Keep
+@IgnoreExtraProperties
+data class TeamReopenWatch(
+    @DocumentId val id: String = "",
+    val teamId: String = "",
+    val userId: String = "",
+    @ServerTimestamp val createdAt: Timestamp? = null
+)
 
 @Keep
 @IgnoreExtraProperties
@@ -389,8 +400,13 @@ data class UserProfile(
         return email.trim().equals(PLATFORM_FOUNDER_EMAIL, ignoreCase = true)
     }
 
+    fun isBlackseaAuthorizedTeacherAccount(): Boolean {
+        return email.trim().equals(BLACKSEA_AUTHORIZED_TEACHER_EMAIL, ignoreCase = true)
+    }
+
     fun isManagerAccount(): Boolean {
         return isPlatformManagerAccount() ||
+            isBlackseaAuthorizedTeacherAccount() ||
             isSuperAdmin ||
             role in PredefinedRoles.MANAGEMENT_ROLES ||
             roles.any { it in PredefinedRoles.MANAGEMENT_ROLES }

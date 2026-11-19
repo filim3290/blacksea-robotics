@@ -71,12 +71,12 @@ import com.example.model.TeamInfo
 import com.example.model.TeamMembership
 import com.example.model.TeamType
 import com.example.model.UserProfile
+import com.example.ui.components.AppUpdatesCard
 import com.example.ui.components.TeamBadge
 import com.example.ui.components.TeamLogoBadge
 import com.example.ui.components.UserRolesRow
 import com.example.ui.components.parseTeamColor
 import com.example.ui.theme.blackseaColors
-import com.example.util.AppMessages
 import com.example.util.sanitizeUserErrorMessage
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
@@ -387,168 +387,10 @@ fun ProfileScreen(
 
         // App Updates & Version Card
         val mgr = updateManager ?: remember { com.example.update.AppUpdateManager(context) }
-        var isCheckingUpdate by remember { mutableStateOf(false) }
-        var showHistoryDialog by remember { mutableStateOf(false) }
-        var releaseHistory by remember { mutableStateOf<List<com.example.update.AppReleaseInfo>>(emptyList()) }
-        var isLoadingHistory by remember { mutableStateOf(false) }
-        var latestAvailableRelease by remember { mutableStateOf<com.example.update.AppReleaseInfo?>(null) }
-        var updateStatusText by remember { mutableStateOf<String?>(null) }
-
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(16.dp),
-            border = BorderStroke(1.dp, ext.cardBorder),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-            elevation = CardDefaults.cardElevation(defaultElevation = if (ext.isDark) 2.dp else 1.dp)
-        ) {
-            Column(
-                modifier = Modifier.padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Icon(imageVector = Icons.Default.Info, contentDescription = null, tint = ext.accentBlue)
-                        Text(
-                            text = "Uygulama & Güncellemeler",
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 15.sp,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-                    }
-
-                    Surface(
-                        shape = RoundedCornerShape(8.dp),
-                        color = ext.accentBlueContainer
-                    ) {
-                        Text(
-                            text = "v${mgr.getCurrentVersionName()}",
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = ext.accentBlue,
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                        )
-                    }
-                }
-
-                Text(
-                    text = updateStatusText ?: "Uygulama sürümünüzü buradan kontrol edebilir ve yenilikleri görüntüleyebilirsiniz.",
-                    fontSize = 12.sp,
-                    color = if (latestAvailableRelease != null) ext.emeraldText else ext.textSecondary,
-                    fontWeight = if (latestAvailableRelease != null) FontWeight.SemiBold else FontWeight.Normal
-                )
-
-                Spacer(modifier = Modifier.height(2.dp))
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    Button(
-                        onClick = {
-                            isCheckingUpdate = true
-                            scope.launch {
-                                val result = mgr.checkLatestReleaseDetailed(forceRefresh = true)
-                                isCheckingUpdate = false
-                                when (result) {
-                                    is com.example.update.UpdateCheckResult.UpdateAvailable -> {
-                                        latestAvailableRelease = result.release
-                                        updateStatusText = "Yeni sürüm bulundu: v${result.release.versionName}"
-                                        onShowUpdateDialog(result.release)
-                                    }
-                                    is com.example.update.UpdateCheckResult.UpToDate -> {
-                                        latestAvailableRelease = null
-                                        updateStatusText = "Uygulamanız güncel (v${result.currentVersionName})"
-                                        com.example.notifications.TeamNotificationDispatcher.clearPendingUpdateNotification(context)
-                                        Toast.makeText(
-                                            context,
-                                            "Uygulamanız güncel (v${result.currentVersionName})",
-                                            Toast.LENGTH_SHORT
-                                        ).show()
-                                    }
-                                    is com.example.update.UpdateCheckResult.NoReleaseFound -> {
-                                        latestAvailableRelease = null
-                                        updateStatusText = "Uygulamanız güncel."
-                                        com.example.notifications.TeamNotificationDispatcher.clearPendingUpdateNotification(context)
-                                        Toast.makeText(
-                                            context,
-                                            "Uygulamanız güncel.",
-                                            Toast.LENGTH_SHORT
-                                        ).show()
-                                    }
-                                    is com.example.update.UpdateCheckResult.ApkAssetMissing,
-                                    is com.example.update.UpdateCheckResult.NetworkError,
-                                    is com.example.update.UpdateCheckResult.ApiError -> {
-                                        updateStatusText = AppMessages.UPDATE_CHECK_ERROR
-                                        Toast.makeText(
-                                            context,
-                                            AppMessages.UPDATE_CHECK_ERROR,
-                                            Toast.LENGTH_LONG
-                                        ).show()
-                                    }
-                                }
-                            }
-                        },
-                        enabled = !isCheckingUpdate,
-                        modifier = Modifier.weight(1f).height(42.dp),
-                        shape = RoundedCornerShape(10.dp),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = ext.accentBlueSolid,
-                            contentColor = Color.White
-                        )
-                    ) {
-                        if (isCheckingUpdate) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(18.dp),
-                                color = Color.White,
-                                strokeWidth = 2.dp
-                            )
-                        } else {
-                            Text("Güncellemeleri Kontrol Et", fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                        }
-                    }
-
-                    OutlinedButton(
-                        onClick = {
-                            showHistoryDialog = true
-                            isLoadingHistory = true
-                            scope.launch {
-                                val res = mgr.fetchReleaseHistory()
-                                isLoadingHistory = false
-                                releaseHistory = res.getOrDefault(emptyList())
-                            }
-                        },
-                        modifier = Modifier.height(42.dp),
-                        shape = RoundedCornerShape(10.dp),
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.onSurface)
-                    ) {
-                        Text("Geçmiş", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-                    }
-                }
-
-                latestAvailableRelease?.let { pendingRelease ->
-                    Button(
-                        onClick = { onShowUpdateDialog(pendingRelease) },
-                        modifier = Modifier.fillMaxWidth().height(42.dp),
-                        shape = RoundedCornerShape(10.dp),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = ext.emeraldSolid,
-                            contentColor = Color.White
-                        )
-                    ) {
-                        Icon(imageVector = Icons.Default.Download, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("Güncelle (v${pendingRelease.versionName})", fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                    }
-                }
-            }
-        }
+        AppUpdatesCard(
+            updateManager = mgr,
+            onShowUpdateDialog = onShowUpdateDialog
+        )
 
         com.example.ui.components.SupportCenterButtonCard(
             currentUserProfile = currentUserProfile,
@@ -558,77 +400,6 @@ fun ProfileScreen(
             repository = repository,
             updateManager = mgr
         )
-
-        // Release History Dialog
-        if (showHistoryDialog) {
-            AlertDialog(
-                onDismissRequest = { showHistoryDialog = false },
-                title = {
-                    Text("Sürüm Güncelleme Geçmişi", fontWeight = FontWeight.Bold, fontSize = 16.sp)
-                },
-                text = {
-                    if (isLoadingHistory) {
-                        Box(modifier = Modifier.fillMaxWidth().height(140.dp), contentAlignment = Alignment.Center) {
-                            CircularProgressIndicator(color = ext.accentBlue)
-                        }
-                    } else if (releaseHistory.isEmpty()) {
-                        Text("Henüz yayınlanmış bir sürüm geçmişi bulunamadı.", fontSize = 13.sp, color = ext.textSecondary)
-                    } else {
-                        LazyColumn(
-                            modifier = Modifier.fillMaxWidth().heightIn(max = 350.dp),
-                            verticalArrangement = Arrangement.spacedBy(10.dp)
-                        ) {
-                            items(
-                                items = releaseHistory,
-                                key = { it.tagName.ifBlank { it.versionCode.toString() } }
-                            ) { item ->
-                                Surface(
-                                    shape = RoundedCornerShape(10.dp),
-                                    color = MaterialTheme.colorScheme.surfaceVariant,
-                                    border = BorderStroke(1.dp, ext.cardBorder),
-                                    modifier = Modifier.fillMaxWidth()
-                                ) {
-                                    Column(modifier = Modifier.padding(10.dp)) {
-                                        Row(
-                                            modifier = Modifier.fillMaxWidth(),
-                                            horizontalArrangement = Arrangement.SpaceBetween,
-                                            verticalAlignment = Alignment.CenterVertically
-                                        ) {
-                                            Text(
-                                                text = "v${item.versionName}",
-                                                fontWeight = FontWeight.Bold,
-                                                fontSize = 14.sp,
-                                                color = ext.accentBlue
-                                            )
-                                            if (item.versionCode == mgr.getCurrentVersionCode()) {
-                                                Surface(
-                                                    shape = RoundedCornerShape(6.dp),
-                                                    color = ext.emeraldSolid
-                                                ) {
-                                                    Text(
-                                                        text = "Şu Anki",
-                                                        color = Color.White,
-                                                        fontSize = 10.sp,
-                                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                                                    )
-                                                }
-                                            }
-                                        }
-                                        Spacer(modifier = Modifier.height(4.dp))
-                                        Text(text = item.changelog, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                    }
-                                }
-                            }
-                        }
-                    }
-                },
-                confirmButton = {
-                    TextButton(onClick = { showHistoryDialog = false }) {
-                        Text("Kapat")
-                    }
-                }
-            )
-        }
 
         // Sign Out Button
         OutlinedButton(

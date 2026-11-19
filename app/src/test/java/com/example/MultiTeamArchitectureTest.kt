@@ -1,6 +1,8 @@
 package com.example
 
 import com.example.data.shouldUserReceiveNotification
+import com.example.model.BLACKSEA_AUTHORIZED_TEACHER_EMAIL
+import com.example.model.BLACKSEA_AUTHORIZED_TEACHER_NAME
 import com.example.model.PLATFORM_FOUNDER_EMAIL
 import com.example.model.PLATFORM_MAIN_TEAM_ID
 import com.example.model.PredefinedRoles
@@ -9,6 +11,7 @@ import com.example.model.TeamAppealStatus
 import com.example.model.TeamInfo
 import com.example.model.TeamMembership
 import com.example.model.TeamNotification
+import com.example.model.TeamReopenWatch
 import com.example.model.TeamStatus
 import com.example.model.TeamTaskStatus
 import com.example.model.TeamType
@@ -426,5 +429,84 @@ class MultiTeamArchitectureTest {
             shouldUserReceiveNotification(personalRevokedNotif, "student_a", fatsaRevokedStudentMemberships, isPlatformAdmin = false))
         assertFalse("Founder without BSR membership should not receive BSR room chat notifications",
             shouldUserReceiveNotification(bsrRoomMsg, "founder_u", emptyMap(), isPlatformAdmin = true))
+    }
+
+    @Test
+    fun `mehmetilkerbas is configured as BlackSea Robotics authorized teacher without platform admin`() {
+        assertEquals("mehmetilkerbas@gmail.com", BLACKSEA_AUTHORIZED_TEACHER_EMAIL)
+        val mainTeam = TeamInfo.mainBlackseaTeam()
+        assertEquals(BLACKSEA_AUTHORIZED_TEACHER_NAME, mainTeam.managerName)
+        assertEquals(BLACKSEA_AUTHORIZED_TEACHER_EMAIL, mainTeam.managerContact)
+
+        val teacherProfile = UserProfile(
+            id = "ilker_u",
+            userId = "ilker_u",
+            email = "MEHMETILKERBAS@gmail.com",
+            displayName = BLACKSEA_AUTHORIZED_TEACHER_NAME
+        )
+        assertTrue(teacherProfile.isBlackseaAuthorizedTeacherAccount())
+        assertTrue(teacherProfile.isManagerAccount())
+        assertFalse("Yetkili öğretmen must not gain platform manager powers", teacherProfile.isPlatformManagerAccount())
+
+        val bsrMembership = TeamMembership(
+            teamId = PLATFORM_MAIN_TEAM_ID,
+            userId = "ilker_u",
+            subTeam = TeamType.MANAGEMENT.displayName,
+            role = "Yetkili Öğretmen",
+            roles = listOf("Yetkili Öğretmen"),
+            status = UserStatus.ACTIVE.value,
+            isTeamAdmin = true
+        )
+        val otherStudentMembership = TeamMembership(
+            teamId = "other_team",
+            userId = "ilker_u",
+            subTeam = TeamType.SOFTWARE.displayName,
+            role = "Yazılım Üyesi",
+            roles = listOf("Yazılım Üyesi"),
+            status = UserStatus.ACTIVE.value,
+            isTeamAdmin = false
+        )
+        val inBsr = teacherProfile.withTeamContext(PLATFORM_MAIN_TEAM_ID, bsrMembership)
+        assertTrue(inBsr.isSuperAdmin)
+        assertFalse(inBsr.isPlatformAdmin)
+        assertEquals("Yetkili Öğretmen", inBsr.role)
+
+        val inOther = teacherProfile.withTeamContext("other_team", otherStudentMembership)
+        assertFalse("Authority in other teams follows that team's membership", inOther.isSuperAdmin)
+    }
+
+    @Test
+    fun `teamless users receive team_reopened_watch and support_reply personal notifications`() {
+        val watch = TeamReopenWatch(
+            id = "team_fatsa_teamless_u",
+            teamId = "team_fatsa",
+            userId = "teamless_u"
+        )
+        assertEquals("team_fatsa", watch.teamId)
+
+        val reopenedNotif = TeamNotification(
+            id = "n_reopen_1",
+            teamId = "team_fatsa",
+            teamName = "Fatsa Robotik",
+            recipientUserId = "teamless_u",
+            type = "team_reopened_watch",
+            targetId = "team_fatsa",
+            senderId = "founder_u"
+        )
+        val supportReplyNotif = TeamNotification(
+            id = "n_sup_reply_1",
+            teamId = "blacksea_robotics",
+            recipientUserId = "teamless_u",
+            type = "support_reply",
+            targetId = "ticket_9",
+            senderId = "founder_u"
+        )
+
+        assertEquals(TeamNotificationDispatcher.CHANNEL_ANNOUNCEMENTS, TeamNotificationDispatcher.resolveChannelId("team_reopened_watch"))
+        assertEquals(TeamNotificationDispatcher.CHANNEL_ANNOUNCEMENTS, TeamNotificationDispatcher.resolveChannelId("team_resumed"))
+        assertTrue("Teamless user must receive team_reopened_watch alert",
+            shouldUserReceiveNotification(reopenedNotif, "teamless_u", emptyMap(), isPlatformAdmin = false))
+        assertTrue("Teamless user must receive personal support_reply alert",
+            shouldUserReceiveNotification(supportReplyNotif, "teamless_u", emptyMap(), isPlatformAdmin = false))
     }
 }

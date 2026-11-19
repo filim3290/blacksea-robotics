@@ -1336,4 +1336,300 @@ test("Per-team member suspension with mandatory reason and member appeal flow", 
   );
 });
 
+test("mehmetilkerbas@gmail.com is provisioned as BlackSea Robotics Yetkili Öğretmen only, without platform admin", async () => {
+  const now = new Date(Date.now() - 5000);
+  await testEnv.withSecurityRulesDisabled(async (ctx) => {
+    const db = ctx.firestore();
+    await db.collection("teams").doc("blacksea_robotics").set({
+      name: "BlackSea Robotics",
+      shortCode: "BSR",
+      competition: "TEKNOFEST",
+      schoolName: "Ünye Fen Lisesi",
+      city: "Ordu",
+      description: "Ana takım",
+      managerName: "Mehmet İlker Baş",
+      managerContact: "mehmetilkerbas@gmail.com",
+      founderId: "founder_u",
+      founderEmail: "filim3290@gmail.com",
+      status: "approved",
+      isMainTeam: true,
+      memberCount: 2,
+      createdAt: now,
+      updatedAt: now
+    });
+    await db.collection("teams").doc("team_fatsa").set({
+      name: "Fatsa Robotik",
+      shortCode: "FATSA",
+      competition: "TEKNOFEST",
+      schoolName: "Fatsa Fen Lisesi",
+      city: "Ordu",
+      description: "Fatsa ekibi",
+      managerName: "Fatsa Kaptan",
+      managerContact: "fk@example.com",
+      founderId: "fatsa_mgr",
+      founderEmail: "fk@example.com",
+      status: "pending",
+      isMainTeam: false,
+      memberCount: 1,
+      createdAt: now,
+      updatedAt: now
+    });
+    await db.collection("team_memberships").doc("blacksea_robotics_bsr_captain").set({
+      teamId: "blacksea_robotics",
+      userId: "bsr_captain",
+      userName: "BSR Kaptan",
+      userEmail: "captain@example.com",
+      subTeam: "Genel Yönetim",
+      role: "Takım Kaptanı",
+      roles: ["Takım Kaptanı"],
+      status: "active",
+      isTeamAdmin: true,
+      createdAt: now,
+      updatedAt: now
+    });
+  });
+
+  const ilkerDb = testEnv.authenticatedContext("ilker_u", {
+    email: "mehmetilkerbas@gmail.com",
+    email_verified: true
+  }).firestore();
+  const captainDb = testEnv.authenticatedContext("bsr_captain", {
+    email: "captain@example.com",
+    email_verified: true
+  }).firestore();
+
+  // Can create own Yetkili Öğretmen profile without platform admin or 'Yönetici' role
+  await assertSucceeds(
+    ilkerDb.collection("users").doc("ilker_u").set({
+      userId: "ilker_u",
+      displayName: "Mehmet İlker Baş",
+      email: "mehmetilkerbas@gmail.com",
+      team: "Genel Yönetim",
+      role: "Yetkili Öğretmen",
+      roles: ["Yetkili Öğretmen"],
+      status: "active",
+      isSuperAdmin: true,
+      isPlatformAdmin: false,
+      photoUrl: "",
+      createdAt: new Date(Date.now() - 1000),
+      updatedAt: new Date(Date.now() - 1000)
+    })
+  );
+
+  // Cannot escalate self to isPlatformAdmin or role 'Yönetici'
+  await assertFails(
+    ilkerDb.collection("users").doc("ilker_u").update({
+      isPlatformAdmin: true,
+      role: "Yönetici"
+    })
+  );
+
+  // Can auto-provision active blacksea_robotics Yetkili Öğretmen membership
+  await assertSucceeds(
+    ilkerDb.collection("team_memberships").doc("blacksea_robotics_ilker_u").set({
+      teamId: "blacksea_robotics",
+      userId: "ilker_u",
+      userName: "Mehmet İlker Baş",
+      userEmail: "mehmetilkerbas@gmail.com",
+      userPhotoUrl: "",
+      subTeam: "Genel Yönetim",
+      role: "Yetkili Öğretmen",
+      roles: ["Yetkili Öğretmen"],
+      status: "active",
+      isTeamAdmin: true,
+      joinNote: "BlackSea Robotics Yetkili Öğretmeni",
+      createdAt: new Date(Date.now() - 1000),
+      updatedAt: new Date(Date.now() - 1000)
+    })
+  );
+
+  // Can create announcements inside blacksea_robotics
+  await assertSucceeds(
+    ilkerDb.collection("announcements").doc("bsr_ann_ilker").set({
+      teamId: "blacksea_robotics",
+      authorId: "ilker_u",
+      authorName: "Mehmet İlker Baş",
+      title: "BSR Toplantı",
+      content: "Saat 16:00'da atölyedeyiz.",
+      isPinned: false,
+      createdAt: new Date(Date.now() - 500)
+    })
+  );
+
+  // Cannot approve pending teams, write app_config, or read support tickets (not platform admin)
+  await assertFails(ilkerDb.collection("teams").doc("team_fatsa").get());
+  await assertFails(ilkerDb.collection("teams").doc("team_fatsa").update({ status: "approved", updatedAt: new Date() }));
+  await assertFails(ilkerDb.collection("app_config").doc("latest_release").set({ versionCode: 99 }));
+  await assertFails(ilkerDb.collection("support_tickets").get());
+
+  // Other BSR captain CANNOT revoke or delete mehmetilkerbas@gmail.com's membership
+  await assertFails(
+    captainDb.collection("team_memberships").doc("blacksea_robotics_ilker_u").update({
+      status: "revoked",
+      isTeamAdmin: false,
+      updatedAt: new Date(Date.now() - 100)
+    })
+  );
+  await assertFails(
+    captainDb.collection("team_memberships").doc("blacksea_robotics_ilker_u").delete()
+  );
+});
+
+test("Blocked teams remain discoverable with Haber Et watch subscriptions, no join requests, and teamless support access", async () => {
+  const created = new Date(Date.now() - 5000);
+  await testEnv.withSecurityRulesDisabled(async (ctx) => {
+    const db = ctx.firestore();
+    await db.collection("teams").doc("team_suspended").set({
+      name: "Durdurulan Takım",
+      shortCode: "DUR",
+      competition: "TEKNOFEST",
+      schoolName: "Ordu Fen Lisesi",
+      city: "Ordu",
+      description: "Geçici olarak durdurulan ekip.",
+      managerName: "Yetkili",
+      managerContact: "y@example.com",
+      founderId: "susp_mgr",
+      founderEmail: "y@example.com",
+      status: "suspended",
+      moderationReason: "Evrak kontrolü",
+      isMainTeam: false,
+      memberCount: 2,
+      createdAt: created,
+      updatedAt: created
+    });
+    await db.collection("teams").doc("team_open").set({
+      name: "Açık Takım",
+      shortCode: "ACIK",
+      competition: "TEKNOFEST",
+      schoolName: "Fatsa Anadolu",
+      city: "Ordu",
+      description: "Kullanıma açık ekip.",
+      managerName: "Kaptan",
+      managerContact: "k@example.com",
+      founderId: "open_mgr",
+      founderEmail: "k@example.com",
+      status: "approved",
+      isMainTeam: false,
+      memberCount: 3,
+      createdAt: created,
+      updatedAt: created
+    });
+  });
+
+  const teamlessDb = testEnv.authenticatedContext("teamless_u", {
+    email: "teamless@example.com",
+    email_verified: true
+  }).firestore();
+  const founderDb = testEnv.authenticatedContext("founder_u", {
+    email: "filim3290@gmail.com",
+    email_verified: true
+  }).firestore();
+
+  // 1. User with 0 teams CAN discover suspended/under_review teams in directory
+  await assertSucceeds(teamlessDb.collection("teams").doc("team_suspended").get());
+  await assertSucceeds(
+    teamlessDb.collection("teams").where("status", "in", ["approved", "suspended", "under_review"]).get()
+  );
+
+  // 2. User CANNOT apply to join a suspended team
+  await assertFails(
+    teamlessDb.collection("team_memberships").doc("team_suspended_teamless_u").set({
+      teamId: "team_suspended",
+      userId: "teamless_u",
+      userName: "Takımsız Öğrenci",
+      userEmail: "teamless@example.com",
+      subTeam: "Yazılım Ekibi",
+      role: "Yazılım Üyesi",
+      roles: ["Yazılım Üyesi"],
+      status: "pending",
+      isTeamAdmin: false,
+      createdAt: new Date(Date.now() - 1000),
+      updatedAt: new Date(Date.now() - 1000)
+    })
+  );
+
+  // 3. User CAN subscribe with Haber Et only on blocked (suspended/under_review) teams, not open teams or spoofed UIDs
+  await assertFails(
+    teamlessDb.collection("team_reopen_watchers").doc("team_open_teamless_u").set({
+      teamId: "team_open",
+      userId: "teamless_u",
+      createdAt: new Date(Date.now() - 1000)
+    })
+  );
+  await assertFails(
+    teamlessDb.collection("team_reopen_watchers").doc("team_suspended_other_u").set({
+      teamId: "team_suspended",
+      userId: "other_u",
+      createdAt: new Date(Date.now() - 1000)
+    })
+  );
+  await assertSucceeds(
+    teamlessDb.collection("team_reopen_watchers").doc("team_suspended_teamless_u").set({
+      teamId: "team_suspended",
+      userId: "teamless_u",
+      createdAt: new Date(Date.now() - 1000)
+    })
+  );
+  await assertSucceeds(
+    teamlessDb.collection("team_reopen_watchers").where("userId", "==", "teamless_u").get()
+  );
+
+  // 4. Founder reopens team, reads watchers, sends team_reopened_watch notification, deletes watcher
+  await assertSucceeds(
+    teamlessDb.collection("support_tickets").doc("teamless_ticket_1").set({
+      teamId: "blacksea_robotics",
+      userId: "teamless_u",
+      userName: "Takımsız Öğrenci",
+      userEmail: "teamless@example.com",
+      userTeam: "Takımlar Merkezi",
+      category: "Genel Soru",
+      subject: "Takım başvurusu hakkında",
+      description: "Takımlar merkezinde desteğe ulaşabiliyorum, bilgi almak istiyorum.",
+      appVersion: "1.0.15 (16)",
+      deviceInfo: "Android 14",
+      status: "open",
+      adminReply: "",
+      repliedByName: "",
+      createdAt: new Date(Date.now() - 1000),
+      updatedAt: new Date(Date.now() - 1000)
+    })
+  );
+  await assertSucceeds(
+    teamlessDb.collection("support_tickets").where("userId", "==", "teamless_u").get()
+  );
+
+  await assertSucceeds(
+    founderDb.collection("team_reopen_watchers").where("teamId", "==", "team_suspended").get()
+  );
+  await assertSucceeds(
+    founderDb.collection("teams").doc("team_suspended").update({
+      status: "approved",
+      moderationReason: "",
+      updatedAt: new Date(Date.now() - 500)
+    })
+  );
+  await assertSucceeds(
+    founderDb.collection("notifications").doc("notif_reopen_watch_1").set({
+      teamId: "team_suspended",
+      teamName: "Durdurulan Takım",
+      recipientUserId: "teamless_u",
+      type: "team_reopened_watch",
+      targetId: "team_suspended",
+      senderId: "founder_u",
+      senderName: "BlackSea Platform Yönetimi",
+      title: "Durdurulan Takım Çalışma Alanı Açıldı!",
+      message: "Takım tekrar kullanıma açıldı.",
+      isRead: false,
+      createdAt: new Date(Date.now() - 300)
+    })
+  );
+  await assertSucceeds(
+    teamlessDb.collection("notifications").where("recipientUserId", "==", "teamless_u").get()
+  );
+  await assertSucceeds(
+    founderDb.collection("team_reopen_watchers").doc("team_suspended_teamless_u").delete()
+  );
+});
+
+
 

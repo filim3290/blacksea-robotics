@@ -161,7 +161,8 @@ fun MainScreen(
     val scope = rememberCoroutineScope()
 
     val currentUserProfile by repository.observeUserProfile(currentUserId).collectAsState(initial = null)
-    val approvedTeams by repository.observeApprovedTeams().collectAsState(initial = emptyList())
+    val approvedTeams by repository.observeDiscoverableTeams().collectAsState(initial = emptyList())
+    val watchedTeamIds by repository.observeWatchedTeamIds(currentUserId).collectAsState(initial = emptySet())
     val myMemberships by repository.observeMyMemberships(currentUserId).collectAsState(initial = emptyList())
     val myTeamApplications by repository.observeMyTeamApplications(currentUserId).collectAsState(initial = emptyList())
 
@@ -176,6 +177,7 @@ fun MainScreen(
             repository.removeFounderAutoBsrMembershipIfNeeded(currentUserId)
             repository.ensureMainTeamExists()
         } else {
+            repository.ensureBsrAuthorizedTeacherMembershipIfNeeded(p)
             repository.migrateLegacyUserToMainTeamMembershipIfNeeded(p)
         }
     }
@@ -211,6 +213,7 @@ fun MainScreen(
     var selectedRoomIdForNavigation by remember { mutableStateOf("general") }
     var adminInitialSection by remember { mutableStateOf("members") }
     var requestedPlatformConsoleTab by remember { mutableStateOf<String?>(null) }
+    var requestedOpenAccountSheet by remember { mutableStateOf(false) }
 
     // Ensure removed/revoked membership safely exits the closed workspace back to Team Hub
     LaunchedEffect(activeTeamId, activeTeamIds, myMemberships) {
@@ -244,6 +247,20 @@ fun MainScreen(
                 }
                 return
             }
+            "team_reopened_watch" -> {
+                activeTeamId = null
+                return
+            }
+            "support_reply" -> {
+                val selectedTeam = activeTeamId
+                if (selectedTeam != null && selectedTeam in activeTeamIds) {
+                    currentTab = NavItem.PROFILE
+                } else {
+                    activeTeamId = null
+                    requestedOpenAccountSheet = true
+                }
+                return
+            }
             "support_ticket" -> {
                 if (isPlatformAdmin) {
                     activeTeamId = null
@@ -255,6 +272,7 @@ fun MainScreen(
                         currentTab = NavItem.PROFILE
                     } else {
                         activeTeamId = null
+                        requestedOpenAccountSheet = true
                     }
                 }
                 return
@@ -367,6 +385,8 @@ fun MainScreen(
             myTeamApplications = myTeamApplications,
             repository = repository,
             notifications = visibleNotifications,
+            updateManager = updateManager,
+            watchedTeamIds = watchedTeamIds,
             availableUpdate = availableUpdate,
             locallyReadIds = locallyReadIds,
             unreadNotificationsCount = unreadNotificationsCount,
@@ -417,6 +437,8 @@ fun MainScreen(
             },
             requestedPlatformConsoleTab = requestedPlatformConsoleTab,
             onConsumePlatformConsoleTab = { requestedPlatformConsoleTab = null },
+            requestedOpenAccountSheet = requestedOpenAccountSheet,
+            onConsumeOpenAccountSheet = { requestedOpenAccountSheet = false },
             onSignOut = onSignOut,
             onAccountDeleted = onAccountDeleted
         )

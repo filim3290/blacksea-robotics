@@ -280,7 +280,7 @@ object TeamNotificationDispatcher {
     fun resolveChannelId(type: String): String {
         return when (type.lowercase()) {
             "update" -> CHANNEL_UPDATES
-            "broadcast", "announcement", "team_suspended", "team_under_review" -> CHANNEL_ANNOUNCEMENTS
+            "broadcast", "announcement", "team_suspended", "team_under_review", "team_resumed", "team_reopened_watch" -> CHANNEL_ANNOUNCEMENTS
             "message" -> CHANNEL_MESSAGES
             else -> CHANNEL_TEAM
         }

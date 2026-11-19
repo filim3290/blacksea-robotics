@@ -43,7 +43,7 @@
         "managerContact": { "type": "string" },
         "founderId": { "type": "string" },
         "founderEmail": { "type": "string" },
-        "status": { "type": "string", "enum": ["pending", "approved", "rejected"] },
+        "status": { "type": "string", "enum": ["pending", "approved", "suspended", "under_review", "rejected"] },
         "isMainTeam": { "type": "boolean" },
         "memberCount": { "type": "integer" },
         "rejectionReason": { "type": "string" },
@@ -223,6 +223,17 @@
         "updatedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["userId", "userName", "userEmail", "userTeam", "category", "subject", "description", "appVersion", "deviceInfo", "status", "adminReply", "repliedByName", "createdAt", "updatedAt"]
+    },
+    "TeamReopenWatch": {
+      "title": "TeamReopenWatch",
+      "description": "Subscription by a user to be notified when a suspended or under-review team reopens (doc ID: teamId_userId)",
+      "type": "object",
+      "properties": {
+        "teamId": { "type": "string" },
+        "userId": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["teamId", "userId", "createdAt"]
     }
   },
   "firestore": {
@@ -297,6 +308,10 @@
     "/support_tickets/{ticketId}": {
       "schema": "SupportTicket",
       "description": "Main platform team (blacksea_robotics) support tickets collection"
+    },
+    "/team_reopen_watchers/{watchId}": {
+      "schema": "TeamReopenWatch",
+      "description": "Reopen notification subscriptions for suspended or under-review teams"
     }
   }
 }

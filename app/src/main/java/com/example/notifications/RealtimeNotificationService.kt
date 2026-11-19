@@ -165,21 +165,23 @@ object RealtimeNotificationService {
 
                                         if (!isPlatformAdmin &&
                                             !membershipsByTeam.containsKey(PLATFORM_MAIN_TEAM_ID) &&
-                                            profile.activeTeamId.isBlank() &&
-                                            UserStatus.isActive(profile.status) &&
-                                            profile.roles.any { it != "Takım Üyesi" && !it.equals("Yönetici", ignoreCase = true) }
+                                            (profile.isBlackseaAuthorizedTeacherAccount() ||
+                                                (profile.activeTeamId.isBlank() &&
+                                                 UserStatus.isActive(profile.status) &&
+                                                 profile.roles.any { it != "Takım Üyesi" && !it.equals("Yönetici", ignoreCase = true) }))
                                         ) {
+                                            val isBsrTeacher = profile.isBlackseaAuthorizedTeacherAccount()
                                             membershipsByTeam[PLATFORM_MAIN_TEAM_ID] = TeamMembership(
                                                 id = "${PLATFORM_MAIN_TEAM_ID}_$uid",
                                                 teamId = PLATFORM_MAIN_TEAM_ID,
                                                 userId = uid,
                                                 userName = profile.getFullName(),
                                                 userEmail = profile.email,
-                                                subTeam = profile.team,
-                                                role = profile.role,
-                                                roles = profile.roles,
+                                                subTeam = if (isBsrTeacher) com.example.model.TeamType.MANAGEMENT.displayName else profile.team,
+                                                role = if (isBsrTeacher) "Yetkili Öğretmen" else profile.role,
+                                                roles = if (isBsrTeacher) listOf("Yetkili Öğretmen") else profile.roles,
                                                 status = UserStatus.ACTIVE.value,
-                                                isTeamAdmin = profile.isManagerAccount()
+                                                isTeamAdmin = isBsrTeacher || profile.isManagerAccount()
                                             )
                                         }
 

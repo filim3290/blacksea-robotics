@@ -44,10 +44,13 @@ import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.HourglassTop
 import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.Notifications
+import androidx.compose.material.icons.filled.NotificationsActive
+import androidx.compose.material.icons.filled.NotificationsOff
 import androidx.compose.material.icons.filled.PauseCircle
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.School
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.WarningAmber
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
@@ -109,12 +112,15 @@ import com.example.model.TeamType
 import com.example.model.UserProfile
 import com.example.ui.TeamNotificationsDialog
 import com.example.ui.components.AdminSupportTab
+import com.example.ui.components.AppUpdatesCard
 import com.example.ui.components.BlackseaLogo
+import com.example.ui.components.SupportCenterButtonCard
 import com.example.ui.components.TeamBadge
 import com.example.ui.components.TeamLogoBadge
 import com.example.ui.components.parseTeamColor
 import com.example.ui.theme.blackseaColors
 import com.example.update.AppReleaseInfo
+import com.example.update.AppUpdateManager
 import com.example.util.sanitizeUserErrorMessage
 import com.google.firebase.Firebase
 import com.google.firebase.auth.auth
@@ -133,6 +139,8 @@ fun TeamHubScreen(
     myTeamApplications: List<TeamInfo>,
     repository: BlackseaRepository,
     notifications: List<TeamNotification>,
+    updateManager: AppUpdateManager? = null,
+    watchedTeamIds: Set<String> = emptySet(),
     availableUpdate: AppReleaseInfo? = null,
     locallyReadIds: Set<String> = emptySet(),
     unreadNotificationsCount: Int = 0,
@@ -146,6 +154,8 @@ fun TeamHubScreen(
     onEnterTeam: (String) -> Unit,
     requestedPlatformConsoleTab: String? = null,
     onConsumePlatformConsoleTab: () -> Unit = {},
+    requestedOpenAccountSheet: Boolean = false,
+    onConsumeOpenAccountSheet: () -> Unit = {},
     onSignOut: () -> Unit,
     onAccountDeleted: () -> Unit = onSignOut,
     modifier: Modifier = Modifier
@@ -154,6 +164,7 @@ fun TeamHubScreen(
     val ext = MaterialTheme.blackseaColors
     val scope = rememberCoroutineScope()
     val credentialManager = remember { CredentialManager.create(context) }
+    val resolvedUpdateManager = updateManager ?: remember { AppUpdateManager(context) }
 
     var searchQuery by rememberSaveable { mutableStateOf("") }
     var showNotificationsDialog by remember { mutableStateOf(false) }
@@ -165,12 +176,20 @@ fun TeamHubScreen(
     var showSignOutConfirmation by remember { mutableStateOf(false) }
     var showPlatformConsoleDialog by rememberSaveable { mutableStateOf(false) }
     var platformConsoleTabKey by rememberSaveable { mutableStateOf("applications") }
+    var watchUpdatingTeamIds by remember { mutableStateOf<Set<String>>(emptySet()) }
 
     LaunchedEffect(requestedPlatformConsoleTab, isPlatformAdmin) {
         if (isPlatformAdmin && !requestedPlatformConsoleTab.isNullOrBlank()) {
             platformConsoleTabKey = requestedPlatformConsoleTab
             showPlatformConsoleDialog = true
             onConsumePlatformConsoleTab()
+        }
+    }
+
+    LaunchedEffect(requestedOpenAccountSheet) {
+        if (requestedOpenAccountSheet) {
+            showAccountSheet = true
+            onConsumeOpenAccountSheet()
         }
     }
 
@@ -751,9 +770,9 @@ fun TeamHubScreen(
                         ) {
                             Text(
                                 text = if (searchQuery.isNotBlank()) {
-                                    "Aramanızla eşleşen aktif takım bulunamadı."
+                                    "Aramanızla eşleşen takım bulunamadı."
                                 } else {
-                                    "Platformdaki tüm aktif takımlara zaten üyesiniz."
+                                    "Platformdaki tüm takımlara zaten üyesiniz."
                                 },
                                 fontSize = 13.sp,
                                 color = ext.textSecondary,
@@ -772,7 +791,35 @@ fun TeamHubScreen(
                         DiscoverableTeamCard(
                             team = team,
                             membership = membershipByTeamId[team.id],
-                            onApplyClick = { joinTargetTeam = team }
+                            isWatching = watchedTeamIds.contains(team.id),
+                            isWatchUpdating = watchUpdatingTeamIds.contains(team.id),
+                            onApplyClick = { joinTargetTeam = team },
+                            onToggleWatchClick = {
+                                if (watchUpdatingTeamIds.contains(team.id)) return@DiscoverableTeamCard
+                                val nextWatch = !watchedTeamIds.contains(team.id)
+                                watchUpdatingTeamIds = watchUpdatingTeamIds + team.id
+                                scope.launch {
+                                    val res = repository.setTeamReopenWatch(team, nextWatch)
+                                    watchUpdatingTeamIds = watchUpdatingTeamIds - team.id
+                                    if (res.isSuccess) {
+                                        Toast.makeText(
+                                            context,
+                                            if (nextWatch) {
+                                                "${team.name} çalışma alanı açıldığında size bildirim gönderilecek."
+                                            } else {
+                                                "${team.name} için açılış bildirimi takibi iptal edildi."
+                                            },
+                                            Toast.LENGTH_LONG
+                                        ).show()
+                                    } else {
+                                        Toast.makeText(
+                                            context,
+                                            sanitizeUserErrorMessage(res.exceptionOrNull(), "İşlem tamamlanamadı."),
+                                            Toast.LENGTH_LONG
+                                        ).show()
+                                    }
+                                }
+                            }
                         )
                     }
                 }
@@ -1000,85 +1047,164 @@ fun TeamHubScreen(
         )
     }
 
-    // Account & Sign Out Sheet
+    // Account, App Updates, Support Center & Sign Out Dialog
     if (showAccountSheet) {
-        AlertDialog(
+        val fallbackAuthUser = Firebase.auth.currentUser
+        val resolvedSupportProfile = currentUserProfile ?: UserProfile(
+            id = currentUserId,
+            userId = currentUserId,
+            displayName = fallbackAuthUser?.displayName?.takeIf { it.isNotBlank() } ?: "Kullanıcı",
+            email = fallbackAuthUser?.email.orEmpty(),
+            photoUrl = fallbackAuthUser?.photoUrl?.toString().orEmpty()
+        )
+        val primaryPair = myActiveTeams.firstOrNull()
+        val resolvedTeamId = primaryPair?.first?.id ?: PLATFORM_MAIN_TEAM_ID
+        val resolvedTeamName = primaryPair?.first?.name ?: "Takımlar Merkezi"
+        val resolvedSubTeam = primaryPair?.second?.subTeam?.takeIf { it.isNotBlank() } ?: "Genel Kullanıcı"
+
+        Dialog(
             onDismissRequest = { showAccountSheet = false },
-            title = {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+            properties = DialogProperties(usePlatformDefaultWidth = false)
+        ) {
+            BackHandler { showAccountSheet = false }
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 24.dp)
+                    .widthIn(max = 540.dp)
+                    .imePadding()
+                    .testTag("team_hub_account_dialog"),
+                shape = RoundedCornerShape(24.dp),
+                color = MaterialTheme.colorScheme.background,
+                tonalElevation = 4.dp
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .verticalScroll(rememberScrollState())
+                        .padding(18.dp),
+                    verticalArrangement = Arrangement.spacedBy(14.dp)
                 ) {
-                    Surface(
-                        shape = CircleShape,
-                        color = ext.accentBlueContainer,
-                        modifier = Modifier.size(40.dp)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
-                        Box(contentAlignment = Alignment.Center) {
+                        Surface(
+                            shape = CircleShape,
+                            color = ext.accentBlueContainer,
+                            modifier = Modifier.size(46.dp)
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Text(
+                                    text = resolvedSupportProfile.getFullName().take(1).uppercase().ifBlank { "K" },
+                                    fontSize = 18.sp,
+                                    fontWeight = FontWeight.Black,
+                                    color = ext.accentBlue
+                                )
+                            }
+                        }
+                        Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                text = currentUserProfile?.getFullName()?.take(1)?.uppercase() ?: "K",
-                                fontWeight = FontWeight.Black,
-                                color = ext.accentBlue
+                                text = resolvedSupportProfile.getFullName().ifBlank { "Kullanıcı" },
+                                fontSize = 16.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            if (resolvedSupportProfile.email.isNotBlank()) {
+                                Text(
+                                    text = resolvedSupportProfile.email,
+                                    fontSize = 12.sp,
+                                    color = ext.textMuted,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = ext.accentBlueContainer
+                            ) {
+                                Text(
+                                    text = if (myActiveTeams.isEmpty()) "Henüz takım üyeliği yok" else "${myActiveTeams.size} Aktif Takım Üyeliği",
+                                    fontSize = 10.5.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = ext.accentBlue,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                                )
+                            }
+                        }
+                        IconButton(
+                            onClick = { showAccountSheet = false },
+                            modifier = Modifier.testTag("close_team_hub_account_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Close,
+                                contentDescription = "Kapat",
+                                tint = ext.textMuted
                             )
                         }
                     }
-                    Column {
-                        Text(
-                            text = currentUserProfile?.getFullName()?.ifBlank { "Kullanıcı" } ?: "Kullanıcı",
-                            fontSize = 16.sp,
-                            fontWeight = FontWeight.Bold
-                        )
-                        Text(
-                            text = currentUserProfile?.email.orEmpty(),
-                            fontSize = 12.sp,
-                            color = ext.textMuted
-                        )
-                    }
-                }
-            },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text(
-                        text = "Aktif üyelik sayınız: ${myActiveTeams.size} takım",
-                        fontSize = 13.sp,
-                        color = ext.textSecondary
+
+                    HorizontalDivider(color = ext.cardBorder)
+
+                    AppUpdatesCard(
+                        updateManager = resolvedUpdateManager,
+                        onShowUpdateDialog = { release ->
+                            showAccountSheet = false
+                            onShowUpdateDialog(release)
+                        }
                     )
+
+                    SupportCenterButtonCard(
+                        currentUserProfile = resolvedSupportProfile,
+                        teamId = resolvedTeamId,
+                        teamName = resolvedTeamName,
+                        userSubTeam = resolvedSubTeam,
+                        repository = repository,
+                        updateManager = resolvedUpdateManager
+                    )
+
                     OutlinedButton(
                         onClick = {
                             showAccountSheet = false
                             showCreateTeamOverlay = true
                         },
-                        modifier = Modifier.fillMaxWidth().heightIn(min = 46.dp),
-                        shape = RoundedCornerShape(10.dp)
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 48.dp)
+                            .testTag("account_dialog_create_team_button"),
+                        shape = RoundedCornerShape(12.dp)
                     ) {
                         Icon(imageVector = Icons.Default.AddCircleOutline, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(modifier = Modifier.width(6.dp))
                         Text("Kendi Ekibini Oluştur", fontWeight = FontWeight.SemiBold)
                     }
-                }
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        showAccountSheet = false
-                        showSignOutConfirmation = true
-                    },
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = ext.dangerSolid,
-                        contentColor = Color.White
-                    )
-                ) {
-                    Icon(imageVector = Icons.AutoMirrored.Filled.ExitToApp, contentDescription = null, modifier = Modifier.size(16.dp))
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text("Oturumu Kapat", fontWeight = FontWeight.Bold)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showAccountSheet = false }) {
-                    Text("Kapat")
+
+                    Button(
+                        onClick = {
+                            showAccountSheet = false
+                            showSignOutConfirmation = true
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 48.dp)
+                            .testTag("account_dialog_sign_out_button"),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = ext.dangerSolid,
+                            contentColor = Color.White
+                        )
+                    ) {
+                        Icon(imageVector = Icons.AutoMirrored.Filled.ExitToApp, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Oturumu Kapat", fontWeight = FontWeight.Bold)
+                    }
                 }
             }
-        )
+        }
     }
 
     if (showSignOutConfirmation) {
@@ -1601,19 +1727,27 @@ private fun MySuspendedTeamCard(
 private fun DiscoverableTeamCard(
     team: TeamInfo,
     membership: TeamMembership?,
-    onApplyClick: () -> Unit
+    isWatching: Boolean = false,
+    isWatchUpdating: Boolean = false,
+    onApplyClick: () -> Unit,
+    onToggleWatchClick: () -> Unit = {}
 ) {
     val ext = MaterialTheme.blackseaColors
     val accent = parseTeamColor(team.accentColorHex, ext.accentBlue)
     val isPending = membership?.isPending() == true
     val isRejected = membership?.isRejected() == true
+    val isBlocked = team.isWorkspaceBlocked()
+    val blockColor = if (team.isSuspended()) ext.dangerText else ext.amberText
 
     Card(
         modifier = Modifier
             .fillMaxWidth()
             .testTag("other_team_card_${team.id}"),
         shape = RoundedCornerShape(16.dp),
-        border = BorderStroke(1.dp, ext.cardBorder),
+        border = BorderStroke(
+            width = if (isBlocked) 1.2.dp else 1.dp,
+            color = if (isBlocked) blockColor.copy(alpha = 0.45f) else ext.cardBorder
+        ),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
     ) {
         Column(
@@ -1650,6 +1784,20 @@ private fun DiscoverableTeamCard(
                                     fontWeight = FontWeight.Bold,
                                     color = accent,
                                     modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
+                                )
+                            }
+                        }
+                        if (isBlocked) {
+                            Surface(
+                                shape = RoundedCornerShape(6.dp),
+                                color = blockColor.copy(alpha = 0.14f)
+                            ) {
+                                Text(
+                                    text = TeamStatus.displayName(team.status),
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = blockColor,
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                                 )
                             }
                         }
@@ -1721,6 +1869,55 @@ private fun DiscoverableTeamCard(
                 )
             }
 
+            if (isBlocked) {
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = blockColor.copy(alpha = 0.10f),
+                    border = BorderStroke(1.dp, blockColor.copy(alpha = 0.35f)),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("blocked_team_notice_${team.id}")
+                ) {
+                    Column(
+                        modifier = Modifier.padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.WarningAmber,
+                                contentDescription = null,
+                                tint = blockColor,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Text(
+                                text = "Çalışma Alanı Kullanılamıyor",
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = blockColor
+                            )
+                        }
+                        Text(
+                            text = "Şu anda bu çalışma alanı kullanılamıyor. Açıldığında haber almak istiyorsanız Haber Et tuşuna basınız.",
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            lineHeight = 17.sp
+                        )
+                        if (team.moderationReason.isNotBlank()) {
+                            Text(
+                                text = "Durum Notu: ${team.moderationReason}",
+                                fontSize = 11.5.sp,
+                                fontWeight = FontWeight.Medium,
+                                color = blockColor,
+                                lineHeight = 16.sp
+                            )
+                        }
+                    }
+                }
+            }
+
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -1734,6 +1931,58 @@ private fun DiscoverableTeamCard(
                 )
 
                 when {
+                    isBlocked -> {
+                        if (isWatching) {
+                            OutlinedButton(
+                                onClick = onToggleWatchClick,
+                                enabled = !isWatchUpdating,
+                                shape = RoundedCornerShape(10.dp),
+                                border = BorderStroke(1.2.dp, ext.emeraldSolid),
+                                colors = ButtonDefaults.outlinedButtonColors(contentColor = ext.emeraldText),
+                                modifier = Modifier
+                                    .heightIn(min = 48.dp)
+                                    .testTag("watch_team_button_${team.id}")
+                            ) {
+                                if (isWatchUpdating) {
+                                    CircularProgressIndicator(modifier = Modifier.size(16.dp), color = ext.emeraldText, strokeWidth = 2.dp)
+                                } else {
+                                    Icon(imageVector = Icons.Default.NotificationsOff, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(
+                                        text = "Haber Alınacak (İptal)",
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                            }
+                        } else {
+                            Button(
+                                onClick = onToggleWatchClick,
+                                enabled = !isWatchUpdating,
+                                shape = RoundedCornerShape(10.dp),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = ext.accentBlueSolid,
+                                    contentColor = Color.White
+                                ),
+                                modifier = Modifier
+                                    .heightIn(min = 48.dp)
+                                    .testTag("watch_team_button_${team.id}")
+                            ) {
+                                if (isWatchUpdating) {
+                                    CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.White, strokeWidth = 2.dp)
+                                } else {
+                                    Icon(imageVector = Icons.Default.NotificationsActive, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(
+                                        text = "Haber Et",
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                            }
+                        }
+                    }
+
                     isPending -> {
                         Surface(
                             shape = RoundedCornerShape(10.dp),
@@ -1768,7 +2017,7 @@ private fun DiscoverableTeamCard(
                             border = BorderStroke(1.2.dp, accent),
                             colors = ButtonDefaults.outlinedButtonColors(contentColor = accent),
                             modifier = Modifier
-                                .heightIn(min = 40.dp)
+                                .heightIn(min = 48.dp)
                                 .testTag("apply_team_button_${team.id}")
                         ) {
                             Text(

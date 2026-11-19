@@ -378,6 +378,7 @@ fun AppContent(
                         repository.ensureMainTeamExists()
                         repository.ensureDefaultRoomsExist()
                     } else {
+                        repository.ensureBsrAuthorizedTeacherMembershipIfNeeded(profile)
                         repository.migrateLegacyUserToMainTeamMembershipIfNeeded(profile)
                     }
                 } catch (_: Exception) {
