@@ -273,6 +273,10 @@ data class TeamMembership(
     @get:PropertyName("isTeamAdmin") @field:PropertyName("isTeamAdmin")
     val isTeamAdmin: Boolean = false,
     val joinNote: String = "",
+    val suspensionReason: String = "",
+    val appealText: String = "",
+    val appealStatus: String = "",
+    val appealSubmittedAt: Timestamp? = null,
     @ServerTimestamp val createdAt: Timestamp? = null,
     @ServerTimestamp val updatedAt: Timestamp? = null
 ) {
@@ -280,6 +284,7 @@ data class TeamMembership(
     fun isPending(): Boolean = UserStatus.isPending(status)
     fun isRejected(): Boolean = UserStatus.isRejected(status)
     fun isRevoked(): Boolean = UserStatus.isRevoked(status)
+    fun hasPendingAppeal(): Boolean = appealStatus.equals(TeamAppealStatus.PENDING, ignoreCase = true)
 
     fun isManagerInTeam(): Boolean {
         if (!isActive()) return false
@@ -656,7 +661,25 @@ data class SupportTicket(
     val repliedByName: String = "",
     @ServerTimestamp val createdAt: Timestamp? = null,
     @ServerTimestamp val updatedAt: Timestamp? = null
-)
+) {
+    fun originTeamName(): String {
+        val raw = userTeam.trim()
+        return if (raw.contains("•")) {
+            raw.substringBefore("•").trim().ifBlank { "BlackSea Robotics" }
+        } else {
+            "BlackSea Robotics"
+        }
+    }
+
+    fun originSubTeamName(): String {
+        val raw = userTeam.trim()
+        return if (raw.contains("•")) {
+            raw.substringAfter("•").trim().ifBlank { "Genel Ekip" }
+        } else {
+            raw.ifBlank { "Genel Ekip" }
+        }
+    }
+}
 
 data class SupportFaqItem(
     val id: String,

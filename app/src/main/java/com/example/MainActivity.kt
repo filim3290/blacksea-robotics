@@ -346,27 +346,8 @@ fun AppContent(
         }
     }.collectAsState(initial = emptyList())
 
-    val membershipsByTeam = remember(myMemberships, activeProfile, isPlatformAdmin) {
-        val map = myMemberships.associateBy { it.teamId }.toMutableMap()
-        val profile = activeProfile
-        if (profile != null && !map.containsKey(com.example.model.PLATFORM_MAIN_TEAM_ID)) {
-            val uid = profile.userId.ifBlank { profile.id }
-            if (isPlatformAdmin && uid.isNotBlank()) {
-                map[com.example.model.PLATFORM_MAIN_TEAM_ID] = com.example.model.TeamMembership(
-                    id = "${com.example.model.PLATFORM_MAIN_TEAM_ID}_$uid",
-                    teamId = com.example.model.PLATFORM_MAIN_TEAM_ID,
-                    userId = uid,
-                    userName = profile.getFullName(),
-                    userEmail = profile.email,
-                    subTeam = profile.team,
-                    role = profile.role,
-                    roles = profile.roles,
-                    status = UserStatus.ACTIVE.value,
-                    isTeamAdmin = true
-                )
-            }
-        }
-        map
+    val membershipsByTeam = remember(myMemberships) {
+        myMemberships.associateBy { it.teamId }
     }
 
     LaunchedEffect(authenticatedUid, profileState, isSelfDeleting) {
@@ -392,10 +373,12 @@ fun AppContent(
                 BackgroundNotificationWorker.schedulePeriodicSync(context)
                 RealtimeNotificationService.startIfEnabled(context)
                 try {
-                    repository.migrateLegacyUserToMainTeamMembershipIfNeeded(profile)
                     if (isPlatformAdmin) {
+                        repository.removeFounderAutoBsrMembershipIfNeeded(authenticatedUid)
                         repository.ensureMainTeamExists()
                         repository.ensureDefaultRoomsExist()
+                    } else {
+                        repository.migrateLegacyUserToMainTeamMembershipIfNeeded(profile)
                     }
                 } catch (_: Exception) {
                 }

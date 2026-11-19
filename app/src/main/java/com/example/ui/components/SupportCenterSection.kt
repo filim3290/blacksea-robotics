@@ -38,7 +38,9 @@ import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.HelpOutline
+import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.SupportAgent
 import androidx.compose.material3.AlertDialog
@@ -103,6 +105,7 @@ fun SupportCenterButtonCard(
     updateManager: AppUpdateManager?,
     teamId: String = com.example.model.PLATFORM_MAIN_TEAM_ID,
     teamName: String = "BlackSea Robotics",
+    userSubTeam: String = "",
     modifier: Modifier = Modifier
 ) {
     val ext = MaterialTheme.blackseaColors
@@ -267,7 +270,8 @@ fun SupportCenterButtonCard(
                             repository = repository,
                             updateManager = updateManager,
                             teamId = teamId,
-                            teamName = teamName
+                            teamName = teamName,
+                            userSubTeam = userSubTeam
                         )
                     }
                 }
@@ -283,6 +287,7 @@ fun HelpAndSupportCenterCard(
     updateManager: AppUpdateManager?,
     teamId: String = com.example.model.PLATFORM_MAIN_TEAM_ID,
     teamName: String = "BlackSea Robotics",
+    userSubTeam: String = "",
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -568,8 +573,15 @@ fun HelpAndSupportCenterCard(
         val appVer = remember { "${mgr.getCurrentVersionName()} (${mgr.getCurrentVersionCode()})" }
         val deviceInfo = remember { "Android ${Build.VERSION.RELEASE} (SDK ${Build.VERSION.SDK_INT})" }
 
+        val resolvedSubTeam = remember(userSubTeam, currentUserProfile?.team) {
+            userSubTeam.trim().ifBlank { currentUserProfile.team.trim() }.ifBlank { "Genel Ekip" }
+        }
+        val resolvedTeamName = teamName.trim().ifBlank { "BlackSea Robotics" }
+
         SupportTicketFormDialog(
-            userTeam = currentUserProfile.team,
+            userName = currentUserProfile.getFullName(),
+            teamName = resolvedTeamName,
+            userTeam = resolvedSubTeam,
             appVersion = appVer,
             deviceInfo = deviceInfo,
             onDismiss = { showTicketFormDialog = false },
@@ -582,11 +594,11 @@ fun HelpAndSupportCenterCard(
                             description = description,
                             userName = currentUserProfile.getFullName(),
                             userEmail = currentUserProfile.email,
-                            userTeam = currentUserProfile.team,
+                            userTeam = resolvedSubTeam,
                             appVersion = appVer,
                             deviceInfo = deviceInfo,
                             teamId = teamId,
-                            teamName = teamName
+                            teamName = resolvedTeamName
                         )
                         onComplete()
                         if (res.isSuccess) {
@@ -619,6 +631,8 @@ fun HelpAndSupportCenterCard(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SupportTicketFormDialog(
+    userName: String = "",
+    teamName: String = "BlackSea Robotics",
     userTeam: String,
     appVersion: String,
     deviceInfo: String,
@@ -752,8 +766,12 @@ fun SupportTicketFormDialog(
                             tint = ext.textMuted,
                             modifier = Modifier.size(16.dp)
                         )
+                        val senderPreview = listOfNotNull(
+                            userName.takeIf { it.isNotBlank() },
+                            "$teamName • $userTeam"
+                        ).joinToString(" • ")
                         Text(
-                            text = "Otomatik eklenecek bilgi: v$appVersion • $userTeam • $deviceInfo",
+                            text = "Gönderen & Sistem: $senderPreview • v$appVersion • $deviceInfo",
                             fontSize = 10.sp,
                             color = ext.textSecondary,
                             lineHeight = 14.sp
@@ -864,12 +882,68 @@ fun SupportTicketSummaryCard(
             }
 
             if (showSender) {
-                Text(
-                    text = "${ticket.userName} • ${ticket.userTeam}",
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    color = ext.accentBlue
-                )
+                val originTeam = ticket.originTeamName()
+                val originSubTeam = ticket.originSubTeamName()
+                val memberName = ticket.userName.ifBlank { "Takım Üyesi" }
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = MaterialTheme.colorScheme.surface,
+                    border = BorderStroke(1.dp, ext.cardBorder),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Groups,
+                                contentDescription = "Takım",
+                                tint = ext.accentBlue,
+                                modifier = Modifier.size(15.dp)
+                            )
+                            Text(
+                                text = "Takım: $originTeam ($originSubTeam)",
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = ext.accentBlue,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Person,
+                                contentDescription = "Üye Adı",
+                                tint = ext.textSecondary,
+                                modifier = Modifier.size(15.dp)
+                            )
+                            Text(
+                                text = "Üye: $memberName",
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                        if (ticket.userEmail.isNotBlank()) {
+                            Text(
+                                text = ticket.userEmail,
+                                fontSize = 10.sp,
+                                color = ext.textMuted,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                }
             }
 
             Text(
@@ -978,18 +1052,50 @@ fun AdminSupportTab(
     val scope = rememberCoroutineScope()
 
     var statusFilter by remember { mutableStateOf("all") }
+    var searchQuery by remember { mutableStateOf("") }
     var ticketToReply by remember { mutableStateOf<SupportTicket?>(null) }
 
-    val filteredTickets = remember(tickets, statusFilter) {
-        if (statusFilter == "all") tickets
-        else tickets.filter { SupportTicketStatus.normalize(it.status) == statusFilter }
+    val filteredTickets = remember(tickets, statusFilter, searchQuery) {
+        val q = searchQuery.trim().lowercase(Locale("tr", "TR"))
+        tickets.filter { ticket ->
+            val matchesStatus = statusFilter == "all" || SupportTicketStatus.normalize(ticket.status) == statusFilter
+            val matchesQuery = q.isBlank() ||
+                ticket.userName.lowercase(Locale("tr", "TR")).contains(q) ||
+                ticket.originTeamName().lowercase(Locale("tr", "TR")).contains(q) ||
+                ticket.originSubTeamName().lowercase(Locale("tr", "TR")).contains(q) ||
+                ticket.subject.lowercase(Locale("tr", "TR")).contains(q) ||
+                ticket.category.lowercase(Locale("tr", "TR")).contains(q)
+            matchesStatus && matchesQuery
+        }
     }
 
     Column(modifier = modifier.fillMaxSize()) {
+        OutlinedTextField(
+            value = searchQuery,
+            onValueChange = { searchQuery = it },
+            placeholder = { Text("Takım adı, üye adı veya konu ara...", fontSize = 12.sp) },
+            leadingIcon = {
+                Icon(imageVector = Icons.Default.Search, contentDescription = "Destek Ara", tint = ext.textMuted)
+            },
+            trailingIcon = {
+                if (searchQuery.isNotBlank()) {
+                    IconButton(onClick = { searchQuery = "" }) {
+                        Icon(imageVector = Icons.Default.Close, contentDescription = "Temizle")
+                    }
+                }
+            },
+            singleLine = true,
+            shape = RoundedCornerShape(12.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = 16.dp, end = 16.dp, top = 10.dp)
+                .testTag("admin_support_search_input")
+        )
+
         LazyRow(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 10.dp),
+                .padding(horizontal = 16.dp, vertical = 8.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             val filters = listOf(
@@ -1023,7 +1129,7 @@ fun AdminSupportTab(
                     )
                     Spacer(modifier = Modifier.height(8.dp))
                     Text(
-                        text = "Bu kategoride destek talebi bulunmuyor.",
+                        text = "Bu filtreyle eşleşen destek talebi bulunmuyor.",
                         color = ext.textMuted,
                         fontSize = 14.sp
                     )
@@ -1059,12 +1165,13 @@ fun AdminSupportTab(
         AlertDialog(
             onDismissRequest = { if (!isSaving) ticketToReply = null },
             title = {
-                Column {
+                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                     Text(text = target.subject, fontWeight = FontWeight.Bold, fontSize = 16.sp)
                     Text(
-                        text = "${target.userName} (${target.userTeam})",
+                        text = "Takım: ${target.originTeamName()} (${target.originSubTeamName()}) • Üye: ${target.userName}",
                         fontSize = 11.sp,
-                        color = ext.textMuted
+                        fontWeight = FontWeight.SemiBold,
+                        color = ext.accentBlue
                     )
                 }
             },

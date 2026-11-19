@@ -35,13 +35,16 @@ import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.automirrored.filled.ExitToApp
 import androidx.compose.material.icons.filled.AddCircleOutline
 import androidx.compose.material.icons.filled.AdminPanelSettings
+import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.EmojiEvents
+import androidx.compose.material.icons.filled.Gavel
 import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.HourglassTop
 import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.Notifications
+import androidx.compose.material.icons.filled.PauseCircle
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.School
 import androidx.compose.material.icons.filled.Search
@@ -57,6 +60,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -64,10 +68,13 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Tab
+import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -91,6 +98,9 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.credentials.CredentialManager
 import com.example.data.BlackseaRepository
 import com.example.model.PLATFORM_MAIN_TEAM_ID
+import com.example.model.SupportTicket
+import com.example.model.SupportTicketStatus
+import com.example.model.TeamAppealStatus
 import com.example.model.TeamInfo
 import com.example.model.TeamMembership
 import com.example.model.TeamNotification
@@ -98,6 +108,7 @@ import com.example.model.TeamStatus
 import com.example.model.TeamType
 import com.example.model.UserProfile
 import com.example.ui.TeamNotificationsDialog
+import com.example.ui.components.AdminSupportTab
 import com.example.ui.components.BlackseaLogo
 import com.example.ui.components.TeamBadge
 import com.example.ui.components.TeamLogoBadge
@@ -107,6 +118,8 @@ import com.example.update.AppReleaseInfo
 import com.example.util.sanitizeUserErrorMessage
 import com.google.firebase.Firebase
 import com.google.firebase.auth.auth
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
@@ -131,7 +144,8 @@ fun TeamHubScreen(
     onShowUpdateDialog: (AppReleaseInfo) -> Unit = {},
     onReadUpdateClick: (String) -> Unit = {},
     onEnterTeam: (String) -> Unit,
-    onOpenPlatformAdminReview: (() -> Unit)? = null,
+    requestedPlatformConsoleTab: String? = null,
+    onConsumePlatformConsoleTab: () -> Unit = {},
     onSignOut: () -> Unit,
     onAccountDeleted: () -> Unit = onSignOut,
     modifier: Modifier = Modifier
@@ -146,13 +160,42 @@ fun TeamHubScreen(
     var showCreateTeamOverlay by rememberSaveable { mutableStateOf(false) }
     var showCreateTeamSuccessDialog by rememberSaveable { mutableStateOf(false) }
     var joinTargetTeam by remember { mutableStateOf<TeamInfo?>(null) }
+    var appealTargetPair by remember { mutableStateOf<Pair<TeamInfo, TeamMembership>?>(null) }
     var showAccountSheet by remember { mutableStateOf(false) }
     var showSignOutConfirmation by remember { mutableStateOf(false) }
+    var showPlatformConsoleDialog by rememberSaveable { mutableStateOf(false) }
+    var platformConsoleTabKey by rememberSaveable { mutableStateOf("applications") }
+
+    LaunchedEffect(requestedPlatformConsoleTab, isPlatformAdmin) {
+        if (isPlatformAdmin && !requestedPlatformConsoleTab.isNullOrBlank()) {
+            platformConsoleTabKey = requestedPlatformConsoleTab
+            showPlatformConsoleDialog = true
+            onConsumePlatformConsoleTab()
+        }
+    }
 
     val pendingTeamApplicationsForAdmin by remember(isPlatformAdmin) {
         if (isPlatformAdmin) repository.observePendingTeamApplications()
-        else kotlinx.coroutines.flow.flowOf(emptyList())
+        else flowOf(emptyList())
     }.collectAsState(initial = emptyList())
+
+    val allPlatformTeamsForAdmin by remember(isPlatformAdmin) {
+        if (isPlatformAdmin) repository.observeAllTeamsForPlatformAdmin()
+        else flowOf(emptyList())
+    }.collectAsState(initial = emptyList())
+
+    val allSupportTicketsForAdmin by remember(isPlatformAdmin) {
+        if (isPlatformAdmin) repository.observeAllSupportTickets(PLATFORM_MAIN_TEAM_ID)
+        else flowOf(emptyList())
+    }.collectAsState(initial = emptyList())
+
+    val openSupportCountForAdmin = remember(allSupportTicketsForAdmin) {
+        allSupportTicketsForAdmin.count { SupportTicketStatus.normalize(it.status) != SupportTicketStatus.RESOLVED }
+    }
+    val pendingAppealsCountForAdmin = remember(allPlatformTeamsForAdmin) {
+        allPlatformTeamsForAdmin.count { it.appealStatus.equals(TeamAppealStatus.PENDING, ignoreCase = true) }
+    }
+    val developerAlertCount = pendingTeamApplicationsForAdmin.size + pendingAppealsCountForAdmin + openSupportCountForAdmin
 
     val membershipByTeamId = remember(myMemberships) {
         myMemberships.associateBy { it.teamId }
@@ -160,6 +203,9 @@ fun TeamHubScreen(
 
     val activeMemberships = remember(myMemberships) {
         myMemberships.filter { it.isActive() }
+    }
+    val revokedMemberships = remember(myMemberships) {
+        myMemberships.filter { it.isRevoked() }
     }
 
     val teamMap = remember(approvedTeams, myKnownTeams) {
@@ -187,11 +233,19 @@ fun TeamHubScreen(
         )
     }
 
-    val myActiveTeamIds = remember(myActiveTeams) {
-        myActiveTeams.map { it.first.id }.toSet()
+    val mySuspendedTeams = remember(revokedMemberships, teamMap) {
+        revokedMemberships.mapNotNull { mem ->
+            val team = teamMap[mem.teamId]
+                ?: if (mem.teamId == PLATFORM_MAIN_TEAM_ID) TeamInfo.mainBlackseaTeam() else null
+            if (team != null) team to mem else null
+        }.sortedBy { it.first.name.lowercase() }
     }
 
-    val otherApprovedTeams = remember(approvedTeams, myActiveTeamIds, searchQuery) {
+    val excludedFromDirectoryIds = remember(myActiveTeams, mySuspendedTeams) {
+        (myActiveTeams.map { it.first.id } + mySuspendedTeams.map { it.first.id }).toSet()
+    }
+
+    val otherApprovedTeams = remember(approvedTeams, excludedFromDirectoryIds, searchQuery) {
         val allApproved = if (approvedTeams.any { it.id == PLATFORM_MAIN_TEAM_ID || it.isMainTeam }) {
             approvedTeams
         } else {
@@ -199,7 +253,7 @@ fun TeamHubScreen(
         }
         val query = searchQuery.trim().lowercase()
         allApproved
-            .filter { !myActiveTeamIds.contains(it.id) }
+            .filter { !excludedFromDirectoryIds.contains(it.id) }
             .filter { team ->
                 if (query.isBlank()) true
                 else {
@@ -213,8 +267,11 @@ fun TeamHubScreen(
             }
     }
 
-    BackHandler(enabled = showCreateTeamOverlay) {
-        showCreateTeamOverlay = false
+    BackHandler(enabled = showCreateTeamOverlay || showPlatformConsoleDialog) {
+        when {
+            showCreateTeamOverlay -> showCreateTeamOverlay = false
+            showPlatformConsoleDialog -> showPlatformConsoleDialog = false
+        }
     }
 
     Scaffold(
@@ -237,14 +294,42 @@ fun TeamHubScreen(
                                 color = MaterialTheme.colorScheme.onSurface
                             )
                             Text(
-                                text = "BlackSea Robotics Platformu",
+                                text = if (isPlatformAdmin) "Uygulama Geliştirici Konsolu" else "BlackSea Robotics Platformu",
                                 fontSize = 10.sp,
-                                color = ext.textMuted
+                                color = if (isPlatformAdmin) ext.adminRedText else ext.textMuted
                             )
                         }
                     }
                 },
                 actions = {
+                    if (isPlatformAdmin) {
+                        IconButton(
+                            onClick = { showPlatformConsoleDialog = true },
+                            modifier = Modifier.testTag("team_hub_platform_console_button")
+                        ) {
+                            BadgedBox(
+                                badge = {
+                                    if (developerAlertCount > 0) {
+                                        Badge(
+                                            containerColor = ext.adminRedSolid,
+                                            contentColor = Color.White
+                                        ) {
+                                            Text(
+                                                text = if (developerAlertCount > 9) "9+" else "$developerAlertCount",
+                                                fontSize = 10.sp
+                                            )
+                                        }
+                                    }
+                                }
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.AdminPanelSettings,
+                                    contentDescription = "Geliştirici Yönetim Merkezi",
+                                    tint = ext.adminRedText
+                                )
+                            }
+                        }
+                    }
                     IconButton(
                         onClick = { showNotificationsDialog = true },
                         modifier = Modifier.testTag("team_hub_notifications_button")
@@ -379,63 +464,136 @@ fun TeamHubScreen(
                     }
                 }
 
-                // BSR Platform Admin alert banner when there are pending team applications
-                if (isPlatformAdmin && pendingTeamApplicationsForAdmin.isNotEmpty() && onOpenPlatformAdminReview != null) {
+                // Platform Developer Console card (for filim3290@gmail.com only) directly in Team Hub
+                if (isPlatformAdmin) {
+                    val hasUrgentDeveloperAction = pendingTeamApplicationsForAdmin.isNotEmpty() || pendingAppealsCountForAdmin > 0 || openSupportCountForAdmin > 0
                     item {
                         Card(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clickable { onOpenPlatformAdminReview() }
-                                .testTag("platform_admin_pending_teams_banner"),
-                            shape = RoundedCornerShape(16.dp),
-                            border = BorderStroke(1.5.dp, ext.adminRedSolid.copy(alpha = 0.4f)),
-                            colors = CardDefaults.cardColors(containerColor = ext.adminRedSolid.copy(alpha = 0.10f))
+                                .clickable { showPlatformConsoleDialog = true }
+                                .testTag("platform_developer_console_banner"),
+                            shape = RoundedCornerShape(18.dp),
+                            border = BorderStroke(
+                                width = 1.5.dp,
+                                color = if (hasUrgentDeveloperAction) ext.adminRedSolid.copy(alpha = 0.5f) else ext.cardBorder
+                            ),
+                            colors = CardDefaults.cardColors(
+                                containerColor = if (hasUrgentDeveloperAction) {
+                                    ext.adminRedSolid.copy(alpha = 0.08f)
+                                } else {
+                                    MaterialTheme.colorScheme.surface
+                                }
+                            )
                         ) {
-                            Row(
+                            Column(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .padding(14.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                    .padding(16.dp),
+                                verticalArrangement = Arrangement.spacedBy(10.dp)
                             ) {
-                                Surface(
-                                    shape = CircleShape,
-                                    color = ext.adminRedSolid,
-                                    modifier = Modifier.size(40.dp)
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(12.dp)
                                 ) {
-                                    Box(contentAlignment = Alignment.Center) {
-                                        Icon(
-                                            imageVector = Icons.Default.AdminPanelSettings,
-                                            contentDescription = null,
-                                            tint = Color.White,
-                                            modifier = Modifier.size(22.dp)
+                                    Surface(
+                                        shape = CircleShape,
+                                        color = ext.adminRedSolid,
+                                        modifier = Modifier.size(42.dp)
+                                    ) {
+                                        Box(contentAlignment = Alignment.Center) {
+                                            Icon(
+                                                imageVector = Icons.Default.AdminPanelSettings,
+                                                contentDescription = null,
+                                                tint = Color.White,
+                                                modifier = Modifier.size(22.dp)
+                                            )
+                                        }
+                                    }
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = "Uygulama Geliştirici Yönetimi",
+                                            fontSize = 15.sp,
+                                            fontWeight = FontWeight.Black,
+                                            color = ext.adminRedText
+                                        )
+                                        Text(
+                                            text = "Takım başvuruları, platform takımları, üye listeleri ve destek talepleri",
+                                            fontSize = 12.sp,
+                                            color = ext.textSecondary
+                                        )
+                                    }
+                                    Icon(
+                                        imageVector = Icons.AutoMirrored.Filled.ArrowForward,
+                                        contentDescription = "Geliştirici Paneli",
+                                        tint = ext.adminRedText
+                                    )
+                                }
+
+                                FlowRow(
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Surface(
+                                        shape = RoundedCornerShape(8.dp),
+                                        color = if (pendingTeamApplicationsForAdmin.isNotEmpty()) ext.amberText.copy(alpha = 0.16f) else MaterialTheme.colorScheme.surfaceVariant,
+                                        modifier = Modifier.clickable {
+                                            platformConsoleTabKey = "applications"
+                                            showPlatformConsoleDialog = true
+                                        }
+                                    ) {
+                                        Text(
+                                            text = "Başvurular (${pendingTeamApplicationsForAdmin.size})",
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = if (pendingTeamApplicationsForAdmin.isNotEmpty()) ext.amberText else ext.textSecondary,
+                                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                                        )
+                                    }
+                                    Surface(
+                                        shape = RoundedCornerShape(8.dp),
+                                        color = if (pendingAppealsCountForAdmin > 0) ext.dangerSolid.copy(alpha = 0.14f) else ext.accentBlueContainer,
+                                        modifier = Modifier.clickable {
+                                            platformConsoleTabKey = "teams"
+                                            showPlatformConsoleDialog = true
+                                        }
+                                    ) {
+                                        Text(
+                                            text = if (pendingAppealsCountForAdmin > 0) {
+                                                "Takımlar (${allPlatformTeamsForAdmin.size}) • $pendingAppealsCountForAdmin İtiraz"
+                                            } else {
+                                                "Takımlar (${allPlatformTeamsForAdmin.size})"
+                                            },
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = if (pendingAppealsCountForAdmin > 0) ext.dangerText else ext.accentBlue,
+                                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                                        )
+                                    }
+                                    Surface(
+                                        shape = RoundedCornerShape(8.dp),
+                                        color = if (openSupportCountForAdmin > 0) ext.adminRedSolid.copy(alpha = 0.14f) else MaterialTheme.colorScheme.surfaceVariant,
+                                        modifier = Modifier.clickable {
+                                            platformConsoleTabKey = "support"
+                                            showPlatformConsoleDialog = true
+                                        }
+                                    ) {
+                                        Text(
+                                            text = "Destek ($openSupportCountForAdmin Açık)",
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = if (openSupportCountForAdmin > 0) ext.adminRedText else ext.textSecondary,
+                                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
                                         )
                                     }
                                 }
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(
-                                        text = "${pendingTeamApplicationsForAdmin.size} Yeni Takım Başvurusu Bekliyor",
-                                        fontSize = 14.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        color = ext.adminRedText
-                                    )
-                                    Text(
-                                        text = "İncelemek, onaylamak veya reddetmek için dokunun",
-                                        fontSize = 12.sp,
-                                        color = ext.textSecondary
-                                    )
-                                }
-                                Icon(
-                                    imageVector = Icons.AutoMirrored.Filled.ArrowForward,
-                                    contentDescription = "İncele",
-                                    tint = ext.adminRedText
-                                )
                             }
                         }
                     }
                 }
 
                 // Section 1: "Takımlarım"
+                val totalMyTeamCount = myActiveTeams.size + mySuspendedTeams.size
                 item {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -443,7 +601,7 @@ fun TeamHubScreen(
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         Text(
-                            text = "Takımlarım (${myActiveTeams.size})",
+                            text = "Takımlarım ($totalMyTeamCount)",
                             fontSize = 17.sp,
                             fontWeight = FontWeight.Black,
                             color = MaterialTheme.colorScheme.onBackground
@@ -451,7 +609,7 @@ fun TeamHubScreen(
                     }
                 }
 
-                if (myActiveTeams.isEmpty()) {
+                if (myActiveTeams.isEmpty() && mySuspendedTeams.isEmpty()) {
                     item {
                         Card(
                             modifier = Modifier.fillMaxWidth(),
@@ -473,14 +631,22 @@ fun TeamHubScreen(
                                     modifier = Modifier.size(34.dp)
                                 )
                                 Text(
-                                    text = "Henüz aktif üyesi olduğunuz bir takım yok",
+                                    text = if (isPlatformAdmin) {
+                                        "Geliştirici hesabı bağımsız yönetimde"
+                                    } else {
+                                        "Henüz aktif üyesi olduğunuz bir takım yok"
+                                    },
                                     fontSize = 14.sp,
                                     fontWeight = FontWeight.Bold,
                                     color = MaterialTheme.colorScheme.onSurface,
                                     textAlign = TextAlign.Center
                                 )
                                 Text(
-                                    text = "Aşağıdaki 'Diğer Takımlar' listesinden istediğiniz takıma katılma başvurusu gönderebilir veya 'Kendi Ekibini Oluştur' butonunu kullanabilirsiniz.",
+                                    text = if (isPlatformAdmin) {
+                                        "BlackSea Robotics takımı dahil tüm ekipleri yukarıdaki Uygulama Geliştirici Yönetimi panelinden inceleyebilir, üye listelerine erişebilirsiniz."
+                                    } else {
+                                        "Aşağıdaki 'Diğer Takımlar' listesinden istediğiniz takıma katılma başvurusu gönderebilir veya 'Kendi Ekibini Oluştur' butonunu kullanabilirsiniz."
+                                    },
                                     fontSize = 12.sp,
                                     color = ext.textSecondary,
                                     textAlign = TextAlign.Center,
@@ -498,6 +664,17 @@ fun TeamHubScreen(
                             team = team,
                             membership = membership,
                             onEnterClick = { onEnterTeam(team.id) }
+                        )
+                    }
+
+                    items(
+                        items = mySuspendedTeams,
+                        key = { (team, _) -> "suspended_team_${team.id}" }
+                    ) { (team, membership) ->
+                        MySuspendedTeamCard(
+                            team = team,
+                            membership = membership,
+                            onAppealClick = { appealTargetPair = team to membership }
                         )
                     }
                 }
@@ -931,6 +1108,136 @@ fun TeamHubScreen(
         )
     }
 
+    // Member suspension appeal dialog
+    appealTargetPair?.let { (targetTeam, targetMembership) ->
+        var memberAppealText by remember(targetTeam.id) { mutableStateOf("") }
+        var isSubmittingMemberAppeal by remember { mutableStateOf(false) }
+        val trimmedAppeal = memberAppealText.trim()
+        val isAppealValid = trimmedAppeal.length >= 10
+
+        AlertDialog(
+            onDismissRequest = { if (!isSubmittingMemberAppeal) appealTargetPair = null },
+            icon = {
+                Icon(
+                    imageVector = Icons.Default.Gavel,
+                    contentDescription = null,
+                    tint = ext.accentBlue,
+                    modifier = Modifier.size(30.dp)
+                )
+            },
+            title = {
+                Text(
+                    text = "${targetTeam.name} • Askıya Alma İtirazı",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 16.sp
+                )
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    if (targetMembership.suspensionReason.isNotBlank()) {
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = ext.dangerContainer.copy(alpha = 0.7f),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                text = "Gerekçe: ${targetMembership.suspensionReason}",
+                                fontSize = 12.sp,
+                                color = ext.dangerText,
+                                modifier = Modifier.padding(10.dp)
+                            )
+                        }
+                    }
+                    Text(
+                        text = "Yeniden üyelik başvurusu yapmanıza gerek yoktur. Askıya alma kararına itirazınızı takım yetkililerine doğrudan iletebilirsiniz.",
+                        fontSize = 12.sp,
+                        color = ext.textSecondary,
+                        lineHeight = 18.sp
+                    )
+                    OutlinedTextField(
+                        value = memberAppealText,
+                        onValueChange = { if (it.length <= 1000) memberAppealText = it },
+                        label = { Text("İtiraz Açıklamanız (En az 10 karakter)") },
+                        placeholder = { Text("Durumla ilgili açıklamanızı yazın...") },
+                        minLines = 3,
+                        maxLines = 6,
+                        isError = memberAppealText.isNotBlank() && !isAppealValid,
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("member_appeal_input")
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        isSubmittingMemberAppeal = true
+                        val fallbackUser = Firebase.auth.currentUser
+                        val displayName = currentUserProfile?.getFullName()?.ifBlank { null }
+                            ?: fallbackUser?.displayName
+                            ?: targetMembership.userName.ifBlank { "Takım Üyesi" }
+                        scope.launch {
+                            try {
+                                val res = repository.submitMembershipAppeal(
+                                    team = targetTeam,
+                                    memberName = displayName,
+                                    appealText = trimmedAppeal
+                                )
+                                if (res.isSuccess) {
+                                    appealTargetPair = null
+                                    Toast.makeText(
+                                        context,
+                                        "İtirazınız ${targetTeam.name} yetkililerine gönderildi.",
+                                        Toast.LENGTH_LONG
+                                    ).show()
+                                } else {
+                                    Toast.makeText(
+                                        context,
+                                        sanitizeUserErrorMessage(res.exceptionOrNull(), "İtiraz gönderilemedi."),
+                                        Toast.LENGTH_LONG
+                                    ).show()
+                                }
+                            } catch (ce: CancellationException) {
+                                throw ce
+                            } finally {
+                                isSubmittingMemberAppeal = false
+                            }
+                        }
+                    },
+                    enabled = isAppealValid && !isSubmittingMemberAppeal,
+                    colors = ButtonDefaults.buttonColors(containerColor = ext.accentBlueSolid, contentColor = Color.White),
+                    modifier = Modifier.testTag("confirm_member_appeal_button")
+                ) {
+                    if (isSubmittingMemberAppeal) {
+                        CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.White, strokeWidth = 2.dp)
+                    } else {
+                        Text("İtirazı Gönder", fontWeight = FontWeight.Bold)
+                    }
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { appealTargetPair = null }, enabled = !isSubmittingMemberAppeal) {
+                    Text("Vazgeç")
+                }
+            }
+        )
+    }
+
+    if (showPlatformConsoleDialog && isPlatformAdmin) {
+        PlatformDeveloperConsoleDialog(
+            selectedTabKey = platformConsoleTabKey,
+            onSelectTab = { platformConsoleTabKey = it },
+            pendingApplications = pendingTeamApplicationsForAdmin,
+            allTeams = allPlatformTeamsForAdmin,
+            supportTickets = allSupportTicketsForAdmin,
+            openSupportCount = openSupportCountForAdmin,
+            currentUserProfile = currentUserProfile,
+            repository = repository,
+            onDismiss = { showPlatformConsoleDialog = false }
+        )
+    }
+
     if (showNotificationsDialog) {
         TeamNotificationsDialog(
             notifications = notifications,
@@ -964,6 +1271,7 @@ private fun MyActiveTeamCard(
     val ext = MaterialTheme.blackseaColors
     val accent = parseTeamColor(team.accentColorHex, ext.accentBlue)
     val isBlocked = team.isWorkspaceBlocked()
+    val canAppealBlocked = membership.isManagerInTeam()
     val blockColor = if (team.isSuspended()) ext.dangerText else ext.amberText
 
     Card(
@@ -1104,6 +1412,21 @@ private fun MyActiveTeamCard(
                 }
             }
 
+            if (isBlocked && team.moderationReason.isNotBlank()) {
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = blockColor.copy(alpha = 0.10f),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text = "Durum Notu: ${team.moderationReason}",
+                        fontSize = 12.sp,
+                        color = blockColor,
+                        modifier = Modifier.padding(10.dp)
+                    )
+                }
+            }
+
             Button(
                 onClick = onEnterClick,
                 modifier = Modifier
@@ -1116,15 +1439,158 @@ private fun MyActiveTeamCard(
                 )
             ) {
                 Text(
-                    text = if (isBlocked) "Durumu Görüntüle / İtiraz Et" else "Çalışma Alanına Gir",
+                    text = when {
+                        isBlocked && canAppealBlocked -> "Durumu Görüntüle / İtiraz Et"
+                        isBlocked -> "Çalışma Alanı Kapalı (Durumu Gör)"
+                        else -> "Çalışma Alanına Gir"
+                    },
                     fontWeight = FontWeight.Bold,
                     fontSize = 13.sp
                 )
                 Spacer(modifier = Modifier.width(6.dp))
                 Icon(
-                    imageVector = Icons.AutoMirrored.Filled.ArrowForward,
+                    imageVector = if (isBlocked) Icons.Default.PauseCircle else Icons.AutoMirrored.Filled.ArrowForward,
                     contentDescription = null,
                     modifier = Modifier.size(16.dp)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun MySuspendedTeamCard(
+    team: TeamInfo,
+    membership: TeamMembership,
+    onAppealClick: () -> Unit
+) {
+    val ext = MaterialTheme.blackseaColors
+    val isPendingAppeal = membership.hasPendingAppeal()
+    val isRejectedAppeal = membership.appealStatus.equals(TeamAppealStatus.REJECTED, ignoreCase = true)
+
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("my_suspended_team_card_${team.id}"),
+        shape = RoundedCornerShape(18.dp),
+        border = BorderStroke(1.2.dp, ext.dangerText.copy(alpha = 0.45f)),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                TeamLogoBadge(team = team, size = 48)
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = team.name,
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        text = membership.subTeam.ifBlank { TeamType.GENERAL.displayName },
+                        fontSize = 12.sp,
+                        color = ext.textSecondary
+                    )
+                }
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = ext.dangerContainer
+                ) {
+                    Text(
+                        text = "Üyelik Askıda",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = ext.dangerText,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                    )
+                }
+            }
+
+            Surface(
+                shape = RoundedCornerShape(10.dp),
+                color = ext.dangerContainer.copy(alpha = 0.65f),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(
+                    modifier = Modifier.padding(10.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Text(
+                        text = "Askıya Alma Gerekçesi",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = ext.dangerText
+                    )
+                    Text(
+                        text = membership.suspensionReason.ifBlank { "Takım yetkilisi tarafından erişiminiz geçici olarak askıya alındı." },
+                        fontSize = 12.5.sp,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        lineHeight = 18.sp
+                    )
+                }
+            }
+
+            if (membership.appealText.isNotBlank()) {
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = if (isPendingAppeal) ext.accentBlueContainer else MaterialTheme.colorScheme.surfaceVariant,
+                    border = BorderStroke(1.dp, if (isPendingAppeal) ext.accentBlue.copy(alpha = 0.35f) else ext.cardBorder),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
+                        modifier = Modifier.padding(10.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Text(
+                            text = when {
+                                isPendingAppeal -> "İtirazınız İnceleniyor"
+                                isRejectedAppeal -> "Önceki İtiraz Reddedildi"
+                                else -> "Gönderilen İtiraz"
+                            },
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = if (isPendingAppeal) ext.accentBlue else if (isRejectedAppeal) ext.dangerText else ext.textMuted
+                        )
+                        Text(
+                            text = membership.appealText,
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                    }
+                }
+            }
+
+            Button(
+                onClick = onAppealClick,
+                enabled = !isPendingAppeal,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 44.dp)
+                    .testTag("member_appeal_button_${team.id}"),
+                shape = RoundedCornerShape(12.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = ext.accentBlueSolid,
+                    contentColor = Color.White
+                )
+            ) {
+                Icon(imageVector = Icons.Default.Gavel, contentDescription = null, modifier = Modifier.size(16.dp))
+                Spacer(modifier = Modifier.width(6.dp))
+                Text(
+                    text = when {
+                        isPendingAppeal -> "İtiraz İnceleniyor"
+                        isRejectedAppeal -> "Yeniden İtiraz Et"
+                        else -> "İtiraz Et"
+                    },
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 13.sp
                 )
             }
         }
@@ -1140,7 +1606,7 @@ private fun DiscoverableTeamCard(
     val ext = MaterialTheme.blackseaColors
     val accent = parseTeamColor(team.accentColorHex, ext.accentBlue)
     val isPending = membership?.isPending() == true
-    val isRejected = membership?.isRejected() == true || membership?.isRevoked() == true
+    val isRejected = membership?.isRejected() == true
 
     Card(
         modifier = Modifier
@@ -1382,3 +1848,146 @@ private fun MyTeamApplicationStatusCard(team: TeamInfo) {
         }
     }
 }
+
+@Composable
+private fun PlatformDeveloperConsoleDialog(
+    selectedTabKey: String,
+    onSelectTab: (String) -> Unit,
+    pendingApplications: List<TeamInfo>,
+    allTeams: List<TeamInfo>,
+    supportTickets: List<SupportTicket>,
+    openSupportCount: Int,
+    currentUserProfile: UserProfile?,
+    repository: BlackseaRepository,
+    onDismiss: () -> Unit
+) {
+    val ext = MaterialTheme.blackseaColors
+    val tabs = remember {
+        listOf(
+            "applications" to "Başvurular",
+            "teams" to "Takımlar",
+            "support" to "Destek"
+        )
+    }
+    val selectedIdx = tabs.indexOfFirst { it.first == selectedTabKey }.takeIf { it >= 0 } ?: 0
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        BackHandler { onDismiss() }
+        Surface(
+            modifier = Modifier
+                .fillMaxSize()
+                .statusBarsPadding()
+                .navigationBarsPadding()
+                .imePadding()
+                .testTag("platform_developer_console_dialog"),
+            color = MaterialTheme.colorScheme.background
+        ) {
+            Column(modifier = Modifier.fillMaxSize()) {
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    color = MaterialTheme.colorScheme.surface,
+                    shadowElevation = 2.dp
+                ) {
+                    Column {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Surface(
+                                shape = CircleShape,
+                                color = ext.adminRedSolid,
+                                modifier = Modifier.size(38.dp)
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Icon(
+                                        imageVector = Icons.Default.AdminPanelSettings,
+                                        contentDescription = null,
+                                        tint = Color.White,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
+                            }
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "Geliştirici Yönetim Merkezi",
+                                    fontSize = 16.sp,
+                                    fontWeight = FontWeight.Black,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                Text(
+                                    text = "Tüm platform takımları, üyeleri, başvurular ve destek talepleri",
+                                    fontSize = 11.sp,
+                                    color = ext.textMuted
+                                )
+                            }
+                            IconButton(
+                                onClick = onDismiss,
+                                modifier = Modifier.testTag("close_platform_console_button")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Close,
+                                    contentDescription = "Kapat",
+                                    tint = ext.textMuted
+                                )
+                            }
+                        }
+
+                        TabRow(
+                            selectedTabIndex = selectedIdx,
+                            containerColor = MaterialTheme.colorScheme.surface
+                        ) {
+                            tabs.forEachIndexed { index, (key, title) ->
+                                val count = when (key) {
+                                    "applications" -> pendingApplications.size
+                                    "teams" -> allTeams.size
+                                    else -> openSupportCount
+                                }
+                                Tab(
+                                    selected = selectedIdx == index,
+                                    onClick = { onSelectTab(key) },
+                                    text = {
+                                        Text(
+                                            text = if (count > 0 || key == "teams") "$title ($count)" else title,
+                                            fontSize = 12.sp,
+                                            fontWeight = if (selectedIdx == index) FontWeight.Bold else FontWeight.Medium,
+                                            color = if (selectedIdx == index) ext.accentBlue else ext.textMuted,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
+
+                Box(modifier = Modifier.weight(1f)) {
+                    when (tabs[selectedIdx].first) {
+                        "applications" -> TeamApplicationsTab(
+                            pendingApplications = pendingApplications,
+                            repository = repository
+                        )
+                        "teams" -> PlatformTeamsOverviewTab(
+                            teams = allTeams,
+                            repository = repository
+                        )
+                        else -> AdminSupportTab(
+                            tickets = supportTickets,
+                            repository = repository,
+                            currentUserProfile = currentUserProfile,
+                            teamId = PLATFORM_MAIN_TEAM_ID,
+                            teamName = "BlackSea Robotics"
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+

@@ -1105,6 +1105,31 @@ test("Founder can suspend, mark under_review, and resume teams; blocked teams de
       updatedAt: new Date(Date.now() - 500)
     })
   );
+  // Blocked team regular member CANNOT submit team moderation appeal or team_appeal notification
+  await assertFails(
+    studentADb.collection("teams").doc("team_fatsa").update({
+      appealText: "Öğrenci olarak takıma itiraz göndermeye çalışıyorum.",
+      appealStatus: "pending",
+      appealByUserId: "student_a",
+      appealByName: "Öğrenci A",
+      appealSubmittedAt: new Date(Date.now() - 500),
+      updatedAt: new Date(Date.now() - 500)
+    })
+  );
+  await assertFails(
+    studentADb.collection("notifications").doc("notif_appeal_student_denied").set({
+      teamId: "platform_admin",
+      recipientUserId: "platform_admins",
+      type: "team_appeal",
+      targetId: "team_fatsa",
+      senderId: "student_a",
+      title: "Yetkisiz İtiraz",
+      message: "Üye itirazı reddedilmeli.",
+      isRead: false,
+      createdAt: new Date(Date.now() - 500)
+    })
+  );
+
   await assertSucceeds(
     fatsaMgrDb.collection("teams").doc("team_fatsa").update({
       appealText: "Eksik belgelerimizi tamamladık ve gerekli düzenlemeleri yaptık.",
@@ -1172,4 +1197,143 @@ test("Founder can suspend, mark under_review, and resume teams; blocked teams de
     })
   );
 });
+
+test("Per-team member suspension with mandatory reason and member appeal flow", async () => {
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    const db = context.firestore();
+    const created = new Date(Date.now() - 10000);
+    await db.collection("teams").doc("team_fatsa").set({
+      name: "Fatsa Robotik",
+      shortCode: "FATSA",
+      competition: "TEKNOFEST",
+      schoolName: "Fatsa Fen Lisesi",
+      city: "Ordu",
+      description: "Fatsa ekibi",
+      managerName: "Fatsa Yetkili",
+      managerContact: "fk@example.com",
+      founderId: "fatsa_mgr",
+      founderEmail: "fk@example.com",
+      status: "approved",
+      isMainTeam: false,
+      memberCount: 2,
+      createdAt: created,
+      updatedAt: created
+    });
+    await db.collection("team_memberships").doc("team_fatsa_fatsa_mgr").set({
+      teamId: "team_fatsa",
+      userId: "fatsa_mgr",
+      userName: "Fatsa Yetkili",
+      userEmail: "fk@example.com",
+      subTeam: "Genel Yönetim",
+      role: "Yetkili Öğretmen",
+      roles: ["Yetkili Öğretmen"],
+      status: "active",
+      isTeamAdmin: true,
+      createdAt: created,
+      updatedAt: created
+    });
+    await db.collection("team_memberships").doc("team_fatsa_student_a").set({
+      teamId: "team_fatsa",
+      userId: "student_a",
+      userName: "Öğrenci A",
+      userEmail: "sa@example.com",
+      subTeam: "Yazılım Ekibi",
+      role: "Yazılım Üyesi",
+      roles: ["Yazılım Üyesi"],
+      status: "active",
+      isTeamAdmin: false,
+      createdAt: created,
+      updatedAt: created
+    });
+  });
+
+  const fatsaMgrDb = testEnv.authenticatedContext("fatsa_mgr", { email: "fk@example.com", email_verified: true }).firestore();
+  const studentADb = testEnv.authenticatedContext("student_a", { email: "sa@example.com", email_verified: true }).firestore();
+
+  // 1. Manager revokes student_a with a suspensionReason and clears appeal fields
+  await assertSucceeds(
+    fatsaMgrDb.collection("team_memberships").doc("team_fatsa_student_a").update({
+      status: "revoked",
+      isTeamAdmin: false,
+      suspensionReason: "Toplantılara ve görev teslimlerine sürekli geç kalma.",
+      appealText: "",
+      appealStatus: "",
+      updatedAt: new Date(Date.now() - 800)
+    })
+  );
+
+  // 2. Suspended member CANNOT self-reset status to pending or active, and CANNOT access workspace messages
+  await assertFails(
+    studentADb.collection("team_memberships").doc("team_fatsa_student_a").update({
+      status: "pending",
+      updatedAt: new Date(Date.now() - 600)
+    })
+  );
+  await assertFails(
+    studentADb.collection("team_memberships").doc("team_fatsa_student_a").update({
+      status: "active",
+      updatedAt: new Date(Date.now() - 600)
+    })
+  );
+  await assertFails(
+    studentADb.collection("teams").doc("team_fatsa").collection("rooms").doc("general").collection("messages").doc("msg_revoked").set({
+      roomId: "general",
+      senderId: "student_a",
+      senderName: "Öğrenci A",
+      text: "Askıdayken mesaj",
+      isPinned: false,
+      createdAt: new Date(Date.now() - 600),
+      updatedAt: new Date(Date.now() - 600)
+    })
+  );
+
+  // 3. Suspended member CAN submit an appeal (length >= 10) while remaining revoked + notify managers
+  await assertFails(
+    studentADb.collection("team_memberships").doc("team_fatsa_student_a").update({
+      appealText: "Kısa",
+      appealStatus: "pending",
+      appealSubmittedAt: new Date(Date.now() - 500),
+      updatedAt: new Date(Date.now() - 500)
+    })
+  );
+  await assertSucceeds(
+    studentADb.collection("team_memberships").doc("team_fatsa_student_a").update({
+      appealText: "Sağlık sorunum nedeniyle katılamadım, raporlarımı iletmek istiyorum.",
+      appealStatus: "pending",
+      appealSubmittedAt: new Date(Date.now() - 500),
+      updatedAt: new Date(Date.now() - 500)
+    })
+  );
+  await assertSucceeds(
+    studentADb.collection("notifications").doc("notif_member_appeal_1").set({
+      teamId: "team_fatsa",
+      recipientUserId: "managers",
+      type: "member_appeal",
+      targetId: "student_a",
+      senderId: "student_a",
+      title: "Üye Askı İtirazı: Öğrenci A",
+      message: "Sağlık sorunum nedeniyle katılamadım.",
+      isRead: false,
+      createdAt: new Date(Date.now() - 500)
+    })
+  );
+
+  // 4. Manager CAN reject the appeal, and CAN later restore active status clearing suspension/appeal fields
+  await assertSucceeds(
+    fatsaMgrDb.collection("team_memberships").doc("team_fatsa_student_a").update({
+      appealStatus: "rejected",
+      updatedAt: new Date(Date.now() - 300)
+    })
+  );
+  await assertSucceeds(
+    fatsaMgrDb.collection("team_memberships").doc("team_fatsa_student_a").update({
+      status: "active",
+      suspensionReason: "",
+      appealText: "",
+      appealStatus: "",
+      updatedAt: new Date(Date.now() - 100)
+    })
+  );
+});
+
 

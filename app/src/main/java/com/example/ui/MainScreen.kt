@@ -67,6 +67,7 @@ import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CenterAlignedTopAppBar
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -77,6 +78,7 @@ import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.NavigationRail
 import androidx.compose.material3.NavigationRailItem
 import androidx.compose.material3.NavigationRailItemDefaults
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -170,38 +172,20 @@ fun MainScreen(
 
     LaunchedEffect(currentUserId, currentUserProfile?.email, isPlatformAdmin) {
         val p = currentUserProfile ?: return@LaunchedEffect
-        repository.migrateLegacyUserToMainTeamMembershipIfNeeded(p)
         if (isPlatformAdmin) {
+            repository.removeFounderAutoBsrMembershipIfNeeded(currentUserId)
             repository.ensureMainTeamExists()
+        } else {
+            repository.migrateLegacyUserToMainTeamMembershipIfNeeded(p)
         }
     }
 
-    val membershipsByTeam = remember(myMemberships, currentUserProfile, isPlatformAdmin) {
-        val map = myMemberships.associateBy { it.teamId }.toMutableMap()
-        val p = currentUserProfile
-        if (p != null && isPlatformAdmin && !map.containsKey(PLATFORM_MAIN_TEAM_ID)) {
-            val uid = p.userId.ifBlank { p.id }.ifBlank { currentUserId }
-            map[PLATFORM_MAIN_TEAM_ID] = TeamMembership(
-                id = "${PLATFORM_MAIN_TEAM_ID}_$uid",
-                teamId = PLATFORM_MAIN_TEAM_ID,
-                userId = uid,
-                userName = p.getFullName(),
-                userEmail = p.email,
-                userPhotoUrl = p.photoUrl,
-                subTeam = p.team,
-                role = p.role,
-                roles = p.roles,
-                status = UserStatus.ACTIVE.value,
-                isTeamAdmin = true
-            )
-        }
-        map
+    val membershipsByTeam = remember(myMemberships) {
+        myMemberships.associateBy { it.teamId }
     }
 
-    val activeTeamIds = remember(membershipsByTeam, isPlatformAdmin) {
-        val set = membershipsByTeam.values.filter { it.isActive() }.map { it.teamId }.toMutableSet()
-        if (isPlatformAdmin) set.add(PLATFORM_MAIN_TEAM_ID)
-        set.toSet()
+    val activeTeamIds = remember(membershipsByTeam) {
+        membershipsByTeam.values.filter { it.isActive() }.map { it.teamId }.toSet()
     }
 
     val myKnownTeams by remember(activeTeamIds) {
@@ -226,25 +210,12 @@ fun MainScreen(
     var currentTab by remember { mutableStateOf(NavItem.HOME) }
     var selectedRoomIdForNavigation by remember { mutableStateOf("general") }
     var adminInitialSection by remember { mutableStateOf("members") }
+    var requestedPlatformConsoleTab by remember { mutableStateOf<String?>(null) }
 
     // Ensure removed/revoked membership safely exits the closed workspace back to Team Hub
-    LaunchedEffect(activeTeamId, activeTeamIds, myMemberships, isPlatformAdmin) {
+    LaunchedEffect(activeTeamId, activeTeamIds, myMemberships) {
         val selected = activeTeamId ?: return@LaunchedEffect
-        if (selected !in activeTeamIds && !(selected == PLATFORM_MAIN_TEAM_ID && isPlatformAdmin)) {
-            if (myMemberships.isNotEmpty() || !isPlatformAdmin) {
-                activeTeamId = null
-                currentTab = NavItem.HOME
-            }
-        }
-    }
-
-    // Ensure deleted non-main teams also exit cleanly back to Team Hub while keeping suspended/under_review teams visible
-    LaunchedEffect(activeTeamId, approvedTeams, myKnownTeams, knownTeamsById) {
-        val selected = activeTeamId ?: return@LaunchedEffect
-        if (selected != PLATFORM_MAIN_TEAM_ID &&
-            (approvedTeams.isNotEmpty() || myKnownTeams.isNotEmpty()) &&
-            !knownTeamsById.containsKey(selected)
-        ) {
+        if (selected !in activeTeamIds) {
             activeTeamId = null
             currentTab = NavItem.HOME
         }
@@ -254,16 +225,13 @@ fun MainScreen(
         val lower = type.lowercase()
         when (lower) {
             "team_application_pending", "team_appeal" -> {
+                activeTeamId = null
                 if (isPlatformAdmin) {
-                    activeTeamId = PLATFORM_MAIN_TEAM_ID
-                    adminInitialSection = if (lower == "team_appeal") "platform_teams" else "team_applications"
-                    currentTab = NavItem.ADMIN
-                } else {
-                    activeTeamId = null
+                    requestedPlatformConsoleTab = if (lower == "team_appeal") "teams" else "applications"
                 }
                 return
             }
-            "team_application_rejected" -> {
+            "team_application_rejected", "access_revoked", "member_appeal_rejected" -> {
                 activeTeamId = null
                 return
             }
@@ -278,9 +246,8 @@ fun MainScreen(
             }
             "support_ticket" -> {
                 if (isPlatformAdmin) {
-                    activeTeamId = PLATFORM_MAIN_TEAM_ID
-                    adminInitialSection = "support"
-                    currentTab = NavItem.ADMIN
+                    activeTeamId = null
+                    requestedPlatformConsoleTab = "support"
                 } else {
                     val fallbackTeam = activeTeamId ?: activeTeamIds.firstOrNull()
                     if (fallbackTeam != null) {
@@ -302,8 +269,7 @@ fun MainScreen(
 
         activeTeamId = effectiveTeam
         val targetMembership = membershipsByTeam[effectiveTeam]
-        val isManagerInTarget = targetMembership?.isManagerInTeam() == true ||
-            (effectiveTeam == PLATFORM_MAIN_TEAM_ID && isPlatformAdmin)
+        val isManagerInTarget = targetMembership?.isManagerInTeam() == true
 
         when (lower) {
             "message" -> {
@@ -315,6 +281,14 @@ fun MainScreen(
             "member_pending" -> {
                 if (isManagerInTarget) {
                     adminInitialSection = "approvals"
+                    currentTab = NavItem.ADMIN
+                } else {
+                    currentTab = NavItem.HOME
+                }
+            }
+            "member_appeal" -> {
+                if (isManagerInTarget) {
+                    adminInitialSection = "members"
                     currentTab = NavItem.ADMIN
                 } else {
                     currentTab = NavItem.HOME
@@ -441,43 +415,69 @@ fun MainScreen(
                     }
                 }
             },
-            onOpenPlatformAdminReview = if (isPlatformAdmin) {
-                {
-                    activeTeamId = PLATFORM_MAIN_TEAM_ID
-                    adminInitialSection = "team_applications"
-                    currentTab = NavItem.ADMIN
-                }
-            } else null,
+            requestedPlatformConsoleTab = requestedPlatformConsoleTab,
+            onConsumePlatformConsoleTab = { requestedPlatformConsoleTab = null },
             onSignOut = onSignOut,
             onAccountDeleted = onAccountDeleted
         )
         return
     }
 
-    val activeTeam = remember(knownTeamsById, activeTeamIdNonNull) {
-        knownTeamsById[activeTeamIdNonNull]
-            ?: if (activeTeamIdNonNull == PLATFORM_MAIN_TEAM_ID) TeamInfo.mainBlackseaTeam()
-            else TeamInfo(id = activeTeamIdNonNull, name = "Takım Alanı", shortCode = "TKM")
+    val resolvedTeam = knownTeamsById[activeTeamIdNonNull]
+    if (resolvedTeam == null) {
+        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+                modifier = Modifier.padding(24.dp)
+            ) {
+                CircularProgressIndicator(color = ext.accentBlue)
+                Text(
+                    text = "Takım durumu doğrulanıyor...",
+                    fontSize = 13.sp,
+                    color = ext.textSecondary
+                )
+                OutlinedButton(
+                    onClick = {
+                        activeTeamId = null
+                        currentTab = NavItem.HOME
+                    }
+                ) {
+                    Text("Takımlar Merkezine Dön")
+                }
+            }
+        }
+        return
     }
+
+    val activeTeam = resolvedTeam
     val activeMembership = membershipsByTeam[activeTeamIdNonNull]
     val effectiveProfile = remember(currentUserProfile, activeTeamIdNonNull, activeMembership) {
         currentUserProfile?.withTeamContext(activeTeamIdNonNull, activeMembership)
     }
-    val isAdmin = remember(activeMembership, isPlatformAdmin, activeTeamIdNonNull) {
-        activeMembership?.isManagerInTeam() == true ||
-            (activeTeamIdNonNull == PLATFORM_MAIN_TEAM_ID && isPlatformAdmin)
+    val isAdmin = remember(activeMembership) {
+        activeMembership?.isManagerInTeam() == true
     }
 
-    if (activeTeam.isWorkspaceBlocked() && !isPlatformAdmin) {
+    if (activeTeam.isWorkspaceBlocked()) {
         TeamModerationWarningScreen(
             team = activeTeam,
             repository = repository,
             currentUserProfile = effectiveProfile ?: currentUserProfile,
+            canAppeal = activeMembership?.isManagerInTeam() == true,
             onBackToHub = {
                 activeTeamId = null
                 currentTab = NavItem.HOME
             }
         )
+        return
+    }
+
+    if (!activeTeam.isApproved()) {
+        LaunchedEffect(activeTeam.id, activeTeam.status) {
+            activeTeamId = null
+            currentTab = NavItem.HOME
+        }
         return
     }
 

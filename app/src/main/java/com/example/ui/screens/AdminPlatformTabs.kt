@@ -24,7 +24,10 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -34,6 +37,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AddPhotoAlternate
 import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DeleteForever
@@ -46,6 +50,7 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.ReportProblem
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.School
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Verified
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -56,6 +61,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -64,6 +70,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -79,6 +86,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import com.example.data.BlackseaRepository
 import com.example.model.COMPETITION_PRESETS
 import com.example.model.PLATFORM_MAIN_TEAM_ID
@@ -86,7 +95,11 @@ import com.example.model.TEAM_ACCENT_COLORS
 import com.example.model.TeamAppealStatus
 import com.example.model.TeamInfo
 import com.example.model.TeamLogoPreset
+import com.example.model.TeamMembership
 import com.example.model.TeamStatus
+import com.example.model.TeamType
+import com.example.ui.components.RoleBadge
+import com.example.ui.components.TeamBadge
 import com.example.ui.components.TeamLogoBadge
 import com.example.ui.components.parseTeamColor
 import com.example.ui.components.teamLogoPresetIcon
@@ -94,6 +107,7 @@ import com.example.ui.theme.blackseaColors
 import com.example.util.sanitizeUserErrorMessage
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
+import java.util.Locale
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -427,6 +441,7 @@ fun PlatformTeamsOverviewTab(
     val scope = rememberCoroutineScope()
     val ext = MaterialTheme.blackseaColors
 
+    var selectedTeamForMembers by remember { mutableStateOf<TeamInfo?>(null) }
     var moderationTarget by remember { mutableStateOf<Pair<TeamInfo, PlatformTeamModerationAction>?>(null) }
     var moderationReasonInput by remember { mutableStateOf("") }
     var teamToDeleteStep1 by remember { mutableStateOf<TeamInfo?>(null) }
@@ -456,7 +471,7 @@ fun PlatformTeamsOverviewTab(
                         color = MaterialTheme.colorScheme.onSurface
                     )
                     Text(
-                        text = "Takımların iç sohbet ve dosya içerikleri gizli kalır; ancak ana yönetici takımların çalışma alanlarını durdurabilir, incelemeye alabilir, yeniden başlatabilir veya kaldırabilir.",
+                        text = "Üyelerini görmek istediğiniz takımın üzerine dokunun; takımların sohbet ve dosya içerikleri gizli kalırken üyeleri görüntüleyebilir, takımı durdurabilir, incelemeye alabilir, başlatabilir veya kaldırabilirsiniz.",
                         fontSize = 11.sp,
                         color = ext.textSecondary,
                         lineHeight = 16.sp
@@ -482,6 +497,7 @@ fun PlatformTeamsOverviewTab(
             Card(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .clickable { selectedTeamForMembers = team }
                     .testTag("platform_team_card_${team.id}"),
                 shape = RoundedCornerShape(14.dp),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -546,9 +562,24 @@ fun PlatformTeamsOverviewTab(
                             Icon(Icons.Default.LocationOn, contentDescription = null, tint = ext.accentBlue, modifier = Modifier.size(14.dp))
                             Text(text = team.competition.ifBlank { "Robotik" }, fontSize = 11.sp, color = ext.textSecondary)
                         }
-                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                            Icon(Icons.Default.Groups, contentDescription = null, tint = ext.textMuted, modifier = Modifier.size(14.dp))
-                            Text(text = "${team.memberCount} Üye", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = ext.textSecondary)
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = ext.accentBlueContainer.copy(alpha = if (ext.isDark) 0.55f else 0.75f)
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Icon(Icons.Default.Groups, contentDescription = null, tint = ext.accentBlue, modifier = Modifier.size(14.dp))
+                                Text(
+                                    text = "${team.memberCount} Üye • Üyeleri Gör",
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = ext.accentBlue
+                                )
+                                Icon(Icons.Default.ChevronRight, contentDescription = null, tint = ext.accentBlue, modifier = Modifier.size(14.dp))
+                            }
                         }
                     }
 
@@ -953,6 +984,310 @@ fun PlatformTeamsOverviewTab(
                 }
             }
         )
+    }
+
+    selectedTeamForMembers?.let { inspectedTeam ->
+        TeamMembersInspectionDialog(
+            team = inspectedTeam,
+            repository = repository,
+            onDismiss = { selectedTeamForMembers = null }
+        )
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+fun TeamMembersInspectionDialog(
+    team: TeamInfo,
+    repository: BlackseaRepository,
+    onDismiss: () -> Unit
+) {
+    val ext = MaterialTheme.blackseaColors
+    val members by remember(team.id) {
+        repository.observeTeamMemberships(team.id)
+    }.collectAsState(initial = emptyList())
+
+    var searchQuery by remember(team.id) { mutableStateOf("") }
+    var statusFilter by remember(team.id) { mutableStateOf("all") }
+
+    val activeCount = remember(members) { members.count { it.isActive() } }
+    val pendingCount = remember(members) { members.count { it.isPending() } }
+    val restrictedCount = remember(members) { members.count { it.isRevoked() || it.isRejected() } }
+
+    val filteredMembers = remember(members, searchQuery, statusFilter) {
+        val q = searchQuery.trim().lowercase(Locale("tr", "TR"))
+        members.filter { m ->
+            val matchesStatus = when (statusFilter) {
+                "active" -> m.isActive()
+                "pending" -> m.isPending()
+                "restricted" -> m.isRevoked() || m.isRejected()
+                else -> true
+            }
+            val matchesQuery = q.isBlank() ||
+                m.userName.lowercase(Locale("tr", "TR")).contains(q) ||
+                m.userEmail.lowercase(Locale("tr", "TR")).contains(q) ||
+                m.subTeam.lowercase(Locale("tr", "TR")).contains(q) ||
+                m.role.lowercase(Locale("tr", "TR")).contains(q) ||
+                m.roles.any { it.lowercase(Locale("tr", "TR")).contains(q) }
+            matchesStatus && matchesQuery
+        }
+    }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth(0.94f)
+                .widthIn(max = 600.dp)
+                .heightIn(min = 320.dp, max = 680.dp)
+                .testTag("team_members_inspection_dialog_${team.id}"),
+            shape = RoundedCornerShape(22.dp),
+            color = MaterialTheme.colorScheme.background,
+            border = BorderStroke(1.dp, ext.cardBorder),
+            tonalElevation = 6.dp,
+            shadowElevation = 10.dp
+        ) {
+            Column(modifier = Modifier.fillMaxSize()) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(start = 16.dp, end = 8.dp, top = 12.dp, bottom = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    TeamLogoBadge(team = team, size = 40)
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "${team.name} • Üyeler (${members.size})",
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            text = listOf(team.schoolName, team.city, TeamStatus.displayName(team.status))
+                                .filter { it.isNotBlank() }
+                                .joinToString(" • "),
+                            fontSize = 11.sp,
+                            color = ext.textMuted,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    IconButton(
+                        onClick = onDismiss,
+                        modifier = Modifier.testTag("close_team_members_inspection_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Close,
+                            contentDescription = "Kapat",
+                            tint = ext.textMuted
+                        )
+                    }
+                }
+
+                HorizontalDivider(color = ext.cardBorder)
+
+                OutlinedTextField(
+                    value = searchQuery,
+                    onValueChange = { searchQuery = it },
+                    placeholder = { Text("Üye adı, e-posta, alt ekip veya rol ara...", fontSize = 12.sp) },
+                    leadingIcon = {
+                        Icon(imageVector = Icons.Default.Search, contentDescription = "Üye Ara", tint = ext.textMuted)
+                    },
+                    trailingIcon = {
+                        if (searchQuery.isNotBlank()) {
+                            IconButton(onClick = { searchQuery = "" }) {
+                                Icon(imageVector = Icons.Default.Close, contentDescription = "Temizle")
+                            }
+                        }
+                    },
+                    singleLine = true,
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 14.dp, vertical = 10.dp)
+                        .testTag("inspect_team_members_search_input")
+                )
+
+                LazyRow(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 14.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    val chips = listOf(
+                        "all" to "Tümü (${members.size})",
+                        "active" to "Aktif ($activeCount)",
+                        "pending" to "Bekleyen ($pendingCount)",
+                        "restricted" to "Askıda/Red ($restrictedCount)"
+                    )
+                    items(chips) { (key, label) ->
+                        FilterChip(
+                            selected = statusFilter == key,
+                            onClick = { statusFilter = key },
+                            label = { Text(label, fontSize = 11.sp) }
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(6.dp))
+
+                if (filteredMembers.isEmpty()) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(24.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Groups,
+                                contentDescription = null,
+                                tint = ext.textMuted,
+                                modifier = Modifier.size(40.dp)
+                            )
+                            Text(
+                                text = if (members.isEmpty()) {
+                                    "Bu takımda henüz kayıtlı üye bulunmuyor."
+                                } else {
+                                    "Arama veya filtreyle eşleşen üye yok."
+                                },
+                                color = ext.textMuted,
+                                fontSize = 13.sp
+                            )
+                        }
+                    }
+                } else {
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(horizontal = 14.dp),
+                        contentPadding = PaddingValues(top = 4.dp, bottom = 16.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        itemsIndexed(
+                            items = filteredMembers,
+                            key = { index, member -> "inspect_${team.id}_${member.userId}_$index" }
+                        ) { _, member ->
+                            val displayName = member.userName.ifBlank {
+                                member.userEmail.substringBefore("@").ifBlank { "Takım Üyesi" }
+                            }
+                            val memberRoles = member.roles
+                                .ifEmpty { listOf(member.role) }
+                                .filter { it.isNotBlank() }
+                                .distinct()
+                            val (badgeText, badgeFg, badgeBg) = when {
+                                member.isActive() -> Triple("Aktif", ext.emeraldText, ext.emeraldSolid.copy(alpha = 0.14f))
+                                member.isPending() -> Triple("Onay Bekliyor", ext.amberText, ext.amberText.copy(alpha = 0.16f))
+                                member.isRevoked() -> Triple("Askıda", ext.dangerText, ext.dangerText.copy(alpha = 0.14f))
+                                else -> Triple("Reddedildi", ext.dangerText, ext.dangerText.copy(alpha = 0.14f))
+                            }
+                            val isFounderOfTeam = team.founderId.isNotBlank() && member.userId == team.founderId
+
+                            Card(
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(14.dp),
+                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                                border = BorderStroke(1.dp, ext.cardBorder)
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(12.dp),
+                                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                    ) {
+                                        Surface(
+                                            shape = CircleShape,
+                                            color = ext.accentBlueContainer,
+                                            modifier = Modifier.size(38.dp)
+                                        ) {
+                                            Box(contentAlignment = Alignment.Center) {
+                                                Text(
+                                                    text = displayName.take(1).uppercase(),
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = ext.accentBlue,
+                                                    fontSize = 15.sp
+                                                )
+                                            }
+                                        }
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(
+                                                text = displayName,
+                                                fontSize = 14.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                color = MaterialTheme.colorScheme.onSurface,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                            if (member.userEmail.isNotBlank()) {
+                                                Text(
+                                                    text = member.userEmail,
+                                                    fontSize = 11.sp,
+                                                    color = ext.textMuted,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                            }
+                                        }
+                                        Surface(shape = RoundedCornerShape(8.dp), color = badgeBg) {
+                                            Text(
+                                                text = badgeText,
+                                                color = badgeFg,
+                                                fontSize = 10.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                            )
+                                        }
+                                    }
+
+                                    FlowRow(
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        TeamBadge(teamName = member.subTeam.ifBlank { TeamType.GENERAL.displayName })
+                                        if (isFounderOfTeam) {
+                                            Surface(
+                                                shape = RoundedCornerShape(8.dp),
+                                                color = ext.accentBlueContainer
+                                            ) {
+                                                Text(
+                                                    text = "Kurucu",
+                                                    fontSize = 10.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = ext.accentBlue,
+                                                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
+                                                )
+                                            }
+                                        }
+                                        memberRoles.forEach { role ->
+                                            RoleBadge(role = role)
+                                        }
+                                    }
+
+                                    if (member.joinNote.isNotBlank() && member.isPending()) {
+                                        Text(
+                                            text = "Başvuru Notu: ${member.joinNote}",
+                                            fontSize = 11.sp,
+                                            color = ext.textSecondary
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 

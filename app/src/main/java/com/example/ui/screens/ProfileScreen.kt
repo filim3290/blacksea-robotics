@@ -109,15 +109,13 @@ fun ProfileScreen(
     var showDeleteStep2 by remember { mutableStateOf(false) }
     var isDeletingAccount by remember { mutableStateOf(false) }
 
-    val isAdmin = currentUserProfile?.isManagerAccount() == true || activeMembership?.isManagerInTeam() == true
+    val isAdmin = activeMembership?.isManagerInTeam() == true || currentUserProfile?.isManagerAccount() == true
     val activeSubTeam = activeMembership?.subTeam?.ifBlank { currentUserProfile?.team }
         ?: (currentUserProfile?.team ?: TeamType.GENERAL.displayName)
     val activeRoles = activeMembership?.roles?.ifEmpty { currentUserProfile?.roles.orEmpty() }
         ?: currentUserProfile?.roles.orEmpty().ifEmpty { listOf(currentUserProfile?.role ?: "Takım Üyesi") }
     val teamAccent = parseTeamColor(activeTeam.accentColorHex, ext.accentBlue)
-    val canLeaveCurrentTeam = repository != null &&
-        activeMembership != null &&
-        !(activeTeam.isMainTeam && currentUserProfile?.isPlatformManagerAccount() == true)
+    val canLeaveCurrentTeam = repository != null && activeMembership != null
 
     Column(
         modifier = modifier
@@ -556,6 +554,7 @@ fun ProfileScreen(
             currentUserProfile = currentUserProfile,
             teamId = activeTeam.id,
             teamName = activeTeam.name,
+            userSubTeam = activeSubTeam,
             repository = repository,
             updateManager = mgr
         )

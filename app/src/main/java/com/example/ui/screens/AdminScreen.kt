@@ -81,15 +81,14 @@ import com.example.data.BlackseaRepository
 import com.example.model.PLATFORM_FOUNDER_EMAIL
 import com.example.model.PLATFORM_MAIN_TEAM_ID
 import com.example.model.PredefinedRoles
-import com.example.model.SupportTicketStatus
 import com.example.model.TeamAnnouncement
+import com.example.model.TeamAppealStatus
 import com.example.model.TeamInfo
 import com.example.model.TeamMembership
 import com.example.model.TeamType
 import com.example.model.UserProfile
 import com.example.model.UserRole
 import com.example.model.UserStatus
-import com.example.ui.components.AdminSupportTab
 import com.example.ui.components.RoleBadge
 import com.example.ui.components.TeamBadge
 import com.example.ui.theme.ElectricBlue
@@ -97,7 +96,6 @@ import com.example.ui.theme.PhoenixAmber
 import com.example.ui.theme.blackseaColors
 import com.example.util.sanitizeUserErrorMessage
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
 
 enum class AdminSection(val key: String, val label: String) {
@@ -105,10 +103,7 @@ enum class AdminSection(val key: String, val label: String) {
     APPROVALS("approvals", "Onaylar"),
     BROADCAST("broadcast", "Bildirim Gönder"),
     ANNOUNCEMENTS("announcements", "Duyurular"),
-    TEAM_INFO("team_info", "Takım Bilgileri"),
-    SUPPORT("support", "Destek"),
-    TEAM_APPLICATIONS("team_applications", "Takım Başvuruları"),
-    PLATFORM_TEAMS("platform_teams", "Platform Takımları")
+    TEAM_INFO("team_info", "Takım Bilgileri")
 }
 
 @OptIn(ExperimentalLayoutApi::class)
@@ -131,24 +126,9 @@ fun AdminScreen(
     val ext = MaterialTheme.blackseaColors
 
     val activeTeamId = activeTeam.id.ifBlank { PLATFORM_MAIN_TEAM_ID }
-    val isBsrPlatformAdminSession = (activeTeamId == PLATFORM_MAIN_TEAM_ID && isPlatformAdmin)
 
     val teamMemberships by repository.observeTeamMemberships(activeTeamId).collectAsState(initial = emptyList())
     val announcements by repository.observeAnnouncements(activeTeamId).collectAsState(initial = emptyList())
-    val supportTickets by remember(isBsrPlatformAdminSession, activeTeamId) {
-        if (isBsrPlatformAdminSession) repository.observeAllSupportTickets(activeTeamId) else flowOf(emptyList())
-    }.collectAsState(initial = emptyList())
-
-    val pendingTeamApplications by remember(isBsrPlatformAdminSession) {
-        if (isBsrPlatformAdminSession) repository.observePendingTeamApplications() else flowOf(emptyList())
-    }.collectAsState(initial = emptyList())
-    val allPlatformTeams by remember(isBsrPlatformAdminSession) {
-        if (isBsrPlatformAdminSession) repository.observeAllTeamsForPlatformAdmin() else flowOf(emptyList())
-    }.collectAsState(initial = emptyList())
-
-    val openSupportCount = remember(supportTickets) {
-        supportTickets.count { SupportTicketStatus.normalize(it.status) != SupportTicketStatus.RESOLVED }
-    }
 
     val pendingMembers = teamMemberships.filter { it.isPending() }
     val approvedMembers = teamMemberships.filter { it.isActive() }
@@ -161,19 +141,14 @@ fun AdminScreen(
             (activeTeamId == PLATFORM_MAIN_TEAM_ID && member.userEmail.trim().equals(PLATFORM_FOUNDER_EMAIL, ignoreCase = true))
     }
 
-    val sections = remember(isBsrPlatformAdminSession) {
-        buildList {
-            add(AdminSection.MEMBERS)
-            add(AdminSection.APPROVALS)
-            add(AdminSection.BROADCAST)
-            add(AdminSection.ANNOUNCEMENTS)
-            add(AdminSection.TEAM_INFO)
-            if (isBsrPlatformAdminSession) {
-                add(AdminSection.SUPPORT)
-                add(AdminSection.TEAM_APPLICATIONS)
-                add(AdminSection.PLATFORM_TEAMS)
-            }
-        }
+    val sections = remember {
+        listOf(
+            AdminSection.MEMBERS,
+            AdminSection.APPROVALS,
+            AdminSection.BROADCAST,
+            AdminSection.ANNOUNCEMENTS,
+            AdminSection.TEAM_INFO
+        )
     }
 
     var selectedTabIndex by remember(sections) {
@@ -234,11 +209,7 @@ fun AdminScreen(
                 }
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
-                    text = if (isBsrPlatformAdminSession) {
-                        "Takım üyelerini, destek taleplerini, takım başvurularını ve tüm platform takımlarını yönetebilirsiniz."
-                    } else {
-                        "${activeTeam.name} üyelerini, alt ekiplerini, takım bilgilerini ve duyurularını yönetin."
-                    },
+                    text = "${activeTeam.name} üyelerini, alt ekiplerini, takım bilgilerini ve duyurularını yönetin.",
                     fontSize = 12.sp,
                     color = ext.textSecondary
                 )
@@ -260,9 +231,6 @@ fun AdminScreen(
                         val badge = when (section) {
                             AdminSection.MEMBERS -> " (${approvedMembers.size})"
                             AdminSection.APPROVALS -> if (pendingMembers.isNotEmpty()) " (${pendingMembers.size})" else ""
-                            AdminSection.SUPPORT -> if (openSupportCount > 0) " ($openSupportCount)" else ""
-                            AdminSection.TEAM_APPLICATIONS -> if (pendingTeamApplications.isNotEmpty()) " (${pendingTeamApplications.size})" else ""
-                            AdminSection.PLATFORM_TEAMS -> " (${allPlatformTeams.size})"
                             else -> ""
                         }
                         Text(
@@ -491,12 +459,61 @@ fun AdminScreen(
                                         }
                                     }
 
+                                    if (isRevoked && member.suspensionReason.isNotBlank()) {
+                                        Spacer(modifier = Modifier.height(8.dp))
+                                        Surface(
+                                            shape = RoundedCornerShape(8.dp),
+                                            color = ext.dangerContainer.copy(alpha = 0.7f),
+                                            modifier = Modifier.fillMaxWidth()
+                                        ) {
+                                            Text(
+                                                text = "Askıya Alma Gerekçesi: ${member.suspensionReason}",
+                                                fontSize = 12.sp,
+                                                color = ext.dangerText,
+                                                modifier = Modifier.padding(10.dp)
+                                            )
+                                        }
+                                    }
+
+                                    if (isRevoked && member.appealText.isNotBlank()) {
+                                        val isPendingAppeal = member.hasPendingAppeal()
+                                        val isRejectedAppeal = member.appealStatus.equals(TeamAppealStatus.REJECTED, ignoreCase = true)
+                                        Spacer(modifier = Modifier.height(8.dp))
+                                        Surface(
+                                            shape = RoundedCornerShape(8.dp),
+                                            color = if (isPendingAppeal) ext.accentBlueContainer else MaterialTheme.colorScheme.surfaceVariant,
+                                            border = BorderStroke(1.dp, if (isPendingAppeal) ext.accentBlue.copy(alpha = 0.35f) else ext.cardBorder),
+                                            modifier = Modifier.fillMaxWidth()
+                                        ) {
+                                            Column(
+                                                modifier = Modifier.padding(10.dp),
+                                                verticalArrangement = Arrangement.spacedBy(4.dp)
+                                            ) {
+                                                Text(
+                                                    text = when {
+                                                        isPendingAppeal -> "Üye İtirazı (Yanıt Bekliyor)"
+                                                        isRejectedAppeal -> "Üye İtirazı (Reddedildi)"
+                                                        else -> "Üye İtirazı"
+                                                    },
+                                                    fontSize = 11.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = if (isPendingAppeal) ext.accentBlue else ext.textMuted
+                                                )
+                                                Text(
+                                                    text = member.appealText,
+                                                    fontSize = 12.sp,
+                                                    color = MaterialTheme.colorScheme.onSurface
+                                                )
+                                            }
+                                        }
+                                    }
+
                                     Spacer(modifier = Modifier.height(10.dp))
 
-                                    Row(
+                                    FlowRow(
                                         modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.End,
-                                        verticalAlignment = Alignment.CenterVertically
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
+                                        verticalArrangement = Arrangement.spacedBy(8.dp)
                                     ) {
                                         OutlinedButton(onClick = { memberToRemove = member }, shape = RoundedCornerShape(8.dp)) {
                                             Icon(imageVector = Icons.Default.Delete, contentDescription = null, tint = ext.dangerText, modifier = Modifier.size(16.dp))
@@ -504,7 +521,23 @@ fun AdminScreen(
                                             Text("Sil", color = ext.dangerText, fontSize = 12.sp)
                                         }
 
-                                        Spacer(modifier = Modifier.width(8.dp))
+                                        if (isRevoked && member.hasPendingAppeal()) {
+                                            OutlinedButton(
+                                                onClick = {
+                                                    scope.launch {
+                                                        val res = repository.dismissMembershipAppeal(activeTeam, member.userId)
+                                                        if (res.isSuccess) {
+                                                            Toast.makeText(context, "$displayName itirazı reddedildi.", Toast.LENGTH_SHORT).show()
+                                                        } else {
+                                                            Toast.makeText(context, sanitizeUserErrorMessage(res.exceptionOrNull()), Toast.LENGTH_SHORT).show()
+                                                        }
+                                                    }
+                                                },
+                                                shape = RoundedCornerShape(8.dp)
+                                            ) {
+                                                Text("İtirazı Reddet", color = ext.textSecondary, fontSize = 12.sp)
+                                            }
+                                        }
 
                                         Button(
                                             onClick = {
@@ -886,30 +919,6 @@ fun AdminScreen(
                     onTeamDeleted = onTeamDeleted
                 )
             }
-
-            AdminSection.SUPPORT -> {
-                AdminSupportTab(
-                    tickets = supportTickets,
-                    repository = repository,
-                    currentUserProfile = currentUserProfile,
-                    teamId = activeTeamId,
-                    teamName = activeTeam.name
-                )
-            }
-
-            AdminSection.TEAM_APPLICATIONS -> {
-                TeamApplicationsTab(
-                    pendingApplications = pendingTeamApplications,
-                    repository = repository
-                )
-            }
-
-            AdminSection.PLATFORM_TEAMS -> {
-                PlatformTeamsOverviewTab(
-                    teams = allPlatformTeams,
-                    repository = repository
-                )
-            }
         }
     }
 
@@ -971,14 +980,34 @@ fun AdminScreen(
     if (memberToRevoke != null) {
         val target = memberToRevoke!!
         val displayName = target.userName.ifBlank { target.userEmail }
+        var revokeReason by remember(target.userId) { mutableStateOf("") }
+        val trimmedReason = revokeReason.trim()
+        val isReasonValid = trimmedReason.length >= 5
         AlertDialog(
             onDismissRequest = { if (!isPerformingUserAction) memberToRevoke = null },
             title = { Text("Takım Erişimini Askıya Al", fontWeight = FontWeight.Bold) },
             text = {
-                Text(
-                    "$displayName kullanıcısının ${activeTeam.name} erişimi askıya alınacaktır. Daha sonra isterseniz erişimi geri verebilirsiniz.",
-                    color = ext.textSecondary
-                )
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        "$displayName kullanıcısının ${activeTeam.name} erişimi askıya alınacaktır. Üye yeniden başvuru yapmadan askıya alma kararına itiraz edebilir.",
+                        color = ext.textSecondary,
+                        fontSize = 13.sp,
+                        lineHeight = 19.sp
+                    )
+                    OutlinedTextField(
+                        value = revokeReason,
+                        onValueChange = { if (it.length <= 500) revokeReason = it },
+                        label = { Text("Askıya Alma Gerekçesi (Zorunlu)") },
+                        placeholder = { Text("Üyenin göreceği sebebi yazın (en az 5 karakter)...") },
+                        minLines = 2,
+                        maxLines = 4,
+                        isError = revokeReason.isNotBlank() && !isReasonValid,
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("revoke_member_reason_input")
+                    )
+                }
             },
             confirmButton = {
                 Button(
@@ -986,7 +1015,7 @@ fun AdminScreen(
                         isPerformingUserAction = true
                         scope.launch {
                             try {
-                                val res = repository.revokeTeamMembership(activeTeam, target.userId)
+                                val res = repository.revokeTeamMembership(activeTeam, target.userId, trimmedReason)
                                 if (res.isSuccess) {
                                     Toast.makeText(context, "$displayName erişimi askıya alındı.", Toast.LENGTH_SHORT).show()
                                     memberToRevoke = null
@@ -998,8 +1027,9 @@ fun AdminScreen(
                             }
                         }
                     },
-                    enabled = !isPerformingUserAction,
-                    colors = ButtonDefaults.buttonColors(containerColor = ext.dangerSolid, contentColor = Color.White)
+                    enabled = isReasonValid && !isPerformingUserAction,
+                    colors = ButtonDefaults.buttonColors(containerColor = ext.dangerSolid, contentColor = Color.White),
+                    modifier = Modifier.testTag("confirm_revoke_member_button")
                 ) {
                     if (isPerformingUserAction) {
                         CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.White, strokeWidth = 2.dp)

@@ -163,8 +163,11 @@ object RealtimeNotificationService {
                                             .associateBy { it.teamId }
                                             .toMutableMap()
 
-                                        if (!membershipsByTeam.containsKey(PLATFORM_MAIN_TEAM_ID) &&
-                                            (isPlatformAdmin || (profile.activeTeamId.isBlank() && UserStatus.isActive(profile.status) && profile.roles.any { it != "Takım Üyesi" }))
+                                        if (!isPlatformAdmin &&
+                                            !membershipsByTeam.containsKey(PLATFORM_MAIN_TEAM_ID) &&
+                                            profile.activeTeamId.isBlank() &&
+                                            UserStatus.isActive(profile.status) &&
+                                            profile.roles.any { it != "Takım Üyesi" && !it.equals("Yönetici", ignoreCase = true) }
                                         ) {
                                             membershipsByTeam[PLATFORM_MAIN_TEAM_ID] = TeamMembership(
                                                 id = "${PLATFORM_MAIN_TEAM_ID}_$uid",
@@ -176,7 +179,7 @@ object RealtimeNotificationService {
                                                 role = profile.role,
                                                 roles = profile.roles,
                                                 status = UserStatus.ACTIVE.value,
-                                                isTeamAdmin = profile.isManagerAccount() || isPlatformAdmin
+                                                isTeamAdmin = profile.isManagerAccount()
                                             )
                                         }
 

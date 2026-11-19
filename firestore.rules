@@ -150,6 +150,10 @@ service cloud.firestore {
         data.isTeamAdmin is bool &&
         (!('userPhotoUrl' in data) || (data.userPhotoUrl is string && data.userPhotoUrl.size() <= 500)) &&
         (!('joinNote' in data) || (data.joinNote is string && data.joinNote.size() <= 300)) &&
+        (!('suspensionReason' in data) || (data.suspensionReason is string && data.suspensionReason.size() <= 500)) &&
+        (!('appealText' in data) || (data.appealText is string && data.appealText.size() <= 1000)) &&
+        (!('appealStatus' in data) || (data.appealStatus is string && data.appealStatus in ['', 'pending', 'reviewed', 'rejected'])) &&
+        (!('appealSubmittedAt' in data) || (data.appealSubmittedAt is timestamp && data.appealSubmittedAt <= request.time)) &&
         (!('createdAt' in data) || (data.createdAt is timestamp && data.createdAt <= request.time)) &&
         (!('updatedAt' in data) || (data.updatedAt is timestamp && data.updatedAt <= request.time));
     }
@@ -256,26 +260,26 @@ service cloud.firestore {
            'managerName', 'managerContact', 'memberCount', 'updatedAt'
          ]) &&
          isTeamManager(teamId)) ||
-        ((
-          (resource.data.status == 'approved' &&
-           request.resource.data.diff(resource.data).affectedKeys().hasOnly(['memberCount', 'updatedAt']) &&
-           request.resource.data.memberCount is int &&
-           request.resource.data.memberCount >= 0 &&
-           request.resource.data.updatedAt is timestamp &&
-           request.resource.data.updatedAt <= request.time) ||
-          (resource.data.status in ['suspended', 'under_review'] &&
-           request.resource.data.status == resource.data.status &&
-           request.resource.data.founderId == resource.data.founderId &&
-           request.resource.data.isMainTeam == resource.data.isMainTeam &&
-           request.resource.data.createdAt == resource.data.createdAt &&
-           request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-             'appealText', 'appealStatus', 'appealByUserId', 'appealByName', 'appealSubmittedAt', 'updatedAt'
-           ]) &&
-           request.resource.data.appealText is string &&
-           request.resource.data.appealText.size() >= 10 &&
-           request.resource.data.appealStatus == 'pending' &&
-           request.resource.data.appealByUserId == request.auth.uid)
-        ) && isActiveTeamMember(teamId))
+        (resource.data.status == 'approved' &&
+         isActiveTeamMember(teamId) &&
+         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['memberCount', 'updatedAt']) &&
+         request.resource.data.memberCount is int &&
+         request.resource.data.memberCount >= 0 &&
+         request.resource.data.updatedAt is timestamp &&
+         request.resource.data.updatedAt <= request.time) ||
+        (resource.data.status in ['suspended', 'under_review'] &&
+         isTeamManager(teamId) &&
+         request.resource.data.status == resource.data.status &&
+         request.resource.data.founderId == resource.data.founderId &&
+         request.resource.data.isMainTeam == resource.data.isMainTeam &&
+         request.resource.data.createdAt == resource.data.createdAt &&
+         request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+           'appealText', 'appealStatus', 'appealByUserId', 'appealByName', 'appealSubmittedAt', 'updatedAt'
+         ]) &&
+         request.resource.data.appealText is string &&
+         request.resource.data.appealText.size() >= 10 &&
+         request.resource.data.appealStatus == 'pending' &&
+         request.resource.data.appealByUserId == request.auth.uid)
       );
 
       allow delete: if isAuthenticated() && teamId != 'blacksea_robotics' && (
@@ -404,9 +408,22 @@ service cloud.firestore {
           (resource.data.userId == request.auth.uid &&
            request.resource.data.isTeamAdmin == resource.data.isTeamAdmin &&
            request.resource.data.role == resource.data.role &&
-           request.resource.data.roles == resource.data.roles &&
-           (request.resource.data.status == resource.data.status ||
-            (request.resource.data.status == 'pending' && resource.data.status in ['pending', 'rejected', 'revoked'])))
+           request.resource.data.roles == resource.data.roles && (
+             (resource.data.status == 'revoked' &&
+              request.resource.data.status == 'revoked' &&
+              request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+                'appealText', 'appealStatus', 'appealSubmittedAt', 'updatedAt'
+              ]) &&
+              request.resource.data.appealText is string &&
+              request.resource.data.appealText.size() >= 10 &&
+              request.resource.data.appealStatus == 'pending') ||
+             (resource.data.status != 'revoked' &&
+              request.resource.data.get('suspensionReason', '') == resource.data.get('suspensionReason', '') &&
+              request.resource.data.get('appealText', '') == resource.data.get('appealText', '') &&
+              request.resource.data.get('appealStatus', '') == resource.data.get('appealStatus', '') &&
+              (request.resource.data.status == resource.data.status ||
+               (request.resource.data.status == 'pending' && resource.data.status in ['pending', 'rejected'])))
+           ))
         );
 
       allow delete: if isAuthenticated() && (
@@ -485,10 +502,21 @@ service cloud.firestore {
         (request.resource.data.get('type', '') == 'member_pending' &&
          request.resource.data.get('recipientUserId', '') == 'managers' &&
          request.resource.data.get('senderId', '') == request.auth.uid) ||
-        (request.resource.data.get('type', '') in ['team_application_pending', 'support_ticket', 'team_appeal'] &&
+        (request.resource.data.get('type', '') == 'member_appeal' &&
+         request.resource.data.get('recipientUserId', '') == 'managers' &&
+         request.resource.data.get('senderId', '') == request.auth.uid &&
+         'teamId' in request.resource.data &&
+         hasMembership(request.resource.data.teamId, request.auth.uid)) ||
+        (request.resource.data.get('type', '') in ['team_application_pending', 'support_ticket'] &&
          request.resource.data.get('teamId', '') == 'platform_admin' &&
          request.resource.data.get('recipientUserId', '') == 'platform_admins' &&
          request.resource.data.get('senderId', '') == request.auth.uid) ||
+        (request.resource.data.get('type', '') == 'team_appeal' &&
+         request.resource.data.get('teamId', '') == 'platform_admin' &&
+         request.resource.data.get('recipientUserId', '') == 'platform_admins' &&
+         request.resource.data.get('senderId', '') == request.auth.uid &&
+         request.resource.data.get('targetId', '') != '' &&
+         isTeamManager(request.resource.data.targetId)) ||
         (isPlatformAdmin() &&
          request.resource.data.get('type', '') in [
            'team_application_approved', 'team_application_rejected',

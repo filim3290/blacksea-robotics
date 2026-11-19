@@ -72,6 +72,7 @@ fun TeamModerationWarningScreen(
     team: TeamInfo,
     repository: BlackseaRepository,
     currentUserProfile: UserProfile?,
+    canAppeal: Boolean = false,
     onBackToHub: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -284,34 +285,54 @@ fun TeamModerationWarningScreen(
 
                     HorizontalDivider(color = ext.cardBorder)
 
-                    Button(
-                        onClick = { showAppealDialog = true },
-                        enabled = !isAppealPending && !isSubmittingAppeal,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .heightIn(min = 48.dp)
-                            .testTag("appeal_team_button"),
-                        shape = RoundedCornerShape(12.dp),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = ext.accentBlueSolid,
-                            contentColor = Color.White
-                        )
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Gavel,
-                            contentDescription = null,
-                            modifier = Modifier.size(18.dp)
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            text = when {
-                                isAppealPending -> "İtiraz İnceleniyor"
-                                isAppealRejected -> "Yeniden İtiraz Et"
-                                else -> "İtiraz Et"
-                            },
-                            fontSize = 14.sp,
-                            fontWeight = FontWeight.Bold
-                        )
+                    if (canAppeal) {
+                        Button(
+                            onClick = { showAppealDialog = true },
+                            enabled = !isAppealPending && !isSubmittingAppeal,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 48.dp)
+                                .testTag("appeal_team_button"),
+                            shape = RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = ext.accentBlueSolid,
+                                contentColor = Color.White
+                            )
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Gavel,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = when {
+                                    isAppealPending -> "İtiraz İnceleniyor"
+                                    isAppealRejected -> "Yeniden İtiraz Et"
+                                    else -> "İtiraz Et"
+                                },
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    } else {
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant,
+                            border = BorderStroke(1.dp, ext.cardBorder),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("member_appeal_restricted_notice")
+                        ) {
+                            Text(
+                                text = "Bu takımın çalışma alanı tüm yetkililer ve üyeler için geçici olarak kapatılmıştır. Sadece takım yetkilileri (Yetkili Öğretmen / Takım Kaptanı) itiraz başvurusunda bulunabilir.",
+                                fontSize = 12.sp,
+                                lineHeight = 18.sp,
+                                color = ext.textSecondary,
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier.padding(12.dp)
+                            )
+                        }
                     }
 
                     OutlinedButton(
@@ -340,7 +361,7 @@ fun TeamModerationWarningScreen(
         }
     }
 
-    if (showAppealDialog) {
+    if (canAppeal && showAppealDialog) {
         val trimmedAppeal = appealText.trim()
         val isAppealValid = trimmedAppeal.length >= 10
         AlertDialog(

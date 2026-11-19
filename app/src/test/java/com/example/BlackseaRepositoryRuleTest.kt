@@ -194,7 +194,11 @@ class BlackseaRepositoryRuleTest : FirestoreEmulatorTestBase() {
         roles = listOf("Yazılım Üyesi"),
         status = UserStatus.ACTIVE.value
       )
-      repository.revokeTeamMembership(TeamInfo.mainBlackseaTeam(), memberUid)
+      repository.revokeTeamMembership(
+        team = TeamInfo.mainBlackseaTeam(),
+        targetUserId = memberUid,
+        reason = "Test amacıyla askıya alındı."
+      )
     }
 
     val revokedMem = withTimeout(5000L) {
@@ -203,6 +207,7 @@ class BlackseaRepositoryRuleTest : FirestoreEmulatorTestBase() {
         .first { it.userId == memberUid }
     }
     assertEquals(UserStatus.REVOKED.value, revokedMem.status)
+    assertEquals("Test amacıyla askıya alındı.", revokedMem.suspensionReason)
 
     withTimeout(5000L) {
       repository.removeTeamMembership(TeamInfo.mainBlackseaTeam(), memberUid)

@@ -4,6 +4,7 @@ import com.example.data.shouldUserReceiveNotification
 import com.example.model.PLATFORM_FOUNDER_EMAIL
 import com.example.model.PLATFORM_MAIN_TEAM_ID
 import com.example.model.PredefinedRoles
+import com.example.model.SupportTicket
 import com.example.model.TeamAppealStatus
 import com.example.model.TeamInfo
 import com.example.model.TeamMembership
@@ -323,5 +324,107 @@ class MultiTeamArchitectureTest {
         assertEquals(TeamNotificationDispatcher.CHANNEL_ANNOUNCEMENTS, TeamNotificationDispatcher.resolveChannelId("team_suspended"))
         assertEquals(TeamNotificationDispatcher.CHANNEL_ANNOUNCEMENTS, TeamNotificationDispatcher.resolveChannelId("team_under_review"))
         assertEquals(TeamNotificationDispatcher.CHANNEL_TEAM, TeamNotificationDispatcher.resolveChannelId("task"))
+    }
+
+    @Test
+    fun `SupportTicket originTeamName and originSubTeamName parse team context reliably`() {
+        val multiTeamTicket = SupportTicket(
+            userName = "Ahmet Demir",
+            userTeam = "Fatsa Robotik • Yazılım Ekibi"
+        )
+        assertEquals("Fatsa Robotik", multiTeamTicket.originTeamName())
+        assertEquals("Yazılım Ekibi", multiTeamTicket.originSubTeamName())
+
+        val bsrTicket = SupportTicket(
+            userName = "Ayşe Yılmaz",
+            userTeam = "BlackSea Robotics • Mekanik Ekibi"
+        )
+        assertEquals("BlackSea Robotics", bsrTicket.originTeamName())
+        assertEquals("Mekanik Ekibi", bsrTicket.originSubTeamName())
+
+        val legacyTicket = SupportTicket(
+            userName = "Mehmet Kaya",
+            userTeam = "PR & Medya"
+        )
+        assertEquals("BlackSea Robotics", legacyTicket.originTeamName())
+        assertEquals("PR & Medya", legacyTicket.originSubTeamName())
+    }
+
+    @Test
+    fun `TeamMembership suspension and appeal helpers behave deterministically`() {
+        val revokedWithAppeal = TeamMembership(
+            teamId = "team_fatsa",
+            userId = "student_a",
+            role = "Takım Kaptanı",
+            roles = listOf("Takım Kaptanı"),
+            status = UserStatus.REVOKED.value,
+            isTeamAdmin = true,
+            suspensionReason = "İzinsiz devamsızlık",
+            appealText = "Sağlık raporum mevcuttur.",
+            appealStatus = TeamAppealStatus.PENDING
+        )
+        assertTrue(revokedWithAppeal.isRevoked())
+        assertTrue(revokedWithAppeal.hasPendingAppeal())
+        assertFalse("Revoked membership cannot retain manager privileges", revokedWithAppeal.isManagerInTeam())
+
+        val rejectedAppeal = revokedWithAppeal.copy(appealStatus = TeamAppealStatus.REJECTED)
+        assertFalse(rejectedAppeal.hasPendingAppeal())
+    }
+
+    @Test
+    fun `shouldUserReceiveNotification routes member appeals to team managers and isolates founder from BSR alerts`() {
+        val fatsaManagerMemberships = mapOf(
+            "team_fatsa" to TeamMembership(
+                teamId = "team_fatsa",
+                userId = "fatsa_mgr",
+                role = "Yetkili Öğretmen",
+                roles = listOf("Yetkili Öğretmen"),
+                status = UserStatus.ACTIVE.value,
+                isTeamAdmin = true
+            )
+        )
+        val fatsaRevokedStudentMemberships = mapOf(
+            "team_fatsa" to TeamMembership(
+                teamId = "team_fatsa",
+                userId = "student_a",
+                role = "Yazılım Üyesi",
+                roles = listOf("Yazılım Üyesi"),
+                status = UserStatus.REVOKED.value,
+                isTeamAdmin = false
+            )
+        )
+
+        val memberAppealNotif = TeamNotification(
+            id = "n_mem_appeal",
+            teamId = "team_fatsa",
+            recipientUserId = "managers",
+            type = "member_appeal",
+            targetId = "student_a",
+            senderId = "student_a"
+        )
+        val personalRevokedNotif = TeamNotification(
+            id = "n_revoked",
+            teamId = "team_fatsa",
+            recipientUserId = "student_a",
+            type = "access_revoked",
+            targetId = "team_fatsa",
+            senderId = "fatsa_mgr"
+        )
+        val bsrRoomMsg = TeamNotification(
+            id = "n_bsr_only",
+            teamId = PLATFORM_MAIN_TEAM_ID,
+            recipientUserId = "all",
+            type = "message",
+            targetRoomId = "general",
+            senderId = "bsr_member"
+        )
+
+        assertTrue(shouldUserReceiveNotification(memberAppealNotif, "fatsa_mgr", fatsaManagerMemberships, isPlatformAdmin = false))
+        assertFalse("Suspended member must not receive manager-only member_appeal alerts",
+            shouldUserReceiveNotification(memberAppealNotif, "student_a", fatsaRevokedStudentMemberships, isPlatformAdmin = false))
+        assertTrue("Suspended member still receives personal access_revoked notification",
+            shouldUserReceiveNotification(personalRevokedNotif, "student_a", fatsaRevokedStudentMemberships, isPlatformAdmin = false))
+        assertFalse("Founder without BSR membership should not receive BSR room chat notifications",
+            shouldUserReceiveNotification(bsrRoomMsg, "founder_u", emptyMap(), isPlatformAdmin = true))
     }
 }
