@@ -160,9 +160,40 @@ fun AppContent(
     val updateCheckMutex = remember { Mutex() }
     var availableUpdate by remember { mutableStateOf<AppReleaseInfo?>(null) }
     var inAppLatestUpdate by remember { mutableStateOf<AppReleaseInfo?>(null) }
+    var githubLatestUpdate by remember { mutableStateOf<AppReleaseInfo?>(null) }
+    var firestoreLatestUpdate by remember { mutableStateOf<AppReleaseInfo?>(null) }
     var showNotificationRationale by remember { mutableStateOf(false) }
     var isSelfDeleting by remember { mutableStateOf(false) }
     var permissionGrantCount by remember { mutableIntStateOf(0) }
+
+    fun reconcileLatestUpdates() {
+        val activeGithub = githubLatestUpdate?.takeUnless {
+            updateManager.isUpdateAlreadyInstalled(it.versionCode, it.versionName)
+        }
+        val activeFirestore = firestoreLatestUpdate?.takeUnless {
+            updateManager.isUpdateAlreadyInstalled(it.versionCode, it.versionName)
+        }
+        val chosen = when {
+            activeGithub != null && activeFirestore != null -> {
+                val cmp = AppUpdateManager.compareSemver(activeGithub.versionName, activeFirestore.versionName)
+                when {
+                    cmp > 0 -> activeGithub
+                    cmp < 0 -> activeFirestore
+                    activeGithub.versionCode >= activeFirestore.versionCode -> activeGithub
+                    else -> activeFirestore
+                }
+            }
+            activeGithub != null -> activeGithub
+            else -> activeFirestore
+        }
+        inAppLatestUpdate = chosen
+        if (chosen == null) {
+            availableUpdate = null
+            TeamNotificationDispatcher.clearPendingUpdateNotification(context)
+        } else if (chosen.isForceUpdate) {
+            availableUpdate = chosen
+        }
+    }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -193,21 +224,25 @@ fun AppContent(
             val result = updateManager.checkLatestReleaseDetailed(forceRefresh = forceRefresh)
             if (result is UpdateCheckResult.UpdateAvailable) {
                 val update = result.release
-                inAppLatestUpdate = update
-                if (openDialogRegardlessOfSignature || update.isForceUpdate) {
-                    availableUpdate = update
+                githubLatestUpdate = update
+                reconcileLatestUpdates()
+                val displayRelease = inAppLatestUpdate ?: update
+                if (openDialogRegardlessOfSignature || displayRelease.isForceUpdate) {
+                    availableUpdate = displayRelease
                 }
                 if (notifyOs) {
                     TeamNotificationDispatcher.dispatchUpdateNotificationIfNeeded(
                         context = context,
                         updateManager = updateManager,
-                        release = update
+                        release = displayRelease
                     )
                 }
             } else if (result is UpdateCheckResult.UpToDate || result is UpdateCheckResult.NoReleaseFound) {
-                inAppLatestUpdate = null
-                availableUpdate = null
-                TeamNotificationDispatcher.clearPendingUpdateNotification(context)
+                githubLatestUpdate = null
+                reconcileLatestUpdates()
+                if (openDialogRegardlessOfSignature) {
+                    inAppLatestUpdate?.let { availableUpdate = it }
+                }
             }
         }
     }
@@ -232,12 +267,28 @@ fun AppContent(
     // Handle notification tap for update dialog immediately
     LaunchedEffect(notificationNavEvent?.nonce) {
         if (notificationNavEvent?.openUpdateDialog == true) {
+            inAppLatestUpdate?.let { availableUpdate = it }
             performUpdateCheckAndNotify(
                 forceRefresh = true,
                 notifyOs = false,
                 openDialogRegardlessOfSignature = true
             )
             onConsumeNotificationNav()
+        }
+    }
+
+    // Collect real-time release discoveries from coordinator loop immediately
+    LaunchedEffect(Unit) {
+        RealtimeNotificationService.liveDiscoveredUpdates.collect { discovered ->
+            if (!updateManager.isUpdateAlreadyInstalled(discovered.versionCode, discovered.versionName)) {
+                val current = githubLatestUpdate
+                if (current == null ||
+                    AppUpdateManager.compareSemver(discovered.versionName, current.versionName) >= 0
+                ) {
+                    githubLatestUpdate = discovered
+                }
+                reconcileLatestUpdates()
+            }
         }
     }
 
@@ -249,12 +300,9 @@ fun AppContent(
 
         // Real-time listener for Firestore app_config/latest_update
         try {
-            var isInitialConfigEmission = true
             repository.db.collection("app_config").document("latest_update")
                 .snapshots()
                 .collect { doc ->
-                    val shouldNotifyOs = !isInitialConfigEmission
-                    isInitialConfigEmission = false
                     if (doc.exists()) {
                         val vCode = doc.getLong("versionCode")?.toInt() ?: 0
                         val vName = doc.getString("versionName") ?: ""
@@ -286,33 +334,21 @@ fun AppContent(
                                     minSupportedVersionCode = minSupportedCode
                                 )
                                 val release = rawRelease.copy(isForceUpdate = effectiveForce)
-                                inAppLatestUpdate = release
-                                if (release.isForceUpdate) {
-                                    availableUpdate = release
-                                }
-                                if (shouldNotifyOs) {
-                                    TeamNotificationDispatcher.dispatchUpdateNotificationIfNeeded(
-                                        context = context,
-                                        updateManager = updateManager,
-                                        release = release
-                                    )
-                                }
+                                firestoreLatestUpdate = release
+                                reconcileLatestUpdates()
+                                TeamNotificationDispatcher.dispatchUpdateNotificationIfNeeded(
+                                    context = context,
+                                    updateManager = updateManager,
+                                    release = release
+                                )
                             }
                         } else {
-                            inAppLatestUpdate?.let { currentBanner ->
-                                if (updateManager.isUpdateAlreadyInstalled(currentBanner.versionCode, currentBanner.versionName)) {
-                                    inAppLatestUpdate = null
-                                }
-                            }
-                            availableUpdate?.let { currentDialog ->
-                                if (updateManager.isUpdateAlreadyInstalled(currentDialog.versionCode, currentDialog.versionName)) {
-                                    availableUpdate = null
-                                }
-                            }
-                            if (inAppLatestUpdate == null) {
-                                TeamNotificationDispatcher.clearPendingUpdateNotification(context)
-                            }
+                            firestoreLatestUpdate = null
+                            reconcileLatestUpdates()
                         }
+                    } else {
+                        firestoreLatestUpdate = null
+                        reconcileLatestUpdates()
                     }
                 }
         } catch (ce: CancellationException) {
@@ -328,7 +364,7 @@ fun AppContent(
         if (activeUid != null && isAuthCompleted) {
             isSelfDeleting = false
             BackgroundNotificationWorker.schedulePeriodicSync(context)
-            performUpdateCheckAndNotify(forceRefresh = false, notifyOs = true)
+            performUpdateCheckAndNotify(forceRefresh = true, notifyOs = true)
         }
     }
 

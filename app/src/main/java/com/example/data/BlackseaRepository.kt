@@ -119,7 +119,7 @@ fun shouldUserReceiveNotification(
         return isManager
     }
 
-    if (!isActionableApproval && userCreatedAtMs > 0L) {
+    if (!isActionableApproval && typeLower != "update" && userCreatedAtMs > 0L) {
         val notifTimeMs = notif.createdAt?.toDate()?.time
         if (notifTimeMs != null && notifTimeMs < (userCreatedAtMs - 5_000L)) {
             return false
@@ -3040,6 +3040,7 @@ class BlackseaRepository(val db: FirebaseFirestore) {
 
             subscribeQuery("recipient=$userId", db.collection("notifications").whereEqualTo("recipientUserId", userId))
             subscribeQuery("platform", db.collection("notifications").whereEqualTo("teamId", "platform"))
+            subscribeQuery("type=update", db.collection("notifications").whereEqualTo("type", "update"))
             if (isPlatformAdmin) {
                 subscribeQuery("platform_admin", db.collection("notifications").whereEqualTo("teamId", "platform_admin"))
             }
@@ -3063,6 +3064,7 @@ class BlackseaRepository(val db: FirebaseFirestore) {
                 .distinct()
 
             val merged = LinkedHashMap<String, TeamNotification>()
+            var anyQuerySucceeded = false
 
             suspend fun collectQuery(query: com.google.firebase.firestore.Query) {
                 try {
@@ -3071,6 +3073,7 @@ class BlackseaRepository(val db: FirebaseFirestore) {
                     } catch (_: Exception) {
                         query.get().await()
                     }
+                    anyQuerySucceeded = true
                     snap.toObjects(TeamNotification::class.java).forEach { merged[it.id] = it }
                 } catch (ce: CancellationException) {
                     throw ce
@@ -3080,12 +3083,15 @@ class BlackseaRepository(val db: FirebaseFirestore) {
 
             collectQuery(db.collection("notifications").whereEqualTo("recipientUserId", userId))
             collectQuery(db.collection("notifications").whereEqualTo("teamId", "platform"))
+            collectQuery(db.collection("notifications").whereEqualTo("type", "update"))
             if (isPlatformAdmin) {
                 collectQuery(db.collection("notifications").whereEqualTo("teamId", "platform_admin"))
             }
             for (tId in activeTeamIds) {
                 collectQuery(db.collection("notifications").whereEqualTo("teamId", tId))
             }
+
+            if (!anyQuerySucceeded) return null
 
             merged.values.filter { notif ->
                 shouldUserReceiveNotification(

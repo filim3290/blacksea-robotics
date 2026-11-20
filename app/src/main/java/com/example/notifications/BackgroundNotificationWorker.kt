@@ -1,17 +1,20 @@
 package com.example.notifications
 
 import android.content.Context
+import androidx.core.app.NotificationCompat
 import androidx.work.BackoffPolicy
 import androidx.work.Constraints
 import androidx.work.CoroutineWorker
 import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.ExistingWorkPolicy
+import androidx.work.ForegroundInfo
 import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.OutOfQuotaPolicy
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
+import com.example.R
 import com.example.data.BlackseaRepository
 import com.example.model.PLATFORM_FOUNDER_EMAIL
 import com.example.model.PLATFORM_MAIN_TEAM_ID
@@ -38,6 +41,7 @@ class BackgroundNotificationWorker(
         const val WORK_NAME = "bsr_background_notification_sync"
         const val ONE_TIME_WORK_NAME = "bsr_onetime_update_sync"
         private const val SCHEDULE_VERSION = 4
+        private const val EXPEDITED_FOREGROUND_ID = 1097
 
         fun schedulePeriodicSync(context: Context) {
             try {
@@ -113,6 +117,21 @@ class BackgroundNotificationWorker(
                 logDebugWarn(TAG, "Failed to cancel periodic notification sync", e)
             }
         }
+    }
+
+    override suspend fun getForegroundInfo(): ForegroundInfo {
+        TeamNotificationDispatcher.ensureNotificationChannels(applicationContext)
+        val notification = NotificationCompat.Builder(
+            applicationContext,
+            TeamNotificationDispatcher.CHANNEL_TEAM
+        )
+            .setSmallIcon(R.drawable.ic_notification)
+            .setContentTitle("Blacksea Robotics")
+            .setContentText("Bildirimler ve güncellemeler kontrol ediliyor")
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setSilent(true)
+            .build()
+        return ForegroundInfo(EXPEDITED_FOREGROUND_ID, notification)
     }
 
     override suspend fun doWork(): Result {
@@ -218,17 +237,15 @@ class BackgroundNotificationWorker(
                         release = releaseCheck.release
                     )
                 }
-                is UpdateCheckResult.UpToDate -> {
-                    if (currentUser != null) {
+                is UpdateCheckResult.UpToDate,
+                is UpdateCheckResult.NoReleaseFound -> {
+                    val hasFirestoreUpdate = if (currentUser != null) {
                         checkFirestoreLatestUpdate(repository, updateManager)
                     } else {
-                        TeamNotificationDispatcher.clearPendingUpdateNotification(applicationContext)
+                        false
                     }
-                }
-                is UpdateCheckResult.NoReleaseFound -> {
-                    TeamNotificationDispatcher.clearPendingUpdateNotification(applicationContext)
-                    if (currentUser != null) {
-                        checkFirestoreLatestUpdate(repository, updateManager)
+                    if (!hasFirestoreUpdate) {
+                        TeamNotificationDispatcher.clearPendingUpdateNotification(applicationContext)
                     }
                 }
                 is UpdateCheckResult.ApkAssetMissing,
@@ -252,20 +269,31 @@ class BackgroundNotificationWorker(
     private suspend fun checkFirestoreLatestUpdate(
         repository: BlackseaRepository,
         updateManager: AppUpdateManager
-    ) {
-        try {
-            val doc = repository.db.collection("app_config").document("latest_update").get().await()
-            if (!doc.exists()) return
+    ): Boolean {
+        return try {
+            val doc = try {
+                repository.db.collection("app_config").document("latest_update")
+                    .get(Source.SERVER)
+                    .await()
+            } catch (_: Exception) {
+                repository.db.collection("app_config").document("latest_update")
+                    .get()
+                    .await()
+            }
+            if (!doc.exists()) return false
             val vCode = doc.getLong("versionCode")?.toInt() ?: 0
-            val vName = doc.getString("versionName") ?: return
+            val vName = doc.getString("versionName") ?: return false
             if (updateManager.isUpdateAlreadyInstalled(vCode, vName)) {
-                TeamNotificationDispatcher.clearPendingUpdateNotification(applicationContext)
-                return
+                return false
             }
             val resolvedUrl = updateManager.normalizeDownloadUrl(doc.getString("apkDownloadUrl"), vName)
-            if (!resolvedUrl.startsWith("https://") || !resolvedUrl.endsWith(".apk", ignoreCase = true)) return
+            if (!resolvedUrl.startsWith("https://") || !resolvedUrl.endsWith(".apk", ignoreCase = true)) {
+                return false
+            }
 
-            val release = AppReleaseInfo(
+            val minSupportedCode = doc.getLong("minSupportedVersionCode")?.toInt() ?: 0
+            val minSupportedName = doc.getString("minSupportedVersionName").orEmpty()
+            val rawRelease = AppReleaseInfo(
                 tagName = doc.getString("tagName") ?: "v$vName",
                 versionName = vName,
                 versionCode = vCode,
@@ -279,15 +307,25 @@ class BackgroundNotificationWorker(
                 expectedCertSha256 = doc.getString("expectedCertSha256") ?: "",
                 isForceUpdate = doc.getBoolean("isForceUpdate") ?: false
             )
+            val effectiveForce = AppUpdateManager.isVersionForceUpdateRequired(
+                release = rawRelease,
+                currentCode = updateManager.getCurrentVersionCode(),
+                currentName = updateManager.getCurrentVersionName(),
+                minSupportedVersionName = minSupportedName,
+                minSupportedVersionCode = minSupportedCode
+            )
+            val release = rawRelease.copy(isForceUpdate = effectiveForce)
             TeamNotificationDispatcher.dispatchUpdateNotificationIfNeeded(
                 context = applicationContext,
                 updateManager = updateManager,
                 release = release
             )
+            true
         } catch (ce: CancellationException) {
             throw ce
         } catch (e: Exception) {
             logDebugWarn(TAG, "Firestore background update check error", e)
+            false
         }
     }
 }

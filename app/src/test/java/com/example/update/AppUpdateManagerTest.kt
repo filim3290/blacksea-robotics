@@ -451,4 +451,12 @@ class AppUpdateManagerTest {
             )
         )
     }
+
+    @Test
+    fun `compareSemver compares multi-digit segments numerically`() {
+        assertTrue(AppUpdateManager.compareSemver("1.1.12", "1.1.6") > 0)
+        assertTrue(AppUpdateManager.compareSemver("v1.2.0", "1.1.12") > 0)
+        assertEquals(0, AppUpdateManager.compareSemver("v1.1.12", "1.1.12"))
+        assertTrue(AppUpdateManager.compareSemver("1.0.9", "1.0.10") < 0)
+    }
 }

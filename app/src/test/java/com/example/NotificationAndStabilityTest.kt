@@ -833,4 +833,66 @@ class NotificationAndStabilityTest {
         )
         assertTrue("Already dispatched approvals must never repeat", secondSelection.toDispatch.isEmpty())
     }
+
+    @Test
+    fun `update notifications reach users without teams or post-join cutoffs and dedup with AppUpdateManager`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val app = context.applicationContext as Application
+        Shadows.shadowOf(app).grantPermissions(Manifest.permission.POST_NOTIFICATIONS)
+        val notifManager = context.getSystemService(NotificationManager::class.java)!!
+        val shadowNm = Shadows.shadowOf(notifManager)
+        notifManager.cancelAll()
+        context.getSharedPreferences("bsr_update_prefs", Context.MODE_PRIVATE).edit().clear().commit()
+
+        val uid = "teamless_new_user_${System.nanoTime()}"
+        val now = 1_700_000_000_000L
+        val joinMs = now + 60_000L
+        val updateNotif = TeamNotification(
+            id = "upd_doc_1",
+            teamId = "platform",
+            teamName = "BlackSea Robotics Platform",
+            recipientUserId = "all",
+            type = "update",
+            targetId = "update_v9.8.7",
+            senderId = "admin_1",
+            title = "Yeni Güncelleme Mevcut",
+            message = "Blacksea Robotics için yeni bir sürüm (v9.8.7) yayınlandı.",
+            createdAt = Timestamp(Date(now))
+        )
+
+        assertTrue(
+            "Teamless new user must receive platform update notifications even if created before join",
+            shouldUserReceiveNotification(
+                notif = updateNotif,
+                userId = uid,
+                membershipsByTeam = emptyMap(),
+                isPlatformAdmin = false,
+                userCreatedAtMs = joinMs
+            )
+        )
+
+        try {
+            TeamNotificationDispatcher.clearUserSyncState(context, uid)
+            TeamNotificationDispatcher.syncBaselineSilently(context, uid, emptyList())
+
+            val posted = TeamNotificationDispatcher.processNotifications(
+                context = context,
+                userId = uid,
+                notifications = listOf(updateNotif),
+                userCreatedAtMs = joinMs
+            )
+            assertEquals(1, posted)
+            assertEquals(1, shadowNm.size())
+            assertEquals(TeamNotificationDispatcher.CHANNEL_UPDATES, shadowNm.allNotifications.first().channelId)
+
+            val mgr = com.example.update.AppUpdateManager(context)
+            assertTrue(
+                "AppUpdateManager must know v9.8.7 was already notified via Firestore notification",
+                mgr.hasNotifiedForRelease(0, "v9.8.7")
+            )
+        } finally {
+            TeamNotificationDispatcher.clearUserSyncState(context, uid)
+            context.getSharedPreferences("bsr_update_prefs", Context.MODE_PRIVATE).edit().clear().commit()
+        }
+    }
 }

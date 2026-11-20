@@ -345,6 +345,7 @@ object TeamNotificationDispatcher {
                 createdMs >= minAllowedTimestampMs ||
                 (isApproval && createdMs >= approvalLookbackFloorMs)
             val afterUserJoined = isApproval ||
+                notif.type.equals("update", ignoreCase = true) ||
                 notif.recipientUserId == userId ||
                 effectiveJoinFloorMs == 0L ||
                 createdMs == null ||
@@ -575,8 +576,17 @@ object TeamNotificationDispatcher {
         }
         nonMsgBatch.forEach { notif ->
             try {
+                val isUpdateNotif = notif.type.equals("update", ignoreCase = true)
+                val extractedTag = if (isUpdateNotif) {
+                    extractUpdateTag(notif.targetId, notif.message)
+                } else ""
+                if (isUpdateNotif && extractedTag.isNotBlank() && updateManager.hasNotifiedForRelease(0, extractedTag)) {
+                    dispatchedIdsToRecord.add(notif.id)
+                    return@forEach
+                }
+
                 val channelId = resolveChannelId(notif.type)
-                val stableId = (notif.id.hashCode() and 0x7FFFFFFF) + 2000
+                val stableId = if (isUpdateNotif) UPDATE_NOTIFICATION_ID else ((notif.id.hashCode() and 0x7FFFFFFF) + 2000)
                 val notifTeamId = notif.effectiveTeamId()
                 val tapIntent = Intent(appCtx, MainActivity::class.java).apply {
                     flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
@@ -584,7 +594,7 @@ object TeamNotificationDispatcher {
                     putExtra(EXTRA_NOTIF_TYPE, notif.type)
                     putExtra(EXTRA_NOTIF_ROOM_ID, notif.targetRoomId)
                     putExtra(EXTRA_NOTIF_TEAM_ID, notifTeamId)
-                    putExtra(EXTRA_OPEN_UPDATE_DIALOG, notif.type.equals("update", ignoreCase = true))
+                    putExtra(EXTRA_OPEN_UPDATE_DIALOG, isUpdateNotif)
                 }
                 val pendingIntent = PendingIntent.getActivity(
                     appCtx,
@@ -595,6 +605,7 @@ object TeamNotificationDispatcher {
 
                 val bodyText = notif.message.ifBlank { notif.title }
                 val teamPrefix = if (
+                    !isUpdateNotif &&
                     notif.teamName.isNotBlank() &&
                     notifTeamId != PLATFORM_MAIN_TEAM_ID &&
                     notifTeamId != "platform" &&
@@ -620,6 +631,9 @@ object TeamNotificationDispatcher {
                     .setAutoCancel(true)
 
                 notifManager.notify(stableId, builder.build())
+                if (isUpdateNotif && extractedTag.isNotBlank()) {
+                    updateManager.markReleaseNotified(0, extractedTag)
+                }
                 dispatchedIdsToRecord.add(notif.id)
                 postedCount++
             } catch (sec: SecurityException) {
@@ -634,6 +648,14 @@ object TeamNotificationDispatcher {
             }
             return postedCount
         }
+    }
+
+    private fun extractUpdateTag(targetId: String, message: String): String {
+        val versionRegex = Regex("""v?(\d+\.\d+(?:\.\d+)*)""")
+        val raw = versionRegex.find(targetId)?.groupValues?.getOrNull(1)
+            ?: versionRegex.find(message)?.groupValues?.getOrNull(1)
+            ?: return ""
+        return "v$raw"
     }
 
     private fun markIdsAsDispatched(

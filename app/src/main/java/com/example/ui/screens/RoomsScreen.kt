@@ -502,7 +502,7 @@ fun RoomsScreen(
                                 )
                             }
 
-                            if (canPinSingle && singleSelectedMessage != null) {
+                            if (canPinSingle) {
                                 DropdownMenuItem(
                                     text = { Text(if (singleSelectedMessage.isPinned) "Sabitlemeyi Kaldır" else "Sabitle") },
                                     leadingIcon = {
@@ -534,7 +534,7 @@ fun RoomsScreen(
                                 )
                             }
 
-                            if (canEditSingle && singleSelectedMessage != null) {
+                            if (canEditSingle) {
                                 DropdownMenuItem(
                                     text = { Text("Düzenle") },
                                     leadingIcon = {

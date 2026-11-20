@@ -542,6 +542,7 @@ service cloud.firestore {
         resource.data.recipientUserId == request.auth.uid ||
         (resource.data.get('teamId', '') == 'platform_admin' && isPlatformAdmin()) ||
         resource.data.get('teamId', '') == 'platform' ||
+        resource.data.get('type', '') == 'update' ||
         (resource.data.get('teamId', '') != '' && isActiveTeamMember(resource.data.teamId)) ||
         (!('teamId' in resource.data) && isActiveTeamMember('blacksea_robotics'))
       );
@@ -579,6 +580,7 @@ service cloud.firestore {
         resource.data.recipientUserId == request.auth.uid ||
         (resource.data.get('teamId', '') == 'platform_admin' && isPlatformAdmin()) ||
         resource.data.get('teamId', '') == 'platform' ||
+        resource.data.get('type', '') == 'update' ||
         (resource.data.get('teamId', '') != '' && isActiveTeamMember(resource.data.teamId)) ||
         (!('teamId' in resource.data) && isActiveTeamMember('blacksea_robotics'))
       );

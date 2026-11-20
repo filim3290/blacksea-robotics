@@ -508,6 +508,8 @@ class AppUpdateManager(private val context: Context) {
                 ""
             }
             val notif = mapOf(
+                "teamId" to "platform",
+                "teamName" to "BlackSea Robotics Platform",
                 "recipientUserId" to "all",
                 "title" to "🔔 Yeni Güncelleme Mevcut",
                 "message" to "Blacksea Robotics için yeni bir sürüm (v$versionName) yayınlandı. Hemen güncelleyin!",
@@ -698,7 +700,10 @@ class AppUpdateManager(private val context: Context) {
     /**
      * Checks GitHub Releases API (with ETag + web redirect fallback) with explicit status reporting.
      */
-    suspend fun checkLatestReleaseDetailed(forceRefresh: Boolean = false): UpdateCheckResult = withContext(Dispatchers.IO) {
+    suspend fun checkLatestReleaseDetailed(
+        forceRefresh: Boolean = false,
+        bypassEtag: Boolean = false
+    ): UpdateCheckResult = withContext(Dispatchers.IO) {
         val currentCode = getCurrentVersionCode()
         val currentName = getCurrentVersionName()
 
@@ -722,7 +727,7 @@ class AppUpdateManager(private val context: Context) {
             }
         }
 
-        // 2. Query GitHub Releases API (/releases/latest) with ETag support (304 saves API quota)
+        // 2. Query GitHub Releases API (/releases/latest) with conditional ETag validation (304 saves API quota)
         val latestUrl = "https://api.github.com/repos/$githubOwner/$githubRepo/releases/latest"
         try {
             val reqBuilder = Request.Builder()
@@ -730,7 +735,7 @@ class AppUpdateManager(private val context: Context) {
                 .header("Accept", "application/vnd.github.v3+json")
                 .header("User-Agent", "BlackseaRobotics-AndroidApp/$currentName")
 
-            if (!forceRefresh && !cachedReleaseJson.isNullOrBlank() && !cachedEtag.isNullOrBlank()) {
+            if (!bypassEtag && !cachedReleaseJson.isNullOrBlank() && !cachedEtag.isNullOrBlank()) {
                 reqBuilder.header("If-None-Match", cachedEtag)
             }
 

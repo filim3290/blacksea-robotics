@@ -13,6 +13,7 @@ import com.example.model.TeamMembership
 import com.example.model.UserStatus
 import com.example.update.AppReleaseInfo
 import com.example.update.AppUpdateManager
+import com.example.update.UpdateCheckResult
 import com.example.util.logDebugWarn
 import com.google.firebase.Firebase
 import com.google.firebase.auth.FirebaseAuth
@@ -23,16 +24,20 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -44,6 +49,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  */
 object RealtimeNotificationService {
     private const val TAG = "RealtimeNotifCoordinator"
+    private const val GITHUB_POLL_INTERVAL_MS = 45_000L
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var mainJob: Job? = null
@@ -51,6 +57,12 @@ object RealtimeNotificationService {
 
     private val _isRunning = MutableStateFlow(false)
     val isRunning: StateFlow<Boolean> = _isRunning.asStateFlow()
+
+    private val _liveDiscoveredUpdates = MutableSharedFlow<AppReleaseInfo>(
+        replay = 1,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST
+    )
+    val liveDiscoveredUpdates: SharedFlow<AppReleaseInfo> = _liveDiscoveredUpdates.asSharedFlow()
 
     private data class ListenerConfigKey(
         val uid: String,
@@ -96,8 +108,8 @@ object RealtimeNotificationService {
                 override fun onAvailable(network: Network) {
                     if (Firebase.auth.currentUser != null) {
                         startIfEnabled(appCtx)
-                        BackgroundNotificationWorker.triggerImmediateSync(appCtx)
                     }
+                    BackgroundNotificationWorker.triggerImmediateSync(appCtx)
                 }
             })
         } catch (e: Exception) {
@@ -128,6 +140,9 @@ object RealtimeNotificationService {
 
                         val updateJob = launch {
                             observeRemoteAppUpdates(appCtx, repository, updateManager)
+                        }
+                        val githubUpdateJob = launch {
+                            monitorGithubReleasesLoop(appCtx, updateManager)
                         }
 
                         try {
@@ -269,6 +284,7 @@ object RealtimeNotificationService {
                             logDebugWarn(TAG, "RealtimeNotificationService stream error", e)
                         } finally {
                             updateJob.cancel()
+                            githubUpdateJob.cancel()
                         }
                     }
                 } catch (ce: CancellationException) {
@@ -289,18 +305,42 @@ object RealtimeNotificationService {
         }
     }
 
+    private suspend fun monitorGithubReleasesLoop(
+        appCtx: Context,
+        updateManager: AppUpdateManager
+    ) {
+        while (kotlinx.coroutines.currentCoroutineContext().isActive) {
+            try {
+                when (val result = updateManager.checkLatestReleaseDetailed(forceRefresh = true)) {
+                    is UpdateCheckResult.UpdateAvailable -> {
+                        val release = result.release
+                        _liveDiscoveredUpdates.tryEmit(release)
+                        TeamNotificationDispatcher.dispatchUpdateNotificationIfNeeded(
+                            context = appCtx,
+                            updateManager = updateManager,
+                            release = release
+                        )
+                    }
+                    else -> Unit
+                }
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (e: Exception) {
+                logDebugWarn(TAG, "GitHub release monitor cycle error", e)
+            }
+            delay(GITHUB_POLL_INTERVAL_MS)
+        }
+    }
+
     private suspend fun observeRemoteAppUpdates(
         appCtx: Context,
         repository: BlackseaRepository,
         updateManager: AppUpdateManager
     ) {
         try {
-            var isInitialEmission = true
             repository.db.collection("app_config").document("latest_update")
                 .snapshots()
                 .collect { doc ->
-                    val shouldNotify = !isInitialEmission
-                    isInitialEmission = false
                     if (!doc.exists()) return@collect
 
                     val vCode = doc.getLong("versionCode")?.toInt() ?: 0
@@ -315,27 +355,36 @@ object RealtimeNotificationService {
                         return@collect
                     }
 
-                    if (shouldNotify) {
-                        val release = AppReleaseInfo(
-                            tagName = doc.getString("tagName") ?: "v$vName",
-                            versionName = vName,
-                            versionCode = vCode,
-                            title = doc.getString("title") ?: "Yeni Güncelleme Mevcut",
-                            changelog = doc.getString("changelog") ?: "• Performans iyileştirmeleri ve hata düzeltmeleri",
-                            publishedAt = doc.getString("publishedAt") ?: "Bugün",
-                            apkDownloadUrl = resolvedUrl,
-                            apkFileName = doc.getString("apkFileName") ?: "BlackseaRobotics-v$vName.apk",
-                            apkSize = doc.getLong("apkSize") ?: (20 * 1024 * 1024L),
-                            expectedSha256 = doc.getString("expectedSha256") ?: "",
-                            expectedCertSha256 = doc.getString("expectedCertSha256") ?: "",
-                            isForceUpdate = doc.getBoolean("isForceUpdate") ?: false
-                        )
-                        TeamNotificationDispatcher.dispatchUpdateNotificationIfNeeded(
-                            context = appCtx,
-                            updateManager = updateManager,
-                            release = release
-                        )
-                    }
+                    val minSupportedCode = doc.getLong("minSupportedVersionCode")?.toInt() ?: 0
+                    val minSupportedName = doc.getString("minSupportedVersionName").orEmpty()
+                    val rawRelease = AppReleaseInfo(
+                        tagName = doc.getString("tagName") ?: "v$vName",
+                        versionName = vName,
+                        versionCode = vCode,
+                        title = doc.getString("title") ?: "Yeni Güncelleme Mevcut",
+                        changelog = doc.getString("changelog") ?: "• Performans iyileştirmeleri ve hata düzeltmeleri",
+                        publishedAt = doc.getString("publishedAt") ?: "Bugün",
+                        apkDownloadUrl = resolvedUrl,
+                        apkFileName = doc.getString("apkFileName") ?: "BlackseaRobotics-v$vName.apk",
+                        apkSize = doc.getLong("apkSize") ?: (20 * 1024 * 1024L),
+                        expectedSha256 = doc.getString("expectedSha256") ?: "",
+                        expectedCertSha256 = doc.getString("expectedCertSha256") ?: "",
+                        isForceUpdate = doc.getBoolean("isForceUpdate") ?: false
+                    )
+                    val effectiveForce = AppUpdateManager.isVersionForceUpdateRequired(
+                        release = rawRelease,
+                        currentCode = updateManager.getCurrentVersionCode(),
+                        currentName = updateManager.getCurrentVersionName(),
+                        minSupportedVersionName = minSupportedName,
+                        minSupportedVersionCode = minSupportedCode
+                    )
+                    val release = rawRelease.copy(isForceUpdate = effectiveForce)
+                    _liveDiscoveredUpdates.tryEmit(release)
+                    TeamNotificationDispatcher.dispatchUpdateNotificationIfNeeded(
+                        context = appCtx,
+                        updateManager = updateManager,
+                        release = release
+                    )
                 }
         } catch (ce: CancellationException) {
             throw ce
