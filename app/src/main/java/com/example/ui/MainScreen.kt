@@ -161,11 +161,21 @@ fun MainScreen(
     val ext = MaterialTheme.blackseaColors
     val scope = rememberCoroutineScope()
 
-    val currentUserProfile by repository.observeUserProfile(currentUserId).collectAsState(initial = null)
-    val approvedTeams by repository.observeDiscoverableTeams().collectAsState(initial = emptyList())
-    val watchedTeamIds by repository.observeWatchedTeamIds(currentUserId).collectAsState(initial = emptySet())
-    val myMemberships by repository.observeMyMemberships(currentUserId).collectAsState(initial = emptyList())
-    val myTeamApplications by repository.observeMyTeamApplications(currentUserId).collectAsState(initial = emptyList())
+    val currentUserProfile by remember(currentUserId) {
+        repository.observeUserProfile(currentUserId)
+    }.collectAsState(initial = null)
+    val approvedTeams by remember {
+        repository.observeDiscoverableTeams()
+    }.collectAsState(initial = emptyList())
+    val watchedTeamIds by remember(currentUserId) {
+        repository.observeWatchedTeamIds(currentUserId)
+    }.collectAsState(initial = emptySet())
+    val myMemberships by remember(currentUserId) {
+        repository.observeMyMemberships(currentUserId)
+    }.collectAsState(initial = emptyList())
+    val myTeamApplications by remember(currentUserId) {
+        repository.observeMyTeamApplications(currentUserId)
+    }.collectAsState(initial = emptyList())
 
     val isPlatformAdmin = remember(currentUserProfile) {
         currentUserProfile?.isPlatformManagerAccount() == true ||
@@ -183,8 +193,32 @@ fun MainScreen(
         }
     }
 
-    val membershipsByTeam = remember(myMemberships) {
-        myMemberships.associateBy { it.teamId }
+    val membershipsByTeam = remember(myMemberships, currentUserProfile, isPlatformAdmin, currentUserId) {
+        val map = myMemberships.filter { it.teamId.isNotBlank() }.associateBy { it.teamId }.toMutableMap()
+        val p = currentUserProfile
+        if (p != null &&
+            !isPlatformAdmin &&
+            !map.containsKey(PLATFORM_MAIN_TEAM_ID) &&
+            (p.isBlackseaAuthorizedTeacherAccount() ||
+                (p.activeTeamId.isBlank() &&
+                 UserStatus.isActive(p.status) &&
+                 p.roles.any { it != "Takım Üyesi" && !it.equals("Yönetici", ignoreCase = true) }))
+        ) {
+            val isBsrTeacher = p.isBlackseaAuthorizedTeacherAccount()
+            map[PLATFORM_MAIN_TEAM_ID] = TeamMembership(
+                id = "${PLATFORM_MAIN_TEAM_ID}_$currentUserId",
+                teamId = PLATFORM_MAIN_TEAM_ID,
+                userId = currentUserId,
+                userName = p.getFullName(),
+                userEmail = p.email,
+                subTeam = if (isBsrTeacher) com.example.model.TeamType.MANAGEMENT.displayName else p.team,
+                role = if (isBsrTeacher) "Yetkili Öğretmen" else p.role,
+                roles = if (isBsrTeacher) listOf("Yetkili Öğretmen") else p.roles,
+                status = UserStatus.ACTIVE.value,
+                isTeamAdmin = isBsrTeacher || p.isManagerAccount()
+            )
+        }
+        map.toMap()
     }
 
     val activeTeamIds = remember(membershipsByTeam) {
@@ -1228,6 +1262,7 @@ fun TeamNotificationsDialog(
                     } else {
                         LazyColumn(
                             modifier = Modifier.fillMaxSize(),
+                            contentPadding = PaddingValues(bottom = 12.dp),
                             verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             if (availableUpdate != null) {
@@ -1279,7 +1314,12 @@ fun TeamNotificationsDialog(
                                                         text = "Yeni Güncelleme Mevcut: v${availableUpdate.versionName}",
                                                         fontSize = 13.sp,
                                                         fontWeight = FontWeight.Bold,
-                                                        color = MaterialTheme.colorScheme.onSurface
+                                                        color = MaterialTheme.colorScheme.onSurface,
+                                                        maxLines = 2,
+                                                        overflow = TextOverflow.Ellipsis,
+                                                        modifier = Modifier
+                                                            .weight(1f)
+                                                            .padding(end = 8.dp)
                                                     )
                                                     if (!isUpdateRead) {
                                                         Surface(
@@ -1365,7 +1405,12 @@ fun TeamNotificationsDialog(
                                                     text = notif.title,
                                                     fontSize = 13.sp,
                                                     fontWeight = if (isRead) FontWeight.Medium else FontWeight.Bold,
-                                                    color = MaterialTheme.colorScheme.onSurface
+                                                    color = MaterialTheme.colorScheme.onSurface,
+                                                    maxLines = 2,
+                                                    overflow = TextOverflow.Ellipsis,
+                                                    modifier = Modifier
+                                                        .weight(1f)
+                                                        .padding(end = 8.dp)
                                                 )
                                                 if (!isRead) {
                                                     Surface(

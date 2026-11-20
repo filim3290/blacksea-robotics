@@ -88,6 +88,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import com.example.BuildConfig
 import com.example.data.BlackseaRepository
 import com.example.model.COMPETITION_PRESETS
 import com.example.model.PLATFORM_MAIN_TEAM_ID
@@ -98,12 +99,17 @@ import com.example.model.TeamLogoPreset
 import com.example.model.TeamMembership
 import com.example.model.TeamStatus
 import com.example.model.TeamType
+import com.example.model.UserProfile
+import com.example.model.UserStatus
+import com.example.model.isLegacyBsrMainMember
 import com.example.ui.components.RoleBadge
 import com.example.ui.components.TeamBadge
 import com.example.ui.components.TeamLogoBadge
 import com.example.ui.components.parseTeamColor
 import com.example.ui.components.teamLogoPresetIcon
 import com.example.ui.theme.blackseaColors
+import com.example.update.AppReleaseInfo
+import com.example.update.AppUpdateManager
 import com.example.util.sanitizeUserErrorMessage
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
@@ -1834,5 +1840,529 @@ fun TeamInfoEditorTab(
                 }
             }
         )
+    }
+}
+
+private enum class UserVersionCompliance {
+    CURRENT,
+    OUTDATED_OPTIONAL,
+    FORCE_UPDATE_REQUIRED,
+    UNKNOWN
+}
+
+private data class PlatformUserAdminRow(
+    val profile: UserProfile,
+    val resolvedUid: String,
+    val teamSummaries: List<Triple<String, String, String>>, // teamName, detail, status
+    val versionName: String,
+    val versionCode: Int,
+    val lagSteps: Int,
+    val versionCompliance: UserVersionCompliance
+)
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+fun AllPlatformUsersTab(
+    users: List<UserProfile>,
+    allMemberships: List<TeamMembership>,
+    allTeams: List<TeamInfo>,
+    latestRelease: AppReleaseInfo? = null,
+    modifier: Modifier = Modifier
+) {
+    val ext = MaterialTheme.blackseaColors
+    var searchQuery by remember { mutableStateOf("") }
+    var selectedFilter by remember { mutableStateOf("all") }
+
+    val teamNameById = remember(allTeams) {
+        buildMap {
+            put(PLATFORM_MAIN_TEAM_ID, "BlackSea Robotics")
+            allTeams.forEach { team ->
+                if (team.id.isNotBlank() && team.name.isNotBlank()) {
+                    put(team.id, team.name)
+                }
+            }
+        }
+    }
+
+    val latestRef = remember(users, latestRelease) {
+        var bestName = BuildConfig.VERSION_NAME
+        var bestCode = BuildConfig.VERSION_CODE
+
+        fun considerCandidate(candidateName: String, candidateCode: Int) {
+            val cleanName = candidateName.trim().removePrefix("v").removePrefix("V")
+            val hasBetterName = cleanName.isNotBlank() &&
+                AppUpdateManager.hasNumericSemver(cleanName) &&
+                (!AppUpdateManager.hasNumericSemver(bestName) || AppUpdateManager.compareSemver(cleanName, bestName) > 0)
+            val hasEqualNameHigherCode = cleanName.isNotBlank() &&
+                AppUpdateManager.hasNumericSemver(cleanName) &&
+                AppUpdateManager.hasNumericSemver(bestName) &&
+                AppUpdateManager.compareSemver(cleanName, bestName) == 0 &&
+                candidateCode > bestCode
+            if (hasBetterName || hasEqualNameHigherCode || (cleanName.isBlank() && candidateCode > bestCode)) {
+                if (cleanName.isNotBlank()) bestName = cleanName
+                if (candidateCode > 0) bestCode = candidateCode
+            }
+        }
+
+        latestRelease?.let { considerCandidate(it.versionName, it.versionCode) }
+        users.forEach { u ->
+            if (u.appVersionName.isNotBlank() || u.appVersionCode > 0) {
+                considerCandidate(u.appVersionName, u.appVersionCode)
+            }
+        }
+        bestName to bestCode
+    }
+
+    val userRows = remember(users, allMemberships, teamNameById, latestRef) {
+        val membershipsByUid = allMemberships.groupBy { it.userId }
+        val (refName, refCode) = latestRef
+        val trLocale = Locale.forLanguageTag("tr-TR")
+
+        users.map { user ->
+            val uid = user.userId.ifBlank { user.id }
+            val rawMemberships = membershipsByUid[uid].orEmpty()
+                .sortedBy {
+                    when {
+                        it.isActive() -> 0
+                        it.isPending() -> 1
+                        it.isRevoked() -> 2
+                        else -> 3
+                    }
+                }
+
+            val summaries = mutableListOf<Triple<String, String, String>>()
+            val seenTeamIds = mutableSetOf<String>()
+
+            rawMemberships.forEach { m ->
+                if (m.teamId.isNotBlank() && seenTeamIds.add(m.teamId)) {
+                    val tName = teamNameById[m.teamId] ?: m.teamId
+                    val sub = m.subTeam.ifBlank { TeamType.GENERAL.displayName }
+                    val roleLabel = m.roles.firstOrNull { it.isNotBlank() } ?: m.role.ifBlank { "Takım Üyesi" }
+                    val statusLabel = when {
+                        m.isActive() -> "Aktif"
+                        m.isPending() -> "Onay Bekliyor"
+                        m.isRevoked() -> "Askıda"
+                        m.isRejected() -> "Reddedildi"
+                        else -> m.status
+                    }
+                    summaries.add(Triple(tName, "$sub • $roleLabel", statusLabel))
+                }
+            }
+
+            if (!seenTeamIds.contains(PLATFORM_MAIN_TEAM_ID) && user.isLegacyBsrMainMember()) {
+                val sub = user.team.ifBlank { TeamType.GENERAL.displayName }
+                val roleLabel = user.roles.firstOrNull { it.isNotBlank() } ?: user.role.ifBlank { "Takım Üyesi" }
+                summaries.add(Triple("BlackSea Robotics", "$sub • $roleLabel", "Aktif"))
+            }
+
+            val verName = user.appVersionName.trim().removePrefix("v").removePrefix("V")
+            val verCode = user.appVersionCode
+            val (lag, compliance) = if (verName.isBlank() && verCode <= 0) {
+                0 to UserVersionCompliance.UNKNOWN
+            } else {
+                val steps = AppUpdateManager.calculateVersionLagSteps(
+                    latestName = refName,
+                    latestCode = refCode,
+                    currentName = verName,
+                    currentCode = verCode
+                )
+                val status = when {
+                    steps >= AppUpdateManager.FORCE_UPDATE_MAX_VERSION_LAG -> UserVersionCompliance.FORCE_UPDATE_REQUIRED
+                    steps > 0 -> UserVersionCompliance.OUTDATED_OPTIONAL
+                    else -> UserVersionCompliance.CURRENT
+                }
+                steps to status
+            }
+
+            PlatformUserAdminRow(
+                profile = user,
+                resolvedUid = uid,
+                teamSummaries = summaries,
+                versionName = verName,
+                versionCode = verCode,
+                lagSteps = lag,
+                versionCompliance = compliance
+            )
+        }.sortedWith(
+            compareBy<PlatformUserAdminRow> {
+                when (it.versionCompliance) {
+                    UserVersionCompliance.FORCE_UPDATE_REQUIRED -> 0
+                    UserVersionCompliance.OUTDATED_OPTIONAL -> 1
+                    UserVersionCompliance.CURRENT -> 2
+                    UserVersionCompliance.UNKNOWN -> 3
+                }
+            }.thenBy { it.profile.getFullName().lowercase(trLocale) }
+        )
+    }
+
+    val forceUpdateCount = remember(userRows) {
+        userRows.count { it.versionCompliance == UserVersionCompliance.FORCE_UPDATE_REQUIRED }
+    }
+    val outdatedCount = remember(userRows) {
+        userRows.count {
+            it.versionCompliance == UserVersionCompliance.OUTDATED_OPTIONAL ||
+                it.versionCompliance == UserVersionCompliance.FORCE_UPDATE_REQUIRED
+        }
+    }
+    val teamlessCount = remember(userRows) {
+        userRows.count { it.teamSummaries.isEmpty() }
+    }
+    val activeCount = remember(userRows) {
+        userRows.count { it.profile.status.equals(UserStatus.ACTIVE.value, ignoreCase = true) || it.profile.status.isBlank() }
+    }
+
+    val filteredRows = remember(userRows, searchQuery, selectedFilter) {
+        val trLocale = Locale.forLanguageTag("tr-TR")
+        val q = searchQuery.trim().lowercase(trLocale)
+        userRows.filter { row ->
+            val matchesFilter = when (selectedFilter) {
+                "active" -> row.profile.status.equals(UserStatus.ACTIVE.value, ignoreCase = true) || row.profile.status.isBlank()
+                "teamless" -> row.teamSummaries.isEmpty()
+                "outdated" -> row.versionCompliance == UserVersionCompliance.OUTDATED_OPTIONAL ||
+                    row.versionCompliance == UserVersionCompliance.FORCE_UPDATE_REQUIRED
+                "force_update" -> row.versionCompliance == UserVersionCompliance.FORCE_UPDATE_REQUIRED
+                else -> true
+            }
+            val matchesSearch = q.isBlank() ||
+                row.profile.getFullName().lowercase(trLocale).contains(q) ||
+                row.profile.email.lowercase(trLocale).contains(q) ||
+                row.profile.username.lowercase(trLocale).contains(q) ||
+                row.versionName.lowercase(trLocale).contains(q) ||
+                row.teamSummaries.any { (tName, detail, _) ->
+                    tName.lowercase(trLocale).contains(q) || detail.lowercase(trLocale).contains(q)
+                }
+            matchesFilter && matchesSearch
+        }
+    }
+
+    Column(
+        modifier = modifier
+            .fillMaxSize()
+            .testTag("admin_users_tab")
+    ) {
+        OutlinedTextField(
+            value = searchQuery,
+            onValueChange = { searchQuery = it },
+            placeholder = { Text("İsim, e-posta, takım veya sürüm ara...", fontSize = 12.sp) },
+            leadingIcon = {
+                Icon(imageVector = Icons.Default.Search, contentDescription = "Kullanıcı Ara", tint = ext.textMuted)
+            },
+            trailingIcon = {
+                if (searchQuery.isNotBlank()) {
+                    IconButton(onClick = { searchQuery = "" }) {
+                        Icon(imageVector = Icons.Default.Close, contentDescription = "Temizle")
+                    }
+                }
+            },
+            singleLine = true,
+            shape = RoundedCornerShape(12.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = 16.dp, end = 16.dp, top = 12.dp)
+                .testTag("admin_users_search_input")
+        )
+
+        LazyRow(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            val filters = listOf(
+                "all" to "Tümü (${userRows.size})",
+                "active" to "Aktif ($activeCount)",
+                "teamless" to "Takımsız ($teamlessCount)",
+                "outdated" to "Eski Sürüm ($outdatedCount)",
+                "force_update" to "Zorunlu Güncelleme ($forceUpdateCount)"
+            )
+            items(filters) { (key, label) ->
+                FilterChip(
+                    selected = selectedFilter == key,
+                    onClick = { selectedFilter = key },
+                    label = { Text(label, fontSize = 12.sp) }
+                )
+            }
+        }
+
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 16.dp),
+            contentPadding = PaddingValues(top = 4.dp, bottom = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            item {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(14.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                    border = BorderStroke(1.dp, ext.cardBorder)
+                ) {
+                    Column(
+                        modifier = Modifier.padding(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Text(
+                            text = "Platform Kullanıcıları (${filteredRows.size} / ${userRows.size}) • Güncel: v${latestRef.first}",
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Text(
+                            text = "Kullanıcıların bağlı olduğu tüm takımlar ve kullandıkları uygulama sürümü listelenir. Son sürümden ${AppUpdateManager.FORCE_UPDATE_MAX_VERSION_LAG}+ sürüm eski cihazlara otomatik zorunlu güncelleme uygulanır.",
+                            fontSize = 11.sp,
+                            color = ext.textSecondary,
+                            lineHeight = 16.sp
+                        )
+                    }
+                }
+            }
+
+            if (filteredRows.isEmpty()) {
+                item {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 36.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Icon(
+                                imageVector = Icons.Default.Person,
+                                contentDescription = null,
+                                tint = ext.textMuted,
+                                modifier = Modifier.size(40.dp)
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text(
+                                text = "Bu filtreyle eşleşen kullanıcı bulunamadı.",
+                                fontSize = 13.sp,
+                                color = ext.textMuted
+                            )
+                        }
+                    }
+                }
+            }
+
+            itemsIndexed(
+                items = filteredRows,
+                key = { index, row -> "platform_user_${row.resolvedUid}_$index" }
+            ) { _, row ->
+                val user = row.profile
+                val displayName = user.getFullName().ifBlank { user.email.substringBefore("@").ifBlank { "Kullanıcı" } }
+                val (verLabel, verFg, verBg) = when (row.versionCompliance) {
+                    UserVersionCompliance.FORCE_UPDATE_REQUIRED -> Triple(
+                        "v${row.versionName.ifBlank { "?" }} • Zorunlu (${row.lagSteps} sürüm eski)",
+                        ext.dangerText,
+                        ext.dangerContainer
+                    )
+                    UserVersionCompliance.OUTDATED_OPTIONAL -> Triple(
+                        "v${row.versionName.ifBlank { "?" }} • Eski (${row.lagSteps} sürüm)",
+                        ext.amberText,
+                        ext.amberText.copy(alpha = 0.16f)
+                    )
+                    UserVersionCompliance.CURRENT -> Triple(
+                        if (row.versionCode > 0) "v${row.versionName} (${row.versionCode}) • Güncel" else "v${row.versionName} • Güncel",
+                        ext.emeraldText,
+                        ext.emeraldSolid.copy(alpha = 0.14f)
+                    )
+                    UserVersionCompliance.UNKNOWN -> Triple(
+                        "Sürüm Kaydı Yok",
+                        ext.textMuted,
+                        MaterialTheme.colorScheme.surfaceVariant
+                    )
+                }
+
+                val isPendingAccount = user.status.equals(UserStatus.PENDING.value, ignoreCase = true)
+                val isRevokedAccount = user.status.equals(UserStatus.REVOKED.value, ignoreCase = true)
+                val (accStatusText, accStatusColor) = when {
+                    isRevokedAccount -> "Askıda" to ext.dangerText
+                    isPendingAccount -> "Beklemede" to ext.amberText
+                    else -> "Aktif" to ext.emeraldText
+                }
+
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("admin_user_card_${row.resolvedUid}"),
+                    shape = RoundedCornerShape(14.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    border = BorderStroke(
+                        1.dp,
+                        if (row.versionCompliance == UserVersionCompliance.FORCE_UPDATE_REQUIRED) {
+                            ext.dangerText.copy(alpha = 0.45f)
+                        } else {
+                            ext.cardBorder
+                        }
+                    )
+                ) {
+                    Column(
+                        modifier = Modifier.padding(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Surface(
+                                shape = CircleShape,
+                                color = ext.accentBlueContainer,
+                                modifier = Modifier.size(40.dp)
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Text(
+                                        text = displayName.take(1).uppercase(),
+                                        fontSize = 15.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = ext.accentBlue
+                                    )
+                                }
+                            }
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = displayName,
+                                    fontSize = 14.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                if (user.username.isNotBlank()) {
+                                    Text(
+                                        text = "@${user.username}",
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = ext.accentBlue,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                                if (user.email.isNotBlank()) {
+                                    Text(
+                                        text = user.email,
+                                        fontSize = 11.sp,
+                                        color = ext.textMuted,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = accStatusColor.copy(alpha = 0.14f)
+                            ) {
+                                Text(
+                                    text = accStatusText,
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = accStatusColor,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                )
+                            }
+                        }
+
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = verBg
+                            ) {
+                                Text(
+                                    text = verLabel,
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = verFg,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                )
+                            }
+                        }
+
+                        if (row.teamSummaries.isEmpty()) {
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(
+                                    text = "Bağlı Olduğu Takım: Herhangi bir takımda değil",
+                                    fontSize = 11.sp,
+                                    color = ext.textMuted,
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp)
+                                )
+                            }
+                        } else {
+                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Text(
+                                    text = "Bağlı Olduğu Takımlar (${row.teamSummaries.size})",
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = ext.textSecondary
+                                )
+                                row.teamSummaries.forEach { (teamName, detail, membershipStatus) ->
+                                    Surface(
+                                        shape = RoundedCornerShape(8.dp),
+                                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.65f),
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(horizontal = 10.dp, vertical = 6.dp),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Column(
+                                                modifier = Modifier
+                                                    .weight(1f)
+                                                    .padding(end = 8.dp)
+                                            ) {
+                                                Text(
+                                                    text = teamName,
+                                                    fontSize = 12.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = MaterialTheme.colorScheme.onSurface,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                                Text(
+                                                    text = detail,
+                                                    fontSize = 10.sp,
+                                                    color = ext.textMuted,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                            }
+                                            Surface(
+                                                shape = RoundedCornerShape(6.dp),
+                                                color = when (membershipStatus) {
+                                                    "Aktif" -> ext.emeraldSolid.copy(alpha = 0.14f)
+                                                    "Askıda", "Reddedildi" -> ext.dangerContainer
+                                                    else -> ext.amberText.copy(alpha = 0.16f)
+                                                }
+                                            ) {
+                                                Text(
+                                                    text = membershipStatus,
+                                                    fontSize = 10.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = when (membershipStatus) {
+                                                        "Aktif" -> ext.emeraldText
+                                                        "Askıda", "Reddedildi" -> ext.dangerText
+                                                        else -> ext.amberText
+                                                    },
+                                                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }

@@ -757,4 +757,80 @@ class NotificationAndStabilityTest {
         assertEquals("Çözüldü", SupportTicketStatus.displayName(SupportTicketStatus.RESOLVED))
         assertEquals(SupportTicketStatus.OPEN, SupportTicketStatus.normalize("unknown"))
     }
+
+    @Test
+    fun `unread actionable manager approvals bypass join and baseline cutoffs without duplicating`() {
+        val now = 1_700_000_000_000L
+        val joinOrBaselineTs = now - 60_000L
+        val earlierPending = TeamNotification(
+            id = "pending_req_1",
+            teamId = "team_alpha",
+            recipientUserId = "managers",
+            type = "member_pending",
+            senderId = "applicant_1",
+            title = "Yeni Katılma İsteği",
+            message = "Katılmak istiyor",
+            createdAt = Timestamp(Date(joinOrBaselineTs - 3_600_000L))
+        )
+        val earlierAppeal = TeamNotification(
+            id = "appeal_req_1",
+            teamId = "team_alpha",
+            recipientUserId = "managers",
+            type = "member_appeal",
+            senderId = "suspended_1",
+            title = "Askıya Alma İtirazı",
+            message = "İtiraz gönderdi",
+            createdAt = Timestamp(Date(joinOrBaselineTs - 120_000L))
+        )
+        val regularChatBeforeJoin = TeamNotification(
+            id = "old_chat_1",
+            teamId = "team_alpha",
+            recipientUserId = "all",
+            type = "message",
+            targetRoomId = "general",
+            senderId = "other_member",
+            createdAt = Timestamp(Date(joinOrBaselineTs - 120_000L))
+        )
+
+        val firstSelection = TeamNotificationDispatcher.selectNotificationsToDispatch(
+            notifications = listOf(earlierPending, earlierAppeal, regularChatBeforeJoin),
+            userId = "new_manager",
+            hasSeededBaseline = true,
+            baselineTimestampMs = joinOrBaselineTs,
+            dispatchedIds = emptySet(),
+            userCreatedAtMs = joinOrBaselineTs,
+            nowMs = now
+        )
+        assertEquals(listOf("pending_req_1", "appeal_req_1"), firstSelection.toDispatch.map { it.id })
+
+        assertTrue(
+            shouldUserReceiveNotification(
+                notif = earlierPending,
+                userId = "new_manager",
+                membershipsByTeam = mapOf(
+                    "team_alpha" to com.example.model.TeamMembership(
+                        teamId = "team_alpha",
+                        userId = "new_manager",
+                        role = "Takım Kaptanı",
+                        roles = listOf("Takım Kaptanı"),
+                        status = com.example.model.UserStatus.ACTIVE.value,
+                        isTeamAdmin = true
+                    )
+                ),
+                isPlatformAdmin = false,
+                userCreatedAtMs = joinOrBaselineTs
+            )
+        )
+
+        val secondSelection = TeamNotificationDispatcher.selectNotificationsToDispatch(
+            notifications = listOf(earlierPending, earlierAppeal),
+            userId = "new_manager",
+            hasSeededBaseline = true,
+            baselineTimestampMs = joinOrBaselineTs,
+            dispatchedIds = setOf("pending_req_1", "appeal_req_1"),
+            userCreatedAtMs = joinOrBaselineTs,
+            nowMs = now + 5_000L
+        )
+        assertTrue("Already dispatched approvals must never repeat", secondSelection.toDispatch.isEmpty())
+    }
 }

@@ -199,7 +199,9 @@ fun RoomsScreen(
             TeamNotificationDispatcher.setActiveChatRoom(context, activeUid, null, activeTeamId)
         }
     }
-    val messages by repository.observeMessages(selectedRoomId, teamId = activeTeamId).collectAsState(initial = emptyList())
+    val messages by remember(selectedRoomId, activeTeamId) {
+        repository.observeMessages(selectedRoomId, teamId = activeTeamId)
+    }.collectAsState(initial = emptyList())
 
     // Message Input State
     var messageText by remember { mutableStateOf("") }

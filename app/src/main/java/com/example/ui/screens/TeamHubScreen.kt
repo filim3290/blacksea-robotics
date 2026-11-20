@@ -40,6 +40,7 @@ import androidx.compose.material.icons.filled.AdminPanelSettings
 import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.DeleteForever
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.EmojiEvents
 import androidx.compose.material.icons.filled.Gavel
@@ -72,9 +73,9 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.ScrollableTabRow
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Tab
-import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -116,6 +117,7 @@ import com.example.model.TeamNotification
 import com.example.model.TeamStatus
 import com.example.model.TeamType
 import com.example.model.UserProfile
+import com.example.model.computeTeamActiveMemberCounts
 import com.example.ui.TeamNotificationsDialog
 import com.example.ui.components.AdminSupportTab
 import com.example.ui.components.AppUpdatesCard
@@ -183,6 +185,9 @@ fun TeamHubScreen(
     var showEditProfileDialog by remember { mutableStateOf(false) }
     var isSavingProfile by remember { mutableStateOf(false) }
     var showSignOutConfirmation by remember { mutableStateOf(false) }
+    var showDeleteAccountStep1 by remember { mutableStateOf(false) }
+    var showDeleteAccountStep2 by remember { mutableStateOf(false) }
+    var isDeletingAccount by remember { mutableStateOf(false) }
     var showPlatformConsoleDialog by rememberSaveable { mutableStateOf(false) }
     var platformConsoleTabKey by rememberSaveable { mutableStateOf("applications") }
     var watchUpdatingTeamIds by remember { mutableStateOf<Set<String>>(emptySet()) }
@@ -212,10 +217,26 @@ fun TeamHubScreen(
         else flowOf(emptyList())
     }.collectAsState(initial = emptyList())
 
-    val liveMemberCountsForAdmin by remember(isPlatformAdmin) {
-        if (isPlatformAdmin) repository.observePlatformActiveMemberCounts()
-        else flowOf(null)
-    }.collectAsState(initial = null)
+    val allPlatformUsersForAdmin by remember(isPlatformAdmin) {
+        if (isPlatformAdmin) repository.observeAllUsers()
+        else flowOf(emptyList())
+    }.collectAsState(initial = emptyList())
+
+    val allTeamMembershipsForAdmin by remember(isPlatformAdmin) {
+        if (isPlatformAdmin) repository.observeAllTeamMembershipsForAdmin()
+        else flowOf(emptyList())
+    }.collectAsState(initial = emptyList())
+
+    val liveMemberCountsForAdmin = remember(isPlatformAdmin, allTeamMembershipsForAdmin, allPlatformUsersForAdmin) {
+        if (isPlatformAdmin) {
+            computeTeamActiveMemberCounts(
+                memberships = allTeamMembershipsForAdmin,
+                users = allPlatformUsersForAdmin
+            )
+        } else {
+            null
+        }
+    }
 
     val allSupportTicketsForAdmin by remember(isPlatformAdmin) {
         if (isPlatformAdmin) repository.observeAllSupportTickets(PLATFORM_MAIN_TEAM_ID)
@@ -604,6 +625,22 @@ fun TeamHubScreen(
                                             fontSize = 11.sp,
                                             fontWeight = FontWeight.Bold,
                                             color = if (pendingAppealsCountForAdmin > 0) ext.dangerText else ext.accentBlue,
+                                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                                        )
+                                    }
+                                    Surface(
+                                        shape = RoundedCornerShape(8.dp),
+                                        color = ext.accentBlueContainer,
+                                        modifier = Modifier.clickable {
+                                            platformConsoleTabKey = "users"
+                                            showPlatformConsoleDialog = true
+                                        }
+                                    ) {
+                                        Text(
+                                            text = "Kullanıcılar (${allPlatformUsersForAdmin.size})",
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = ext.accentBlue,
                                             modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
                                         )
                                     }
@@ -1088,7 +1125,8 @@ fun TeamHubScreen(
             Surface(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 24.dp)
+                    .navigationBarsPadding()
+                    .padding(horizontal = 16.dp, vertical = 20.dp)
                     .widthIn(max = 540.dp)
                     .imePadding()
                     .testTag("team_hub_account_dialog"),
@@ -1245,6 +1283,32 @@ fun TeamHubScreen(
                         Spacer(modifier = Modifier.width(8.dp))
                         Text("Oturumu Kapat", fontWeight = FontWeight.Bold)
                     }
+
+                    TextButton(
+                        onClick = {
+                            showAccountSheet = false
+                            showDeleteAccountStep1 = true
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 48.dp)
+                            .testTag("team_hub_delete_account_button"),
+                        colors = ButtonDefaults.textButtonColors(contentColor = ext.dangerText)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.DeleteForever,
+                            contentDescription = null,
+                            tint = ext.dangerText,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "Hesabımı Kalıcı Olarak Sil",
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = ext.dangerText
+                        )
+                    }
                 }
             }
         }
@@ -1317,6 +1381,122 @@ fun TeamHubScreen(
             },
             dismissButton = {
                 TextButton(onClick = { showSignOutConfirmation = false }) {
+                    Text("İptal")
+                }
+            }
+        )
+    }
+
+    if (showDeleteAccountStep1) {
+        AlertDialog(
+            onDismissRequest = { showDeleteAccountStep1 = false },
+            icon = {
+                Icon(
+                    imageVector = Icons.Default.DeleteForever,
+                    contentDescription = null,
+                    tint = ext.dangerText,
+                    modifier = Modifier.size(32.dp)
+                )
+            },
+            title = {
+                Text("Hesabınızı Silmek İstiyor musunuz?", fontWeight = FontWeight.Bold)
+            },
+            text = {
+                Text(
+                    "Hesabınız ve tüm takım üyelikleriniz sistemden silinecektir. Yanlışlıkla silmeyi önlemek için bir sonraki adımda tekrar onayınız istenecektir.",
+                    color = ext.textSecondary,
+                    fontSize = 13.sp,
+                    lineHeight = 19.sp
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showDeleteAccountStep1 = false
+                        showDeleteAccountStep2 = true
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = ext.dangerSolid,
+                        contentColor = Color.White
+                    ),
+                    modifier = Modifier.testTag("team_hub_delete_account_step1_confirm")
+                ) {
+                    Text("Devam Et", fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteAccountStep1 = false }) {
+                    Text("Vazgeç")
+                }
+            }
+        )
+    }
+
+    if (showDeleteAccountStep2) {
+        AlertDialog(
+            onDismissRequest = { if (!isDeletingAccount) showDeleteAccountStep2 = false },
+            icon = {
+                Icon(
+                    imageVector = Icons.Default.DeleteForever,
+                    contentDescription = null,
+                    tint = ext.dangerText,
+                    modifier = Modifier.size(34.dp)
+                )
+            },
+            title = {
+                Text(
+                    "Son Onay: Hesap Kalıcı Olarak Silinecek",
+                    fontWeight = FontWeight.Bold,
+                    color = ext.dangerText
+                )
+            },
+            text = {
+                Text(
+                    "Bu işlem geri alınamaz! Onayladığınızda platform hesabınız kalıcı olarak silinecek ve oturumunuz kapatılacaktır. Emin misiniz?",
+                    color = ext.textSecondary,
+                    fontSize = 13.sp,
+                    lineHeight = 19.sp
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        isDeletingAccount = true
+                        scope.launch {
+                            try {
+                                repository.deleteOwnAccount()
+                                showDeleteAccountStep2 = false
+                                Toast.makeText(context, "Hesabınız kalıcı olarak silindi.", Toast.LENGTH_LONG).show()
+                                onAccountDeleted()
+                            } catch (ce: CancellationException) {
+                                throw ce
+                            } catch (e: Exception) {
+                                Toast.makeText(
+                                    context,
+                                    sanitizeUserErrorMessage(e, "Hesap silinemedi."),
+                                    Toast.LENGTH_LONG
+                                ).show()
+                            } finally {
+                                isDeletingAccount = false
+                            }
+                        }
+                    },
+                    enabled = !isDeletingAccount,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = ext.dangerSolid,
+                        contentColor = Color.White
+                    ),
+                    modifier = Modifier.testTag("team_hub_delete_account_step2_confirm")
+                ) {
+                    if (isDeletingAccount) {
+                        CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.White, strokeWidth = 2.dp)
+                    } else {
+                        Text("Evet, Hesabımı Sil", fontWeight = FontWeight.Bold)
+                    }
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteAccountStep2 = false }, enabled = !isDeletingAccount) {
                     Text("İptal")
                 }
             }
@@ -1445,7 +1625,10 @@ fun TeamHubScreen(
             onSelectTab = { platformConsoleTabKey = it },
             pendingApplications = pendingTeamApplicationsForAdmin,
             allTeams = allPlatformTeamsForAdmin,
+            allUsers = allPlatformUsersForAdmin,
+            allMemberships = allTeamMembershipsForAdmin,
             liveMemberCounts = liveMemberCountsForAdmin,
+            latestRelease = availableUpdate,
             supportTickets = allSupportTicketsForAdmin,
             openSupportCount = openSupportCountForAdmin,
             currentUserProfile = currentUserProfile,
@@ -2194,7 +2377,10 @@ private fun PlatformDeveloperConsoleDialog(
     onSelectTab: (String) -> Unit,
     pendingApplications: List<TeamInfo>,
     allTeams: List<TeamInfo>,
+    allUsers: List<UserProfile> = emptyList(),
+    allMemberships: List<TeamMembership> = emptyList(),
     liveMemberCounts: Map<String, Int>? = null,
+    latestRelease: AppReleaseInfo? = null,
     supportTickets: List<SupportTicket>,
     openSupportCount: Int,
     currentUserProfile: UserProfile?,
@@ -2207,6 +2393,7 @@ private fun PlatformDeveloperConsoleDialog(
         listOf(
             "applications" to "Başvurular",
             "teams" to "Takımlar",
+            "users" to "Kullanıcılar",
             "support" to "Destek"
         )
     }
@@ -2302,14 +2489,16 @@ private fun PlatformDeveloperConsoleDialog(
                         }
 
                         val activeTabIdx = pagerState.currentPage.coerceIn(0, (tabs.size - 1).coerceAtLeast(0))
-                        TabRow(
+                        ScrollableTabRow(
                             selectedTabIndex = activeTabIdx,
+                            edgePadding = 12.dp,
                             containerColor = MaterialTheme.colorScheme.surface
                         ) {
                             tabs.forEachIndexed { index, (key, title) ->
                                 val count = when (key) {
                                     "applications" -> pendingApplications.size
                                     "teams" -> allTeams.size
+                                    "users" -> allUsers.size
                                     else -> openSupportCount
                                 }
                                 Tab(
@@ -2324,7 +2513,7 @@ private fun PlatformDeveloperConsoleDialog(
                                     },
                                     text = {
                                         Text(
-                                            text = if (count > 0 || key == "teams") "$title ($count)" else title,
+                                            text = if (count > 0 || key == "teams" || key == "users") "$title ($count)" else title,
                                             fontSize = 12.sp,
                                             fontWeight = if (activeTabIdx == index) FontWeight.Bold else FontWeight.Medium,
                                             color = if (activeTabIdx == index) ext.accentBlue else ext.textMuted,
@@ -2354,6 +2543,12 @@ private fun PlatformDeveloperConsoleDialog(
                             teams = allTeams,
                             liveMemberCounts = liveMemberCounts,
                             repository = repository
+                        )
+                        "users" -> AllPlatformUsersTab(
+                            users = allUsers,
+                            allMemberships = allMemberships,
+                            allTeams = allTeams,
+                            latestRelease = latestRelease
                         )
                         else -> AdminSupportTab(
                             tickets = supportTickets,

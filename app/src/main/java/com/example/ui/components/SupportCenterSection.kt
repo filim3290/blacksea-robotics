@@ -17,8 +17,11 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
@@ -78,6 +81,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -163,13 +167,15 @@ fun SupportCenterButtonCard(
                         text = "Yardım & Destek Merkezi",
                         fontSize = 15.sp,
                         fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onSurface
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                     Text(
                         text = "Hazır çözümler, SSS ve BlackSea Robotics destek formu",
                         fontSize = 11.sp,
                         color = ext.textMuted,
-                        maxLines = 1,
+                        maxLines = 2,
                         overflow = TextOverflow.Ellipsis
                     )
                 }
@@ -212,7 +218,10 @@ fun SupportCenterButtonCard(
                 modifier = Modifier
                     .fillMaxWidth(0.94f)
                     .widthIn(max = 560.dp)
-                    .heightIn(max = 680.dp)
+                    .statusBarsPadding()
+                    .navigationBarsPadding()
+                    .imePadding()
+                    .padding(vertical = 12.dp)
                     .testTag("support_center_modal"),
                 shape = RoundedCornerShape(22.dp),
                 color = MaterialTheme.colorScheme.background,
@@ -230,7 +239,8 @@ fun SupportCenterButtonCard(
                     ) {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.weight(1f)
                         ) {
                             Icon(
                                 imageVector = Icons.Default.SupportAgent,
@@ -242,7 +252,9 @@ fun SupportCenterButtonCard(
                                 text = "Yardım & Destek Merkezi",
                                 fontSize = 17.sp,
                                 fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.onSurface
+                                color = MaterialTheme.colorScheme.onSurface,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
                         }
                         IconButton(
@@ -261,9 +273,10 @@ fun SupportCenterButtonCard(
 
                     Column(
                         modifier = Modifier
+                            .weight(1f, fill = false)
                             .fillMaxWidth()
                             .verticalScroll(rememberScrollState())
-                            .padding(14.dp)
+                            .padding(start = 14.dp, end = 14.dp, top = 14.dp, bottom = 20.dp)
                     ) {
                         HelpAndSupportCenterCard(
                             currentUserProfile = currentUserProfile,
@@ -536,6 +549,7 @@ fun HelpAndSupportCenterCard(
                         .heightIn(min = 48.dp)
                         .testTag("open_support_ticket_form_button"),
                     shape = RoundedCornerShape(12.dp),
+                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
                     colors = ButtonDefaults.buttonColors(
                         containerColor = ext.accentBlueSolid,
                         contentColor = Color.White
@@ -543,7 +557,14 @@ fun HelpAndSupportCenterCard(
                 ) {
                     Icon(imageVector = Icons.AutoMirrored.Filled.Send, contentDescription = null, modifier = Modifier.size(16.dp))
                     Spacer(modifier = Modifier.width(8.dp))
-                    Text("BlackSea Yönetimine Destek Talebi Gönder", fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                    Text(
+                        text = "BlackSea Yönetimine Destek Talebi Gönder",
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Bold,
+                        textAlign = TextAlign.Center,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
                 }
             }
 
@@ -847,16 +868,21 @@ fun SupportTicketSummaryCard(
             ) {
                 Surface(
                     shape = RoundedCornerShape(6.dp),
-                    color = ext.accentBlueContainer
+                    color = ext.accentBlueContainer,
+                    modifier = Modifier.weight(1f, fill = false)
                 ) {
                     Text(
                         text = ticket.category,
                         fontSize = 10.sp,
                         fontWeight = FontWeight.Bold,
                         color = ext.accentBlue,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
                     )
                 }
+
+                Spacer(modifier = Modifier.width(8.dp))
 
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
@@ -865,7 +891,8 @@ fun SupportTicketSummaryCard(
                     Text(
                         text = dateLabel,
                         fontSize = 10.sp,
-                        color = ext.textMuted
+                        color = ext.textMuted,
+                        maxLines = 1
                     )
                     Surface(
                         shape = RoundedCornerShape(6.dp),
@@ -876,6 +903,7 @@ fun SupportTicketSummaryCard(
                             fontSize = 10.sp,
                             fontWeight = FontWeight.Bold,
                             color = statusFg,
+                            maxLines = 1,
                             modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
                         )
                     }
@@ -1141,8 +1169,9 @@ fun AdminSupportTab(
             LazyColumn(
                 modifier = Modifier
                     .fillMaxSize()
+                    .navigationBarsPadding()
                     .padding(horizontal = 16.dp),
-                contentPadding = PaddingValues(bottom = 20.dp),
+                contentPadding = PaddingValues(top = 4.dp, bottom = 28.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 itemsIndexed(

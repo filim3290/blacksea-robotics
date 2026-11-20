@@ -286,6 +286,19 @@ object TeamNotificationDispatcher {
         }
     }
 
+    private val ACTIONABLE_APPROVAL_TYPES = setOf(
+        "member_pending",
+        "member_appeal",
+        "team_application_pending",
+        "team_appeal",
+        "support_ticket"
+    )
+
+    private fun isActionableApprovalNotification(notif: TeamNotification): Boolean {
+        return notif.type.trim().lowercase() in ACTIONABLE_APPROVAL_TYPES ||
+            notif.recipientUserId in setOf("managers", "platform_admins")
+    }
+
     /**
      * Pure deterministic selector that separates initial backlog seeding (on first open / login)
      * from genuine newly occurred events. Never emits historical backlog notifications when the
@@ -318,6 +331,7 @@ object TeamNotificationDispatcher {
             0L
         }
         val effectiveJoinFloorMs = if (userCreatedAtMs > 0L) (userCreatedAtMs - 5_000L).coerceAtLeast(0L) else 0L
+        val approvalLookbackFloorMs = (nowMs - 7L * 24L * 60L * 60_000L).coerceAtLeast(0L)
         val candidates = validItems.filter { notif ->
             val alreadyDispatched = dispatchedIds.contains(notif.id)
             val alreadyRead = notif.isReadBy(userId)
@@ -325,8 +339,13 @@ object TeamNotificationDispatcher {
                 ((notif.senderId.isNotBlank() && notif.senderId == userId) ||
                     (notif.type.equals("new_member", ignoreCase = true) && notif.targetId == userId))
             val createdMs = notif.createdAt?.toDate()?.time
-            val withinTimeWindow = minAllowedTimestampMs == 0L || createdMs == null || createdMs >= minAllowedTimestampMs
-            val afterUserJoined = notif.recipientUserId == userId ||
+            val isApproval = isActionableApprovalNotification(notif)
+            val withinTimeWindow = minAllowedTimestampMs == 0L ||
+                createdMs == null ||
+                createdMs >= minAllowedTimestampMs ||
+                (isApproval && createdMs >= approvalLookbackFloorMs)
+            val afterUserJoined = isApproval ||
+                notif.recipientUserId == userId ||
                 effectiveJoinFloorMs == 0L ||
                 createdMs == null ||
                 createdMs >= effectiveJoinFloorMs

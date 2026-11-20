@@ -299,9 +299,16 @@ data class TeamMembership(
 
     fun isManagerInTeam(): Boolean {
         if (!isActive()) return false
-        return isTeamAdmin ||
-            role in listOf("Yönetici", "Takım Kaptanı", "Yetkili Öğretmen") ||
-            roles.any { it in listOf("Yönetici", "Takım Kaptanı", "Yetkili Öğretmen") }
+        if (isTeamAdmin) return true
+        val trLocale = java.util.Locale.forLanguageTag("tr-TR")
+        val normalizedManagementRoles = setOf(
+            "yönetici", "yonetici",
+            "takım kaptanı", "takim kaptani",
+            "yetkili öğretmen", "yetkili ogretmen"
+        )
+        val normalizedPrimary = role.trim().lowercase(trLocale)
+        if (normalizedPrimary in normalizedManagementRoles) return true
+        return roles.any { it.trim().lowercase(trLocale) in normalizedManagementRoles }
     }
 }
 
@@ -371,6 +378,8 @@ data class UserProfile(
     @get:PropertyName("isPlatformAdmin") @field:PropertyName("isPlatformAdmin")
     val isPlatformAdmin: Boolean = false,
     val activeTeamId: String = "",
+    val appVersionName: String = "",
+    val appVersionCode: Int = 0,
     @get:Exclude @field:Exclude
     val isTeamContextApplied: Boolean = false,
     @ServerTimestamp val createdAt: Timestamp? = null,

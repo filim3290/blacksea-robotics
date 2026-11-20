@@ -134,11 +134,14 @@ fun AdminScreen(
         repository.observeTeamMemberships(activeTeamId)
     }.collectAsState(initial = null)
     val teamMemberships = teamMembershipsState.orEmpty()
-    val announcements by repository.observeAnnouncements(activeTeamId).collectAsState(initial = emptyList())
+    val announcements by remember(activeTeamId) {
+        repository.observeAnnouncements(activeTeamId)
+    }.collectAsState(initial = emptyList())
 
-    val pendingMembers = teamMemberships.filter { it.isPending() }
-    val approvedMembers = teamMemberships.filter { it.isActive() }
-    val restrictedMembers = teamMemberships.filter { it.isRevoked() || it.isRejected() }
+    val pendingMembers = remember(teamMemberships) { teamMemberships.filter { it.isPending() } }
+    val approvedMembers = remember(teamMemberships) { teamMemberships.filter { it.isActive() } }
+    val restrictedMembers = remember(teamMemberships) { teamMemberships.filter { it.isRevoked() || it.isRejected() } }
+    val activeManagerCount = remember(approvedMembers) { approvedMembers.count { it.isManagerInTeam() } }
     val currentUid = currentUserProfile?.userId?.ifBlank { currentUserProfile.id }.orEmpty()
 
     LaunchedEffect(activeTeamId, teamMembershipsState) {
@@ -192,6 +195,7 @@ fun AdminScreen(
     var memberToEdit by remember { mutableStateOf<TeamMembership?>(null) }
     var memberToRevoke by remember { mutableStateOf<TeamMembership?>(null) }
     var memberToRemove by remember { mutableStateOf<TeamMembership?>(null) }
+    var showStepDownConfirm by remember { mutableStateOf(false) }
     var announcementToDelete by remember { mutableStateOf<TeamAnnouncement?>(null) }
     var isPerformingUserAction by remember { mutableStateOf(false) }
     var showNewAnnouncementDialog by remember { mutableStateOf(false) }
@@ -436,7 +440,36 @@ fun AdminScreen(
                                             Spacer(modifier = Modifier.width(5.dp))
                                             Text("Çıkar", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = ext.dangerText)
                                         }
+                                    } else if (currentUid.isNotBlank() && member.userId == currentUid && member.isManagerInTeam()) {
+                                        if (activeManagerCount >= 2) {
+                                            OutlinedButton(
+                                                onClick = { showStepDownConfirm = true },
+                                                shape = RoundedCornerShape(8.dp),
+                                                border = BorderStroke(1.dp, ext.amberText.copy(alpha = 0.55f)),
+                                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                                                modifier = Modifier
+                                                    .heightIn(min = 48.dp)
+                                                    .testTag("step_down_manager_button")
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Default.Block,
+                                                    contentDescription = "Yetkili Olmayı Bırak",
+                                                    tint = ext.amberText,
+                                                    modifier = Modifier.size(15.dp)
+                                                )
+                                                Spacer(modifier = Modifier.width(5.dp))
+                                                Text("Yetkili Olmayı Bırak", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = ext.amberText)
+                                            }
+                                        }
                                     }
+                                }
+                                if (currentUid.isNotBlank() && member.userId == currentUid && member.isManagerInTeam() && activeManagerCount < 2) {
+                                    Text(
+                                        text = "Takımda en az 1 yetkili bulunmalıdır; yetkili olmaktan çıkabilmek için önce başka bir üyeye yetki verin.",
+                                        fontSize = 11.sp,
+                                        color = ext.textMuted,
+                                        lineHeight = 16.sp
+                                    )
                                 }
                             }
                         }
@@ -968,6 +1001,7 @@ fun AdminScreen(
         EditMemberRolesDialog(
             member = member,
             isPlatformAdmin = isPlatformAdmin,
+            isLastActiveManager = member.isManagerInTeam() && activeManagerCount <= 1,
             onDismiss = { memberToEdit = null },
             onSave = { newSubTeam, updatedRoles ->
                 scope.launch {
@@ -984,6 +1018,61 @@ fun AdminScreen(
                     } else {
                         Toast.makeText(context, sanitizeUserErrorMessage(res.exceptionOrNull()), Toast.LENGTH_SHORT).show()
                     }
+                }
+            }
+        )
+    }
+
+    if (showStepDownConfirm) {
+        AlertDialog(
+            onDismissRequest = { if (!isPerformingUserAction) showStepDownConfirm = false },
+            title = { Text("Yetkili Olmayı Bırak", fontWeight = FontWeight.Bold) },
+            text = {
+                Text(
+                    "${activeTeam.name} takımında en az bir diğer aktif yetkili bulunduğu için yöneticilik/öğretmen yetkilerinizi devredip standart takım üyesi olarak devam edebilirsiniz. Onaylıyor musunuz?",
+                    color = ext.textSecondary,
+                    fontSize = 13.sp,
+                    lineHeight = 19.sp
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        isPerformingUserAction = true
+                        scope.launch {
+                            try {
+                                val res = repository.stepDownAsManager(activeTeam)
+                                if (res.isSuccess) {
+                                    showStepDownConfirm = false
+                                    Toast.makeText(context, "Yetkili görevinden ayrıldınız. Artık takım üyesi olarak devam ediyorsunuz.", Toast.LENGTH_LONG).show()
+                                } else {
+                                    Toast.makeText(
+                                        context,
+                                        sanitizeUserErrorMessage(res.exceptionOrNull(), "İşlem tamamlanamadı."),
+                                        Toast.LENGTH_LONG
+                                    ).show()
+                                }
+                            } catch (ce: CancellationException) {
+                                throw ce
+                            } finally {
+                                isPerformingUserAction = false
+                            }
+                        }
+                    },
+                    enabled = !isPerformingUserAction,
+                    colors = ButtonDefaults.buttonColors(containerColor = ext.amberText, contentColor = Color.White),
+                    modifier = Modifier.testTag("confirm_step_down_manager_button")
+                ) {
+                    if (isPerformingUserAction) {
+                        CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.White, strokeWidth = 2.dp)
+                    } else {
+                        Text("Evet, Yetkiyi Bırak", fontWeight = FontWeight.Bold)
+                    }
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showStepDownConfirm = false }, enabled = !isPerformingUserAction) {
+                    Text("Vazgeç")
                 }
             }
         )
@@ -1190,6 +1279,7 @@ fun AdminScreen(
 fun EditMemberRolesDialog(
     member: TeamMembership,
     isPlatformAdmin: Boolean = false,
+    isLastActiveManager: Boolean = false,
     onDismiss: () -> Unit,
     onSave: (newTeam: String, updatedRoles: List<String>) -> Unit
 ) {
@@ -1341,7 +1431,24 @@ fun EditMemberRolesDialog(
         },
         confirmButton = {
             Button(
-                onClick = { onSave(selectedTeam, currentRoles.ifEmpty { listOf(PredefinedRoles.getDefaultTeamRole(selectedTeam)) }) },
+                onClick = {
+                    val finalRoles = currentRoles.ifEmpty { listOf(PredefinedRoles.getDefaultTeamRole(selectedTeam)) }
+                    val keepsManagementRole = finalRoles.any {
+                        val lower = it.trim().lowercase(java.util.Locale.forLanguageTag("tr-TR"))
+                        lower.contains("yönetici") || lower.contains("yonetici") ||
+                            lower.contains("kaptan") || lower.contains("yetkili öğretmen") ||
+                            lower.contains("yetkili ogretmen")
+                    }
+                    if (isLastActiveManager && !keepsManagementRole) {
+                        Toast.makeText(
+                            context,
+                            "Takımdaki tek aktif yetkili düşürülemez. Önce başka bir üyeye yetki verin.",
+                            Toast.LENGTH_LONG
+                        ).show()
+                    } else {
+                        onSave(selectedTeam, finalRoles)
+                    }
+                },
                 colors = ButtonDefaults.buttonColors(containerColor = ext.accentBlueSolid, contentColor = Color.White)
             ) {
                 Text("Kaydet")

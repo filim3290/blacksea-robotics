@@ -633,4 +633,43 @@ class MultiTeamArchitectureTest {
         assertEquals(2, afterRemoval[PLATFORM_MAIN_TEAM_ID])
         assertEquals(1, afterRemoval["team_fatsa"])
     }
+
+    @Test
+    fun `TeamMembership normalizes manager roles and UserProfile stores app version metadata`() {
+        val asciiTeacher = TeamMembership(
+            teamId = "t_1",
+            userId = "u_1",
+            role = "yetkili ogretmen",
+            roles = emptyList(),
+            status = UserStatus.ACTIVE.value
+        )
+        val asciiCaptain = TeamMembership(
+            teamId = "t_1",
+            userId = "u_2",
+            role = "Takim Kaptani",
+            roles = listOf("takim kaptani"),
+            status = UserStatus.ACTIVE.value
+        )
+        val regularMember = TeamMembership(
+            teamId = "t_1",
+            userId = "u_3",
+            role = "Yazılım Üyesi",
+            roles = listOf("Yazılım Üyesi"),
+            status = UserStatus.ACTIVE.value,
+            isTeamAdmin = false
+        )
+
+        assertTrue(asciiTeacher.isManagerInTeam())
+        assertTrue(asciiCaptain.isManagerInTeam())
+        assertFalse(regularMember.isManagerInTeam())
+
+        val userWithVersion = UserProfile(
+            id = "u_1",
+            userId = "u_1",
+            appVersionName = "1.0.12",
+            appVersionCode = 13
+        )
+        assertEquals("1.0.12", userWithVersion.appVersionName)
+        assertEquals(13, userWithVersion.appVersionCode)
+    }
 }

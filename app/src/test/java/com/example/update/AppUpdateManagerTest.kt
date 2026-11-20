@@ -399,4 +399,56 @@ class AppUpdateManagerTest {
         assertFalse(mgr.isNotificationUpdateObsolete(type = "update", targetId = "update_v1.2.0", message = "v1.2.0 yayında", currentName = "1.1.0"))
         assertFalse(mgr.isNotificationUpdateObsolete(type = "message", targetId = "update_v1.0.12", message = "v1.0.12", currentName = "1.1.0"))
     }
+
+    @Test
+    fun `enforces mandatory force update when client is 6 or more versions behind`() {
+        val mgr = AppUpdateManager(context)
+        val v1112 = AppReleaseInfo(
+            tagName = "v1.1.12",
+            versionName = "1.1.12",
+            versionCode = 26,
+            title = "Blacksea Robotics v1.1.12",
+            changelog = "Major stability release",
+            publishedAt = "2026-11-20T00:00:00Z",
+            apkDownloadUrl = "https://github.com/filim3290/blacksea-robotics/releases/download/v1.1.12/BlackseaRobotics-v1.1.12.apk",
+            apkFileName = "BlackseaRobotics-v1.1.12.apk",
+            apkSize = 22_000_000L,
+            isForceUpdate = false
+        )
+
+        // 1.1.6 is 6 releases behind 1.1.12 -> FORCE UPDATE
+        assertEquals(6, AppUpdateManager.calculateVersionLagSteps("1.1.12", 26, "1.1.6", 20))
+        val eval116 = mgr.evaluateReleaseComparison(v1112, currentCode = 20, currentName = "1.1.6")
+        assertTrue(eval116 is UpdateCheckResult.UpdateAvailable && eval116.release.isForceUpdate)
+
+        // 1.0.12 is 13 releases behind 1.1.12 -> FORCE UPDATE
+        assertEquals(13, AppUpdateManager.calculateVersionLagSteps("1.1.12", 26, "1.0.12", 13))
+        val eval1012 = mgr.evaluateReleaseComparison(v1112, currentCode = 13, currentName = "1.0.12")
+        assertTrue(eval1012 is UpdateCheckResult.UpdateAvailable && eval1012.release.isForceUpdate)
+
+        // 1.1.7 is 5 releases behind 1.1.12 -> OPTIONAL update
+        assertEquals(5, AppUpdateManager.calculateVersionLagSteps("1.1.12", 26, "1.1.7", 21))
+        val eval117 = mgr.evaluateReleaseComparison(v1112, currentCode = 21, currentName = "1.1.7")
+        assertTrue(eval117 is UpdateCheckResult.UpdateAvailable && !eval117.release.isForceUpdate)
+
+        // 1.1.0 is only 1 step ahead of 1.0.12 -> OPTIONAL update
+        assertEquals(1, AppUpdateManager.calculateVersionLagSteps("1.1.0", 14, "1.0.12", 13))
+        assertFalse(
+            AppUpdateManager.isVersionForceUpdateRequired(
+                release = v1112.copy(versionName = "1.1.0", versionCode = 14),
+                currentCode = 13,
+                currentName = "1.0.12"
+            )
+        )
+
+        // minSupportedVersionName also forces update even if lag < 6
+        assertTrue(
+            AppUpdateManager.isVersionForceUpdateRequired(
+                release = v1112,
+                currentCode = 24,
+                currentName = "1.1.10",
+                minSupportedVersionName = "1.1.11"
+            )
+        )
+    }
 }

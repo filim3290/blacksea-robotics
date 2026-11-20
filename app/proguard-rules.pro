@@ -16,6 +16,18 @@
 # debugging stack traces.
 #-keepattributes SourceFile,LineNumberTable
 
-# If you keep the line number information, uncomment this to
-# hide the original source file name.
-#-renamesourcefileattribute SourceFile
+# Keep Firestore POJO models & serialization fields intact during R8 shrinking
+-keep class com.example.model.** { *; }
+-keepclassmembers class com.example.model.** { *; }
+-keep class com.example.update.AppReleaseInfo { *; }
+-keepattributes *Annotation*,Signature,InnerClasses,EnclosingMethod
+-keep @androidx.annotation.Keep class * { *; }
+-keepclassmembers class * {
+    @androidx.annotation.Keep *;
+}
+-keepnames class com.google.firebase.firestore.** { *; }
+-dontwarn okhttp3.**
+-dontwarn okio.**
+-dontwarn javax.annotation.**
+-dontwarn org.conscrypt.**
+

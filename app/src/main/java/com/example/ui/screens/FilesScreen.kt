@@ -106,7 +106,9 @@ fun FilesScreen(
         chipRowState.animateScrollToItem(pagerState.currentPage)
     }
 
-    val files by repository.observeSharedFiles(teamId = activeTeamId).collectAsState(initial = emptyList())
+    val files by remember(activeTeamId) {
+        repository.observeSharedFiles(teamId = activeTeamId)
+    }.collectAsState(initial = emptyList())
 
     // File Preview Modal & Delete Confirmation
     var activePreviewFile by remember { mutableStateOf<SharedProjectFile?>(null) }

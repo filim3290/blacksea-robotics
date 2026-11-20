@@ -148,10 +148,12 @@ fun IdeasScreen(
         chipRowState.animateScrollToItem(pagerState.currentPage)
     }
 
-    val allIdeas by repository.observeIdeas(
-        roomId = null,
-        teamId = activeTeamId
-    ).collectAsState(initial = emptyList())
+    val allIdeas by remember(activeTeamId) {
+        repository.observeIdeas(
+            roomId = null,
+            teamId = activeTeamId
+        )
+    }.collectAsState(initial = emptyList())
 
     // Dialog state
     var showCreateDialog by remember { mutableStateOf(false) }
@@ -1004,7 +1006,9 @@ fun IdeaCommentsBottomSheet(
     onDismiss: () -> Unit
 ) {
     val scope = rememberCoroutineScope()
-    val comments by repository.observeIdeaComments(idea.id, teamId = activeTeamId).collectAsState(initial = emptyList())
+    val comments by remember(idea.id, activeTeamId) {
+        repository.observeIdeaComments(idea.id, teamId = activeTeamId)
+    }.collectAsState(initial = emptyList())
     var commentText by remember { mutableStateOf("") }
     var commentToDelete by remember { mutableStateOf<com.example.model.IdeaComment?>(null) }
     val sheetState = rememberModalBottomSheetState()

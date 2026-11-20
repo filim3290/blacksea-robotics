@@ -106,16 +106,30 @@ fun HomeScreen(
     val scope = rememberCoroutineScope()
     val activeTeamId = activeTeam.id.ifBlank { PLATFORM_MAIN_TEAM_ID }
 
-    val announcements by repository.observeAnnouncements(activeTeamId).collectAsState(initial = emptyList())
-    val rooms by repository.observeRooms(activeTeamId).collectAsState(initial = emptyList())
-    val ideas by repository.observeIdeas(teamId = activeTeamId).collectAsState(initial = emptyList())
-    val files by repository.observeSharedFiles(teamId = activeTeamId).collectAsState(initial = emptyList())
-    val teamMemberships by repository.observeTeamMemberships(activeTeamId).collectAsState(initial = emptyList())
+    val announcements by remember(activeTeamId) {
+        repository.observeAnnouncements(activeTeamId)
+    }.collectAsState(initial = emptyList())
+    val rooms by remember(activeTeamId) {
+        repository.observeRooms(activeTeamId)
+    }.collectAsState(initial = emptyList())
+    val ideas by remember(activeTeamId) {
+        repository.observeIdeas(teamId = activeTeamId)
+    }.collectAsState(initial = emptyList())
+    val files by remember(activeTeamId) {
+        repository.observeSharedFiles(teamId = activeTeamId)
+    }.collectAsState(initial = emptyList())
+    val teamMemberships by remember(activeTeamId) {
+        repository.observeTeamMemberships(activeTeamId)
+    }.collectAsState(initial = emptyList())
     val approvedMembers = remember(teamMemberships) {
         teamMemberships.filter { it.isActive() }
     }
-    val activities by repository.observeTeamActivity(activeTeamId).collectAsState(initial = emptyList())
-    val tasks by repository.observeTeamTasks(activeTeamId).collectAsState(initial = emptyList())
+    val activities by remember(activeTeamId) {
+        repository.observeTeamActivity(activeTeamId)
+    }.collectAsState(initial = emptyList())
+    val tasks by remember(activeTeamId) {
+        repository.observeTeamTasks(activeTeamId)
+    }.collectAsState(initial = emptyList())
 
     val ext = MaterialTheme.blackseaColors
     val isAdmin = currentUserProfile?.isManagerAccount() == true

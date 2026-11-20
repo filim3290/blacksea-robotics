@@ -89,6 +89,86 @@ class AppUpdateManager(private val context: Context) {
         private val LEGACY_REPOS = setOf("filmi3290", "blacksearobotics", "blacksea_robotics")
         private const val MIN_VALID_APK_BYTES = 200L * 1024L // 200 KB minimum sanity check
         const val AI_STUDIO_DEBUG_CERT_SHA256 = "5371103212da06ed36fe2d071cd18613e3296dcff6cf66f581020bc763904e88"
+        const val FORCE_UPDATE_MAX_VERSION_LAG = 6
+
+        fun hasNumericSemver(version: String): Boolean {
+            return Regex("""\d+(?:\.\d+)+""").containsMatchIn(version.trim())
+        }
+
+        fun compareSemver(candidate: String, current: String): Int {
+            val p1 = candidate.trim().removePrefix("v").removePrefix("V").split(".").map { it.toIntOrNull() ?: 0 }
+            val p2 = current.trim().removePrefix("v").removePrefix("V").split(".").map { it.toIntOrNull() ?: 0 }
+            val maxLen = maxOf(p1.size, p2.size)
+            for (i in 0 until maxLen) {
+                val a = p1.getOrElse(i) { 0 }
+                val b = p2.getOrElse(i) { 0 }
+                if (a != b) return a.compareTo(b)
+            }
+            return 0
+        }
+
+        /**
+         * Calculates how many release steps [currentName]/[currentCode] is behind [latestName]/[latestCode].
+         * Supports the project's 12-rollover minor progression (e.g. 1.0.12 -> 1.1.0 is 1 step;
+         * 1.1.6 -> 1.1.12 is 6 steps).
+         */
+        fun calculateVersionLagSteps(
+            latestName: String,
+            latestCode: Int,
+            currentName: String,
+            currentCode: Int
+        ): Int {
+            if (hasNumericSemver(latestName) && hasNumericSemver(currentName)) {
+                val cmp = compareSemver(latestName, currentName)
+                if (cmp <= 0) return 0
+                val lParts = latestName.trim().removePrefix("v").removePrefix("V").split(".").map { it.toIntOrNull() ?: 0 }
+                val cParts = currentName.trim().removePrefix("v").removePrefix("V").split(".").map { it.toIntOrNull() ?: 0 }
+                val lMaj = lParts.getOrElse(0) { 0 }
+                val lMin = lParts.getOrElse(1) { 0 }
+                val lPat = lParts.getOrElse(2) { 0 }
+                val cMaj = cParts.getOrElse(0) { 0 }
+                val cMin = cParts.getOrElse(1) { 0 }
+                val cPat = cParts.getOrElse(2) { 0 }
+                val semverLag = ((lMaj - cMaj) * 100 + (lMin - cMin) * 13 + (lPat - cPat)).coerceAtLeast(1)
+                return semverLag
+            }
+            if (latestCode > 0 && currentCode > 0 && latestCode > currentCode) {
+                return latestCode - currentCode
+            }
+            return 0
+        }
+
+        fun isVersionForceUpdateRequired(
+            release: AppReleaseInfo,
+            currentCode: Int,
+            currentName: String,
+            minSupportedVersionName: String = "",
+            minSupportedVersionCode: Int = 0
+        ): Boolean {
+            val isNewer = if (hasNumericSemver(release.versionName) && hasNumericSemver(currentName)) {
+                compareSemver(release.versionName, currentName) > 0
+            } else {
+                release.versionCode > currentCode && release.versionCode > 0
+            }
+            if (!isNewer) return false
+            if (release.isForceUpdate) return true
+            if (minSupportedVersionName.isNotBlank() &&
+                hasNumericSemver(minSupportedVersionName) &&
+                hasNumericSemver(currentName) &&
+                compareSemver(currentName, minSupportedVersionName) < 0
+            ) {
+                return true
+            }
+            if (minSupportedVersionCode > 0 && currentCode > 0 && currentCode < minSupportedVersionCode) {
+                return true
+            }
+            return calculateVersionLagSteps(
+                latestName = release.versionName,
+                latestCode = release.versionCode,
+                currentName = currentName,
+                currentCode = currentCode
+            ) >= FORCE_UPDATE_MAX_VERSION_LAG
+        }
     }
 
     init {
@@ -358,21 +438,9 @@ class AppUpdateManager(private val context: Context) {
         }
     }
 
-    private fun hasNumericSemver(version: String): Boolean {
-        return Regex("""\d+(?:\.\d+)+""").containsMatchIn(version)
-    }
+    private fun hasNumericSemver(version: String): Boolean = AppUpdateManager.hasNumericSemver(version)
 
-    private fun compareSemver(candidate: String, current: String): Int {
-        val p1 = candidate.removePrefix("v").removePrefix("V").split(".").map { it.toIntOrNull() ?: 0 }
-        val p2 = current.removePrefix("v").removePrefix("V").split(".").map { it.toIntOrNull() ?: 0 }
-        val maxLen = maxOf(p1.size, p2.size)
-        for (i in 0 until maxLen) {
-            val a = p1.getOrElse(i) { 0 }
-            val b = p2.getOrElse(i) { 0 }
-            if (a != b) return a.compareTo(b)
-        }
-        return 0
-    }
+    private fun compareSemver(candidate: String, current: String): Int = AppUpdateManager.compareSemver(candidate, current)
 
     fun isUpdateAlreadyInstalled(
         remoteVersionCode: Int,
@@ -488,26 +556,37 @@ class AppUpdateManager(private val context: Context) {
             }
         }
 
-        return if (release.versionCode > 0) {
+        val effectiveForce = isVersionForceUpdateRequired(
+            release = release,
+            currentCode = currentCode,
+            currentName = currentName
+        )
+        val effectiveRelease = if (effectiveForce == release.isForceUpdate) {
+            release
+        } else {
+            release.copy(isForceUpdate = effectiveForce)
+        }
+
+        return if (effectiveRelease.versionCode > 0) {
             when {
-                release.versionCode > currentCode -> UpdateCheckResult.UpdateAvailable(
-                    release = release,
+                effectiveRelease.versionCode > currentCode -> UpdateCheckResult.UpdateAvailable(
+                    release = effectiveRelease,
                     isSignatureCompatible = signatureCompatible,
                     installedCertSha256 = installedFirst
                 )
-                release.versionCode == currentCode -> UpdateCheckResult.UpToDate(currentName, currentCode, release, isRemoteOlder = false)
-                else -> UpdateCheckResult.UpToDate(currentName, currentCode, release, isRemoteOlder = true)
+                effectiveRelease.versionCode == currentCode -> UpdateCheckResult.UpToDate(currentName, currentCode, effectiveRelease, isRemoteOlder = false)
+                else -> UpdateCheckResult.UpToDate(currentName, currentCode, effectiveRelease, isRemoteOlder = true)
             }
         } else {
-            val semverCmp = compareSemver(release.versionName, currentName)
+            val semverCmp = compareSemver(effectiveRelease.versionName, currentName)
             when {
                 semverCmp > 0 -> UpdateCheckResult.UpdateAvailable(
-                    release = release.copy(versionCode = currentCode + 1),
+                    release = effectiveRelease.copy(versionCode = currentCode + 1),
                     isSignatureCompatible = signatureCompatible,
                     installedCertSha256 = installedFirst
                 )
-                semverCmp == 0 -> UpdateCheckResult.UpToDate(currentName, currentCode, release, isRemoteOlder = false)
-                else -> UpdateCheckResult.UpToDate(currentName, currentCode, release, isRemoteOlder = true)
+                semverCmp == 0 -> UpdateCheckResult.UpToDate(currentName, currentCode, effectiveRelease, isRemoteOlder = false)
+                else -> UpdateCheckResult.UpToDate(currentName, currentCode, effectiveRelease, isRemoteOlder = true)
             }
         }
     }

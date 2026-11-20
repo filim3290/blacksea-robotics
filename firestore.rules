@@ -411,8 +411,7 @@ service cloud.firestore {
            request.resource.data.status == 'pending' &&
            request.resource.data.isTeamAdmin == false &&
            !(request.resource.data.role in ['Yönetici', 'Takım Kaptanı', 'Yetkili Öğretmen']) &&
-           exists(/databases/$(database)/documents/teams/$(request.resource.data.teamId)) &&
-           get(/databases/$(database)/documents/teams/$(request.resource.data.teamId)).data.status == 'approved') ||
+           teamIsApproved(request.resource.data.teamId)) ||
           (request.resource.data.userId == request.auth.uid &&
            request.resource.data.teamId == 'blacksea_robotics' &&
            (isFounderEmail() ||
@@ -421,7 +420,16 @@ service cloud.firestore {
              request.resource.data.isTeamAdmin == true &&
              request.resource.data.role == 'Yetkili Öğretmen' &&
              !('Yönetici' in request.resource.data.roles)) ||
-            (isActiveUser() && request.resource.data.isTeamAdmin == false && !(request.resource.data.role in ['Yönetici', 'Takım Kaptanı', 'Yetkili Öğretmen'])))) ||
+            (isActiveUser() &&
+             request.resource.data.status == 'active' &&
+             request.resource.data.role != 'Yönetici' &&
+             !('Yönetici' in request.resource.data.roles) &&
+             ((request.resource.data.isTeamAdmin == false &&
+               !(request.resource.data.role in ['Yönetici', 'Takım Kaptanı', 'Yetkili Öğretmen'])) ||
+              (hasUserDoc() &&
+               userDataIsActive(getUserData()) &&
+               userDataIsManager(getUserData()) &&
+               request.resource.data.role == getUserData().get('role', '')))))) ||
           isPlatformAdmin() ||
           (isTeamManager(request.resource.data.teamId) &&
            request.resource.data.role != 'Yönetici' &&
@@ -436,7 +444,11 @@ service cloud.firestore {
            !(resource.data.teamId == 'blacksea_robotics' &&
              resource.data.get('userEmail', '').lower() in ['filim3290@gmail.com', 'mehmetilkerbas@gmail.com'] &&
              !isPlatformAdmin() &&
+             resource.data.userId != request.auth.uid &&
              (request.resource.data.status != 'active' || request.resource.data.isTeamAdmin == false)) &&
+           !(resource.data.teamId == 'blacksea_robotics' &&
+             resource.data.get('userEmail', '').lower() == 'filim3290@gmail.com' &&
+             !isPlatformAdmin()) &&
            (isPlatformAdmin() ||
             ((request.resource.data.role != 'Yönetici' && !('Yönetici' in request.resource.data.roles)) ||
              (request.resource.data.role == resource.data.get('role', '') &&

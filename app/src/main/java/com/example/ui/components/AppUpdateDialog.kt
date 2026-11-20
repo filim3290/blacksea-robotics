@@ -3,6 +3,7 @@ package com.example.ui.components
 import android.content.Intent
 import android.net.Uri
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -151,6 +152,7 @@ fun AppUpdateDialog(
             usePlatformDefaultWidth = false
         )
     ) {
+        BackHandler(enabled = releaseInfo.isForceUpdate || isBusy) {}
         val ext = MaterialTheme.blackseaColors
         Surface(
             modifier = Modifier
@@ -391,7 +393,11 @@ fun AppUpdateDialog(
                                             color = ext.dangerText
                                         )
                                         Text(
-                                            text = "Bu güncelleme mevcut sürümün üzerine doğrudan yüklenemiyor. Yeni sürümü tarayıcıdan indirip yeniden kurabilirsiniz.",
+                                            text = if (releaseInfo.isForceUpdate) {
+                                                "Bu sürüm zorunlu güncelleme gerektiriyor ve mevcut kurulumun üzerine doğrudan yüklenemiyor. Devam etmek için tarayıcıdan güncel APK'yı indirip kurun."
+                                            } else {
+                                                "Bu güncelleme mevcut sürümün üzerine doğrudan yüklenemiyor. Yeni sürümü tarayıcıdan indirip yeniden kurabilirsiniz."
+                                            },
                                             fontSize = 11.sp,
                                             color = ext.textPrimary,
                                             lineHeight = 16.sp

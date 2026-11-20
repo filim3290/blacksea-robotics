@@ -106,18 +106,27 @@ fun shouldUserReceiveNotification(
         return true
     }
 
-    if (userCreatedAtMs > 0L) {
+    val typeLower = notif.type.trim().lowercase()
+    val isActionableApproval = typeLower in setOf(
+        "member_pending",
+        "member_appeal",
+        "team_application_pending",
+        "team_appeal",
+        "support_ticket"
+    ) || notif.recipientUserId in setOf("managers", "platform_admins")
+
+    if (notif.recipientUserId == "managers") {
+        return isManager
+    }
+
+    if (!isActionableApproval && userCreatedAtMs > 0L) {
         val notifTimeMs = notif.createdAt?.toDate()?.time
         if (notifTimeMs != null && notifTimeMs < (userCreatedAtMs - 5_000L)) {
             return false
         }
     }
 
-    if (notif.recipientUserId == "managers") {
-        return isManager
-    }
-
-    return when (notif.type.lowercase()) {
+    return when (typeLower) {
         "update" -> true
         "broadcast", "announcement" -> true
         "team_suspended", "team_under_review", "team_resumed" -> true
@@ -921,6 +930,7 @@ class BlackseaRepository(val db: FirebaseFirestore) {
 
         try {
             val existingMembershipSnap = try { membershipRef.get().await() } catch (_: Exception) { null }
+            val hasExplicitlySteppedDown = existingMembershipSnap?.getBoolean("steppedDown") == true
             val existingRoles = (existingMembershipSnap?.get("roles") as? List<*>)
                 ?.mapNotNull { it as? String }
                 ?.filter { it.isNotBlank() && !it.equals("Yönetici", ignoreCase = true) }
@@ -935,8 +945,10 @@ class BlackseaRepository(val db: FirebaseFirestore) {
             val needsMembershipSync = existingMembershipSnap == null ||
                 !existingMembershipSnap.exists() ||
                 !UserStatus.isActive(existingMembershipSnap.getString("status")) ||
-                existingMembershipSnap.getBoolean("isTeamAdmin") != true ||
-                existingMembershipSnap.getString("role") != "Yetkili Öğretmen" ||
+                (!hasExplicitlySteppedDown && (
+                    existingMembershipSnap.getBoolean("isTeamAdmin") != true ||
+                        existingMembershipSnap.getString("role") != "Yetkili Öğretmen"
+                    )) ||
                 existingMembershipSnap.getString("userEmail")?.equals(BLACKSEA_AUTHORIZED_TEACHER_EMAIL, ignoreCase = true) != true
 
             if (needsMembershipSync) {
@@ -947,10 +959,12 @@ class BlackseaRepository(val db: FirebaseFirestore) {
                     put("userEmail", BLACKSEA_AUTHORIZED_TEACHER_EMAIL)
                     put("userPhotoUrl", profile.photoUrl)
                     put("subTeam", subTeam)
-                    put("role", "Yetkili Öğretmen")
-                    put("roles", mergedRoles)
+                    if (!hasExplicitlySteppedDown) {
+                        put("role", "Yetkili Öğretmen")
+                        put("roles", mergedRoles)
+                        put("isTeamAdmin", true)
+                    }
                     put("status", UserStatus.ACTIVE.value)
-                    put("isTeamAdmin", true)
                     put("joinNote", "BlackSea Robotics Yetkili Öğretmeni")
                     put("suspensionReason", "")
                     put("appealText", "")
@@ -964,10 +978,12 @@ class BlackseaRepository(val db: FirebaseFirestore) {
                 syncTeamMemberCount(PLATFORM_MAIN_TEAM_ID)
             }
 
-            if (profile.role != "Yetkili Öğretmen" ||
-                !UserStatus.isActive(profile.status) ||
-                !profile.isSuperAdmin ||
-                profile.isPlatformAdmin
+            if (!hasExplicitlySteppedDown && (
+                    profile.role != "Yetkili Öğretmen" ||
+                        !UserStatus.isActive(profile.status) ||
+                        !profile.isSuperAdmin ||
+                        profile.isPlatformAdmin
+                    )
             ) {
                 userRef.set(
                     mapOf(
@@ -1168,6 +1184,37 @@ class BlackseaRepository(val db: FirebaseFirestore) {
             handleFirestoreError(error, OperationType.LIST, "users")
             emit(emptyList())
         }
+
+    fun observeAllTeamMembershipsForAdmin(): Flow<List<TeamMembership>> = db.collection("team_memberships")
+        .snapshots()
+        .map { snapshot -> snapshot.toObjects(TeamMembership::class.java) }
+        .catch { error ->
+            handleFirestoreError(error, OperationType.LIST, "team_memberships")
+            emit(emptyList())
+        }
+
+    suspend fun syncCurrentUserAppVersion(
+        userId: String,
+        versionName: String,
+        versionCode: Int
+    ) {
+        val cleanId = userId.trim()
+        val cleanVersionName = versionName.trim()
+        if (cleanId.isBlank() || cleanVersionName.isBlank()) return
+        try {
+            db.collection("users").document(cleanId).update(
+                mapOf(
+                    "appVersionName" to cleanVersionName,
+                    "appVersionCode" to versionCode,
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+            ).await()
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (e: Exception) {
+            logDebugWarn("Repository", "App version sync skipped for $cleanId", e)
+        }
+    }
 
     // ==========================================
     // MULTI-TEAM DIRECTORY & TEAM APPLICATIONS
@@ -2083,6 +2130,19 @@ class BlackseaRepository(val db: FirebaseFirestore) {
             }
             val isTeamAdmin = finalRoles.any { it in PredefinedRoles.MANAGEMENT_ROLES && it != "Takım Yardımcısı" }
 
+            // Enforce minimum 1 active manager rule when removing manager privileges from an active manager
+            val existingMembership = try { existingSnap?.toObject(TeamMembership::class.java) } catch (_: Exception) { null }
+            val wasActiveManager = existingMembership?.isManagerInTeam() == true
+            val willRemainActiveManager = UserStatus.isActive(status) && isTeamAdmin
+            if (wasActiveManager && !willRemainActiveManager) {
+                val otherActiveManagers = countActiveManagersInTeam(team.id, excludeUserId = cleanTargetUid)
+                if (otherActiveManagers < 1) {
+                    return Result.failure(
+                        IllegalStateException("Takımda en az 1 aktif yetkili kalmalıdır. Önce başka bir üyeyi yetkili yapın.")
+                    )
+                }
+            }
+
             val memberName = existingSnap?.getString("userName")
                 ?: targetProfile?.getFullName()?.takeIf { it.isNotBlank() }
                 ?: "Üye"
@@ -2099,6 +2159,9 @@ class BlackseaRepository(val db: FirebaseFirestore) {
                 put("role", finalRoles.firstOrNull() ?: "Takım Üyesi")
                 put("status", status)
                 put("isTeamAdmin", isTeamAdmin)
+                if (isTeamAdmin && UserStatus.isActive(status)) {
+                    put("steppedDown", false)
+                }
                 if (UserStatus.isActive(status)) {
                     put("suspensionReason", "")
                     put("appealText", "")
@@ -2434,6 +2497,128 @@ class BlackseaRepository(val db: FirebaseFirestore) {
         }
     }
 
+    private suspend fun countActiveManagersInTeam(
+        teamId: String,
+        excludeUserId: String? = null
+    ): Int {
+        val cleanTeamId = teamId.trim().ifBlank { PLATFORM_MAIN_TEAM_ID }
+        val cleanExclude = excludeUserId?.trim().orEmpty()
+        val membershipDocs = try {
+            db.collection("team_memberships")
+                .whereEqualTo("teamId", cleanTeamId)
+                .get()
+                .await()
+                .toObjects(TeamMembership::class.java)
+        } catch (_: Exception) {
+            emptyList()
+        }
+        val activeManagerIds = membershipDocs
+            .filter { mem ->
+                val uid = mem.userId.trim()
+                uid.isNotBlank() &&
+                    uid != cleanExclude &&
+                    !(cleanTeamId == PLATFORM_MAIN_TEAM_ID && mem.userEmail.trim().equals(PLATFORM_FOUNDER_EMAIL, ignoreCase = true)) &&
+                    mem.isManagerInTeam()
+            }
+            .map { it.userId.trim() }
+            .toMutableSet()
+
+        if (cleanTeamId == PLATFORM_MAIN_TEAM_ID) {
+            val recordedIds = membershipDocs.map { it.userId.trim() }.filter { it.isNotBlank() }.toSet()
+            val allUsers = try {
+                db.collection("users").get().await().toObjects(UserProfile::class.java)
+            } catch (_: Exception) {
+                emptyList()
+            }
+            allUsers.forEach { legacy ->
+                val uid = legacy.userId.ifBlank { legacy.id }.trim()
+                if (uid.isNotBlank() &&
+                    uid != cleanExclude &&
+                    uid !in recordedIds &&
+                    !legacy.isPlatformManagerAccount() &&
+                    legacy.isLegacyBsrMainMember() &&
+                    (legacy.isBlackseaAuthorizedTeacherAccount() || (UserStatus.isActive(legacy.status) && legacy.isManagerAccount()))
+                ) {
+                    activeManagerIds.add(uid)
+                }
+            }
+        }
+        return activeManagerIds.size
+    }
+
+    suspend fun stepDownAsManager(team: TeamInfo): Result<Unit> {
+        val cleanTeamId = team.id.trim().ifBlank { PLATFORM_MAIN_TEAM_ID }
+        val uid = try {
+            requireUserId()
+        } catch (e: Exception) {
+            return Result.failure(e)
+        }
+        val membershipId = "${cleanTeamId}_$uid"
+        val docRef = db.collection("team_memberships").document(membershipId)
+        return try {
+            val snap = docRef.get().await()
+            val currentMembership = if (snap.exists()) snap.toObject(TeamMembership::class.java) else null
+            if (currentMembership == null || !currentMembership.isManagerInTeam()) {
+                return Result.failure(IllegalStateException("Aktif takım yetkilisi değilsiniz."))
+            }
+
+            val remainingManagers = countActiveManagersInTeam(cleanTeamId, excludeUserId = uid)
+            if (remainingManagers < 1) {
+                return Result.failure(
+                    IllegalStateException("Takımda en az 1 aktif yetkili kalmalıdır. Yetkinizi bırakmadan önce başka bir üyeyi yetkili yapın.")
+                )
+            }
+
+            val cleanSubTeam = currentMembership.subTeam.ifBlank { TeamType.GENERAL.displayName }
+            val strippedRoles = currentMembership.roles
+                .filterNot { roleName ->
+                    val normalized = roleName.trim().lowercase(Locale.forLanguageTag("tr-TR"))
+                    normalized in setOf(
+                        "yönetici", "yonetici",
+                        "takım kaptanı", "takim kaptani",
+                        "yetkili öğretmen", "yetkili ogretmen"
+                    )
+                }
+                .ifEmpty { listOf(PredefinedRoles.getDefaultTeamRole(cleanSubTeam)) }
+            val primaryRole = strippedRoles.firstOrNull().orEmpty().ifBlank {
+                PredefinedRoles.getDefaultTeamRole(cleanSubTeam)
+            }
+
+            // Update /users/{uid} BEFORE demoting team_memberships so BSR rule isTeamManager() remains satisfied
+            if (cleanTeamId == PLATFORM_MAIN_TEAM_ID) {
+                try {
+                    db.collection("users").document(uid).update(
+                        mapOf(
+                            "role" to primaryRole,
+                            "roles" to strippedRoles,
+                            "isSuperAdmin" to false,
+                            "updatedAt" to FieldValue.serverTimestamp()
+                        )
+                    ).await()
+                } catch (e: Exception) {
+                    logDebugWarn("Repository", "User profile sync during manager step-down skipped", e)
+                }
+            }
+
+            docRef.update(
+                mapOf(
+                    "role" to primaryRole,
+                    "roles" to strippedRoles,
+                    "isTeamAdmin" to false,
+                    "steppedDown" to true,
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+            ).await()
+
+            Result.success(Unit)
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.UPDATE, "team_memberships/$membershipId")
+            Result.failure(e)
+        }
+    }
+
     suspend fun leaveTeam(teamId: String): Result<Unit> {
         val cleanTeamId = teamId.trim().ifBlank { PLATFORM_MAIN_TEAM_ID }
         val uid = try {
@@ -2443,6 +2628,31 @@ class BlackseaRepository(val db: FirebaseFirestore) {
         }
         val membershipId = "${cleanTeamId}_$uid"
         return try {
+            val existingSnap = try {
+                db.collection("team_memberships").document(membershipId).get().await()
+            } catch (_: Exception) {
+                null
+            }
+            val currentMembership = existingSnap?.toObject(TeamMembership::class.java)
+            if (currentMembership?.isManagerInTeam() == true) {
+                val allMemberships = try {
+                    db.collection("team_memberships")
+                        .whereEqualTo("teamId", cleanTeamId)
+                        .get()
+                        .await()
+                        .toObjects(TeamMembership::class.java)
+                } catch (_: Exception) {
+                    emptyList()
+                }
+                val otherActiveCount = allMemberships.count { it.userId.trim() != uid && it.isActive() }
+                val otherManagers = countActiveManagersInTeam(cleanTeamId, excludeUserId = uid)
+                if (otherActiveCount > 0 && otherManagers < 1) {
+                    return Result.failure(
+                        IllegalStateException("Takımda diğer üyeler varken son yetkili olarak ayrılamazsınız; önce başka bir üyeyi yetkili yapın.")
+                    )
+                }
+            }
+
             // Recompute exact memberCount BEFORE deleting our membership so isActiveTeamMember(teamId) allows the count sync
             syncTeamMemberCount(cleanTeamId, excludeUserId = uid)
             db.collection("team_memberships").document(membershipId).delete().await()

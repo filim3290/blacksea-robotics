@@ -194,7 +194,7 @@ fun AppContent(
             if (result is UpdateCheckResult.UpdateAvailable) {
                 val update = result.release
                 inAppLatestUpdate = update
-                if (openDialogRegardlessOfSignature || (update.isForceUpdate && result.isSignatureCompatible)) {
+                if (openDialogRegardlessOfSignature || update.isForceUpdate) {
                     availableUpdate = update
                 }
                 if (notifyOs) {
@@ -262,7 +262,9 @@ fun AppContent(
                             val effectiveVName = vName.ifBlank { "1.0.5" }
                             val resolvedUrl = updateManager.normalizeDownloadUrl(doc.getString("apkDownloadUrl"), effectiveVName)
                             if (resolvedUrl.startsWith("https://") && resolvedUrl.endsWith(".apk", ignoreCase = true)) {
-                                val release = AppReleaseInfo(
+                                val minSupportedCode = doc.getLong("minSupportedVersionCode")?.toInt() ?: 0
+                                val minSupportedName = doc.getString("minSupportedVersionName").orEmpty()
+                                val rawRelease = AppReleaseInfo(
                                     tagName = doc.getString("tagName") ?: "v$effectiveVName",
                                     versionName = effectiveVName,
                                     versionCode = vCode,
@@ -276,8 +278,16 @@ fun AppContent(
                                     expectedCertSha256 = doc.getString("expectedCertSha256") ?: "",
                                     isForceUpdate = doc.getBoolean("isForceUpdate") ?: false
                                 )
+                                val effectiveForce = AppUpdateManager.isVersionForceUpdateRequired(
+                                    release = rawRelease,
+                                    currentCode = updateManager.getCurrentVersionCode(),
+                                    currentName = updateManager.getCurrentVersionName(),
+                                    minSupportedVersionName = minSupportedName,
+                                    minSupportedVersionCode = minSupportedCode
+                                )
+                                val release = rawRelease.copy(isForceUpdate = effectiveForce)
                                 inAppLatestUpdate = release
-                                if (release.isForceUpdate && updateManager.isReleaseSignatureCompatible(release)) {
+                                if (release.isForceUpdate) {
                                     availableUpdate = release
                                 }
                                 if (shouldNotifyOs) {
@@ -384,6 +394,16 @@ fun AppContent(
                 } catch (_: Exception) {
                 }
             }
+        }
+    }
+
+    LaunchedEffect(authenticatedUid, activeProfile?.appVersionName, activeProfile?.appVersionCode) {
+        val uid = authenticatedUid ?: return@LaunchedEffect
+        val profile = activeProfile ?: return@LaunchedEffect
+        val runningName = updateManager.getCurrentVersionName()
+        val runningCode = updateManager.getCurrentVersionCode()
+        if (profile.appVersionName != runningName || profile.appVersionCode != runningCode) {
+            repository.syncCurrentUserAppVersion(uid, runningName, runningCode)
         }
     }
 
