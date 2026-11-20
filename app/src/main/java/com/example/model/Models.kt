@@ -446,6 +446,7 @@ fun UserProfile.withTeamContext(
 fun UserProfile.isLegacyBsrMainMember(): Boolean {
     if (isPlatformManagerAccount()) return false
     if (isBlackseaAuthorizedTeacherAccount()) return true
+    if (!UserStatus.isActive(status)) return false
     if (activeTeamId == PLATFORM_MAIN_TEAM_ID) return true
     return activeTeamId.isBlank() && roles.any {
         it.isNotBlank() && it != "Takım Üyesi" && !it.equals("Yönetici", ignoreCase = true)

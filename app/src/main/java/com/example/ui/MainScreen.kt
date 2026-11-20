@@ -170,9 +170,10 @@ fun MainScreen(
     val watchedTeamIds by remember(currentUserId) {
         repository.observeWatchedTeamIds(currentUserId)
     }.collectAsState(initial = emptySet())
-    val myMemberships by remember(currentUserId) {
+    val myMembershipsState by remember(currentUserId) {
         repository.observeMyMemberships(currentUserId)
-    }.collectAsState(initial = emptyList())
+    }.collectAsState(initial = null)
+    val myMemberships = myMembershipsState.orEmpty()
     val myTeamApplications by remember(currentUserId) {
         repository.observeMyTeamApplications(currentUserId)
     }.collectAsState(initial = emptyList())
@@ -225,10 +226,11 @@ fun MainScreen(
         membershipsByTeam.values.filter { it.isActive() }.map { it.teamId }.toSet()
     }
 
-    val myKnownTeams by remember(activeTeamIds) {
+    val myKnownTeamsState by remember(activeTeamIds) {
         if (activeTeamIds.isEmpty()) flowOf(emptyList())
         else repository.observeTeamsByIds(activeTeamIds)
-    }.collectAsState(initial = emptyList())
+    }.collectAsState(initial = null)
+    val myKnownTeams = myKnownTeamsState.orEmpty()
 
     val knownTeamsById = remember(approvedTeams, myKnownTeams) {
         val map = approvedTeams.associateBy { it.id }.toMutableMap()
@@ -249,6 +251,17 @@ fun MainScreen(
     var adminInitialSection by remember { mutableStateOf("members") }
     var requestedPlatformConsoleTab by remember { mutableStateOf<String?>(null) }
     var requestedOpenAccountSheet by remember { mutableStateOf(false) }
+
+    // Clear stale persisted activeTeamId if it points to a deleted, non-existent, or ended team membership
+    LaunchedEffect(currentUserId, currentUserProfile?.activeTeamId, myMembershipsState, activeTeamIds, isPlatformAdmin) {
+        if (myMembershipsState == null) return@LaunchedEffect
+        val persistedTeamId = currentUserProfile?.activeTeamId?.trim().orEmpty()
+        if (persistedTeamId.isNotBlank() &&
+            (persistedTeamId !in activeTeamIds || (isPlatformAdmin && persistedTeamId == PLATFORM_MAIN_TEAM_ID))
+        ) {
+            repository.setActiveTeamId(currentUserId, "")
+        }
+    }
 
     // Ensure removed/revoked membership safely exits the closed workspace back to Team Hub
     LaunchedEffect(activeTeamId, activeTeamIds, myMemberships) {
@@ -482,6 +495,12 @@ fun MainScreen(
 
     val resolvedTeam = knownTeamsById[activeTeamIdNonNull]
     if (resolvedTeam == null) {
+        LaunchedEffect(activeTeamIdNonNull, myKnownTeamsState, myMembershipsState) {
+            if (myMembershipsState != null && myKnownTeamsState != null && knownTeamsById[activeTeamIdNonNull] == null) {
+                activeTeamId = null
+                currentTab = NavItem.HOME
+            }
+        }
         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,

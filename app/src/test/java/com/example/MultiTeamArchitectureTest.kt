@@ -672,4 +672,146 @@ class MultiTeamArchitectureTest {
         assertEquals("1.0.12", userWithVersion.appVersionName)
         assertEquals(13, userWithVersion.appVersionCode)
     }
+
+    @Test
+    fun `resolvePlatformUserTeamSummaries excludes non-existent deleted rejected and pending teams`() {
+        val existingApprovedTeam = TeamInfo(
+            id = "team_existing",
+            name = "Trabzon Tech",
+            status = TeamStatus.APPROVED
+        )
+        val existingSuspendedTeam = TeamInfo(
+            id = "team_suspended",
+            name = "Rize Robo",
+            status = TeamStatus.SUSPENDED
+        )
+        val pendingCreationTeam = TeamInfo(
+            id = "team_pending_creation",
+            name = "Henüz Onaysız",
+            status = TeamStatus.PENDING
+        )
+        val rejectedCreationTeam = TeamInfo(
+            id = "team_rejected_creation",
+            name = "Reddedilmiş Ekip",
+            status = TeamStatus.REJECTED
+        )
+        val allTeams = listOf(
+            TeamInfo.mainBlackseaTeam(),
+            existingApprovedTeam,
+            existingSuspendedTeam,
+            pendingCreationTeam,
+            rejectedCreationTeam
+        )
+
+        val student = UserProfile(
+            id = "student_1",
+            userId = "student_1",
+            email = "student1@example.com",
+            team = TeamType.GENERAL.displayName,
+            role = "Takım Üyesi",
+            roles = listOf("Takım Üyesi"),
+            status = UserStatus.ACTIVE.value,
+            activeTeamId = ""
+        )
+
+        val memberships = listOf(
+            // Phantom orphaned membership pointing to a deleted team that does NOT exist in allTeams
+            TeamMembership(
+                teamId = "team_deleted_phantom_99",
+                userId = "student_1",
+                subTeam = TeamType.SOFTWARE.displayName,
+                role = "Yazılım Üyesi",
+                roles = listOf("Yazılım Üyesi"),
+                status = UserStatus.ACTIVE.value
+            ),
+            // Membership pointing to rejected/unapproved teams must be hidden
+            TeamMembership(
+                teamId = "team_rejected_creation",
+                userId = "student_1",
+                subTeam = TeamType.MECHANIC.displayName,
+                role = "Mekanik Üyesi",
+                roles = listOf("Mekanik Üyesi"),
+                status = UserStatus.ACTIVE.value
+            ),
+            TeamMembership(
+                teamId = "team_pending_creation",
+                userId = "student_1",
+                subTeam = TeamType.PR.displayName,
+                role = "PR Üyesi",
+                roles = listOf("PR Üyesi"),
+                status = UserStatus.ACTIVE.value
+            ),
+            // Rejected join request on an existing team must NOT appear
+            TeamMembership(
+                teamId = "team_existing",
+                userId = "student_1",
+                subTeam = TeamType.SOFTWARE.displayName,
+                role = "Yazılım Üyesi",
+                roles = listOf("Yazılım Üyesi"),
+                status = UserStatus.REJECTED.value
+            ),
+            // Pending join request on an existing suspended team must be separated as pending application
+            TeamMembership(
+                teamId = "team_suspended",
+                userId = "student_1",
+                subTeam = TeamType.SOFTWARE.displayName,
+                role = "Yazılım Üyesi",
+                roles = listOf("Yazılım Üyesi"),
+                status = UserStatus.PENDING.value
+            )
+        )
+
+        val resolved = com.example.ui.screens.resolvePlatformUserTeamSummaries(
+            user = student,
+            userMemberships = memberships,
+            allTeams = allTeams
+        )
+        assertEquals(1, resolved.size)
+        assertEquals("Rize Robo", resolved.first().teamName)
+        assertTrue(resolved.first().isPendingApplication)
+        assertTrue("Pending applicant should have 0 active/revoked teams", resolved.none { !it.isPendingApplication })
+
+        // Active member on an existing team shows up normally; phantom deleted team still excluded
+        val activeStudentSummaries = com.example.ui.screens.resolvePlatformUserTeamSummaries(
+            user = student,
+            userMemberships = listOf(
+                TeamMembership(
+                    teamId = "team_deleted_phantom_99",
+                    userId = "student_1",
+                    status = UserStatus.ACTIVE.value
+                ),
+                TeamMembership(
+                    teamId = "team_existing",
+                    userId = "student_1",
+                    subTeam = TeamType.SOFTWARE.displayName,
+                    role = "Yazılım Üyesi",
+                    roles = listOf("Yazılım Üyesi"),
+                    status = UserStatus.ACTIVE.value
+                )
+            ),
+            allTeams = allTeams
+        )
+        assertEquals(1, activeStudentSummaries.size)
+        assertEquals("Trabzon Tech", activeStudentSummaries.first().teamName)
+        assertFalse(activeStudentSummaries.first().isPendingApplication)
+
+        // Rejected BSR membership must NOT resurrect user as BlackSea Robotics active member
+        val legacyWithRejectedBsr = student.copy(
+            role = "Yazılım Üyesi",
+            roles = listOf("Yazılım Üyesi"),
+            activeTeamId = PLATFORM_MAIN_TEAM_ID
+        )
+        val rejectedBsrSummaries = com.example.ui.screens.resolvePlatformUserTeamSummaries(
+            user = legacyWithRejectedBsr,
+            userMemberships = listOf(
+                TeamMembership(
+                    teamId = PLATFORM_MAIN_TEAM_ID,
+                    userId = "student_1",
+                    status = UserStatus.REJECTED.value
+                )
+            ),
+            allTeams = allTeams
+        )
+        assertTrue(rejectedBsrSummaries.isEmpty())
+    }
 }

@@ -1873,5 +1873,119 @@ test("Users can edit own profile (teamless or multi-team including revoked membe
   );
 });
 
+test("User leaving BSR can reset own role/roles/isSuperAdmin to Takım Üyesi, cannot self-escalate, and founder can clean orphaned memberships", async () => {
+  const created = new Date(Date.now() - 10000);
+  await testEnv.withSecurityRulesDisabled(async (ctx) => {
+    const db = ctx.firestore();
+    await db.collection("users").doc("bsr_leaver").set({
+      userId: "bsr_leaver",
+      email: "leaver@example.com",
+      team: "Yazılım Ekibi",
+      role: "Yazılım Üyesi",
+      roles: ["Yazılım Üyesi"],
+      status: "active",
+      isSuperAdmin: false,
+      isPlatformAdmin: false,
+      activeTeamId: "blacksea_robotics",
+      createdAt: created,
+      updatedAt: created
+    });
+    await db.collection("team_memberships").doc("blacksea_robotics_bsr_leaver").set({
+      teamId: "blacksea_robotics",
+      userId: "bsr_leaver",
+      userName: "Ayrılan Üye",
+      userEmail: "leaver@example.com",
+      subTeam: "Yazılım Ekibi",
+      role: "Yazılım Üyesi",
+      roles: ["Yazılım Üyesi"],
+      status: "active",
+      isTeamAdmin: false,
+      createdAt: created,
+      updatedAt: created
+    });
+    await db.collection("users").doc("teamless_spoof").set({
+      userId: "teamless_spoof",
+      email: "spoof@example.com",
+      team: "Genel Ekip",
+      role: "Takım Üyesi",
+      roles: ["Takım Üyesi"],
+      status: "active",
+      isSuperAdmin: false,
+      isPlatformAdmin: false,
+      activeTeamId: "",
+      createdAt: created,
+      updatedAt: created
+    });
+    await db.collection("team_memberships").doc("team_deleted_phantom_teamless_spoof").set({
+      teamId: "team_deleted_phantom",
+      userId: "teamless_spoof",
+      userName: "Kullanıcı",
+      userEmail: "spoof@example.com",
+      subTeam: "Yazılım Ekibi",
+      role: "Yazılım Üyesi",
+      roles: ["Yazılım Üyesi"],
+      status: "active",
+      isTeamAdmin: false,
+      createdAt: created,
+      updatedAt: created
+    });
+    await db.collection("users").doc("teamless_spoof").update({
+      activeTeamId: "team_deleted_phantom"
+    });
+  });
+
+  const leaverDb = testEnv.authenticatedContext("bsr_leaver", {
+    email: "leaver@example.com",
+    email_verified: true
+  }).firestore();
+  const spoofDb = testEnv.authenticatedContext("teamless_spoof", {
+    email: "spoof@example.com",
+    email_verified: true
+  }).firestore();
+  const founderDb = testEnv.authenticatedContext("founder_u", {
+    email: "filim3290@gmail.com",
+    email_verified: true
+  }).firestore();
+
+  // Leaving BSR deletes membership and resets user doc back to default 'Takım Üyesi'
+  await assertSucceeds(leaverDb.collection("team_memberships").doc("blacksea_robotics_bsr_leaver").delete());
+  await assertSucceeds(
+    leaverDb.collection("users").doc("bsr_leaver").update({
+      team: "Genel Ekip",
+      role: "Takım Üyesi",
+      roles: ["Takım Üyesi"],
+      isSuperAdmin: false,
+      activeTeamId: "",
+      updatedAt: new Date(Date.now() - 500)
+    })
+  );
+
+  // User cannot escalate own role or claim arbitrary legacy BSR role without active BSR membership
+  await assertFails(
+    spoofDb.collection("users").doc("teamless_spoof").update({
+      role: "Takım Kaptanı",
+      roles: ["Takım Kaptanı"],
+      isSuperAdmin: true
+    })
+  );
+  await assertFails(
+    spoofDb.collection("users").doc("teamless_spoof").update({
+      role: "Yazılım Üyesi",
+      roles: ["Yazılım Üyesi"]
+    })
+  );
+
+  // Founder can clean up orphaned membership for non-existent team and clear stale activeTeamId
+  await assertSucceeds(
+    founderDb.collection("team_memberships").doc("team_deleted_phantom_teamless_spoof").delete()
+  );
+  await assertSucceeds(
+    founderDb.collection("users").doc("teamless_spoof").update({
+      activeTeamId: "",
+      updatedAt: new Date(Date.now() - 400)
+    })
+  );
+});
+
 
 

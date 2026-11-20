@@ -227,6 +227,18 @@ fun TeamHubScreen(
         else flowOf(emptyList())
     }.collectAsState(initial = emptyList())
 
+    LaunchedEffect(isPlatformAdmin, allTeamMembershipsForAdmin, allPlatformTeamsForAdmin) {
+        if (isPlatformAdmin &&
+            allPlatformTeamsForAdmin.any { it.isMainTeam || it.id == PLATFORM_MAIN_TEAM_ID } &&
+            allTeamMembershipsForAdmin.isNotEmpty()
+        ) {
+            repository.cleanupOrphanedTeamMembershipsForAdmin(
+                memberships = allTeamMembershipsForAdmin,
+                allTeams = allPlatformTeamsForAdmin
+            )
+        }
+    }
+
     val liveMemberCountsForAdmin = remember(isPlatformAdmin, allTeamMembershipsForAdmin, allPlatformUsersForAdmin) {
         if (isPlatformAdmin) {
             computeTeamActiveMemberCounts(
@@ -265,7 +277,8 @@ fun TeamHubScreen(
     val teamMap = remember(approvedTeams, myKnownTeams) {
         val map = approvedTeams.associateBy { it.id }.toMutableMap()
         myKnownTeams.forEach { team ->
-            if (team.id.isNotBlank()) {
+            val isValidTeam = team.isMainTeam || team.id == PLATFORM_MAIN_TEAM_ID || (!team.isRejected() && !team.isPending())
+            if (team.id.isNotBlank() && isValidTeam) {
                 map[team.id] = team
             }
         }

@@ -1850,10 +1850,103 @@ private enum class UserVersionCompliance {
     UNKNOWN
 }
 
+data class PlatformUserTeamSummary(
+    val teamId: String,
+    val teamName: String,
+    val detail: String,
+    val statusLabel: String,
+    val isPendingApplication: Boolean = false
+)
+
+/**
+ * Resolves a platform user's real team memberships strictly against existing, non-rejected,
+ * non-pending platform teams so deleted/non-existent team IDs or rejected applications never appear
+ * as teams the user belongs to.
+ */
+fun resolvePlatformUserTeamSummaries(
+    user: UserProfile,
+    userMemberships: List<TeamMembership>,
+    allTeams: List<TeamInfo>
+): List<PlatformUserTeamSummary> {
+    val validTeamNameById = buildMap {
+        put(PLATFORM_MAIN_TEAM_ID, "BlackSea Robotics")
+        allTeams.forEach { team ->
+            val cleanId = team.id.trim()
+            val isExistingWorkspaceTeam = team.isMainTeam ||
+                cleanId == PLATFORM_MAIN_TEAM_ID ||
+                (!team.isRejected() && !team.isPending())
+            if (cleanId.isNotBlank() && team.name.isNotBlank() && isExistingWorkspaceTeam) {
+                put(cleanId, team.name)
+            }
+        }
+    }
+
+    val sortedMemberships = userMemberships.sortedBy {
+        when {
+            it.isActive() -> 0
+            it.isRevoked() -> 1
+            it.isPending() -> 2
+            else -> 3
+        }
+    }
+
+    val summaries = mutableListOf<PlatformUserTeamSummary>()
+    val seenTeamIds = mutableSetOf<String>()
+    var hasExplicitBsrRecord = false
+
+    sortedMemberships.forEach { m ->
+        val cleanTeamId = m.teamId.trim()
+        if (cleanTeamId.isBlank()) return@forEach
+        if (cleanTeamId == PLATFORM_MAIN_TEAM_ID) {
+            hasExplicitBsrRecord = true
+            if (user.isPlatformManagerAccount()) return@forEach
+        }
+        if (m.isRejected()) return@forEach
+        val teamName = validTeamNameById[cleanTeamId] ?: return@forEach
+        if (!seenTeamIds.add(cleanTeamId)) return@forEach
+
+        val sub = m.subTeam.ifBlank { TeamType.GENERAL.displayName }
+        val roleLabel = m.roles.firstOrNull { it.isNotBlank() } ?: m.role.ifBlank { "Takım Üyesi" }
+        val isPending = m.isPending()
+        val statusLabel = when {
+            m.isActive() -> "Aktif"
+            m.isRevoked() -> "Askıda"
+            isPending -> "Başvuru Beklemede"
+            else -> m.status
+        }
+        summaries.add(
+            PlatformUserTeamSummary(
+                teamId = cleanTeamId,
+                teamName = teamName,
+                detail = "$sub • $roleLabel",
+                statusLabel = statusLabel,
+                isPendingApplication = isPending
+            )
+        )
+    }
+
+    if (!hasExplicitBsrRecord && user.isLegacyBsrMainMember()) {
+        val sub = user.team.ifBlank { TeamType.GENERAL.displayName }
+        val roleLabel = user.roles.firstOrNull { it.isNotBlank() } ?: user.role.ifBlank { "Takım Üyesi" }
+        summaries.add(
+            PlatformUserTeamSummary(
+                teamId = PLATFORM_MAIN_TEAM_ID,
+                teamName = validTeamNameById[PLATFORM_MAIN_TEAM_ID] ?: "BlackSea Robotics",
+                detail = "$sub • $roleLabel",
+                statusLabel = "Aktif",
+                isPendingApplication = false
+            )
+        )
+    }
+
+    return summaries
+}
+
 private data class PlatformUserAdminRow(
     val profile: UserProfile,
     val resolvedUid: String,
-    val teamSummaries: List<Triple<String, String, String>>, // teamName, detail, status
+    val memberTeams: List<PlatformUserTeamSummary>,
+    val pendingApplications: List<PlatformUserTeamSummary>,
     val versionName: String,
     val versionCode: Int,
     val lagSteps: Int,
@@ -1872,17 +1965,6 @@ fun AllPlatformUsersTab(
     val ext = MaterialTheme.blackseaColors
     var searchQuery by remember { mutableStateOf("") }
     var selectedFilter by remember { mutableStateOf("all") }
-
-    val teamNameById = remember(allTeams) {
-        buildMap {
-            put(PLATFORM_MAIN_TEAM_ID, "BlackSea Robotics")
-            allTeams.forEach { team ->
-                if (team.id.isNotBlank() && team.name.isNotBlank()) {
-                    put(team.id, team.name)
-                }
-            }
-        }
-    }
 
     val latestRef = remember(users, latestRelease) {
         var bestName = BuildConfig.VERSION_NAME
@@ -1913,47 +1995,20 @@ fun AllPlatformUsersTab(
         bestName to bestCode
     }
 
-    val userRows = remember(users, allMemberships, teamNameById, latestRef) {
+    val userRows = remember(users, allMemberships, allTeams, latestRef) {
         val membershipsByUid = allMemberships.groupBy { it.userId }
         val (refName, refCode) = latestRef
         val trLocale = Locale.forLanguageTag("tr-TR")
 
         users.map { user ->
             val uid = user.userId.ifBlank { user.id }
-            val rawMemberships = membershipsByUid[uid].orEmpty()
-                .sortedBy {
-                    when {
-                        it.isActive() -> 0
-                        it.isPending() -> 1
-                        it.isRevoked() -> 2
-                        else -> 3
-                    }
-                }
-
-            val summaries = mutableListOf<Triple<String, String, String>>()
-            val seenTeamIds = mutableSetOf<String>()
-
-            rawMemberships.forEach { m ->
-                if (m.teamId.isNotBlank() && seenTeamIds.add(m.teamId)) {
-                    val tName = teamNameById[m.teamId] ?: m.teamId
-                    val sub = m.subTeam.ifBlank { TeamType.GENERAL.displayName }
-                    val roleLabel = m.roles.firstOrNull { it.isNotBlank() } ?: m.role.ifBlank { "Takım Üyesi" }
-                    val statusLabel = when {
-                        m.isActive() -> "Aktif"
-                        m.isPending() -> "Onay Bekliyor"
-                        m.isRevoked() -> "Askıda"
-                        m.isRejected() -> "Reddedildi"
-                        else -> m.status
-                    }
-                    summaries.add(Triple(tName, "$sub • $roleLabel", statusLabel))
-                }
-            }
-
-            if (!seenTeamIds.contains(PLATFORM_MAIN_TEAM_ID) && user.isLegacyBsrMainMember()) {
-                val sub = user.team.ifBlank { TeamType.GENERAL.displayName }
-                val roleLabel = user.roles.firstOrNull { it.isNotBlank() } ?: user.role.ifBlank { "Takım Üyesi" }
-                summaries.add(Triple("BlackSea Robotics", "$sub • $roleLabel", "Aktif"))
-            }
+            val resolvedSummaries = resolvePlatformUserTeamSummaries(
+                user = user,
+                userMemberships = membershipsByUid[uid].orEmpty(),
+                allTeams = allTeams
+            )
+            val memberTeams = resolvedSummaries.filterNot { it.isPendingApplication }
+            val pendingApplications = resolvedSummaries.filter { it.isPendingApplication }
 
             val verName = user.appVersionName.trim().removePrefix("v").removePrefix("V")
             val verCode = user.appVersionCode
@@ -1977,7 +2032,8 @@ fun AllPlatformUsersTab(
             PlatformUserAdminRow(
                 profile = user,
                 resolvedUid = uid,
-                teamSummaries = summaries,
+                memberTeams = memberTeams,
+                pendingApplications = pendingApplications,
                 versionName = verName,
                 versionCode = verCode,
                 lagSteps = lag,
@@ -2005,7 +2061,7 @@ fun AllPlatformUsersTab(
         }
     }
     val teamlessCount = remember(userRows) {
-        userRows.count { it.teamSummaries.isEmpty() }
+        userRows.count { it.memberTeams.isEmpty() }
     }
     val activeCount = remember(userRows) {
         userRows.count { it.profile.status.equals(UserStatus.ACTIVE.value, ignoreCase = true) || it.profile.status.isBlank() }
@@ -2017,7 +2073,7 @@ fun AllPlatformUsersTab(
         userRows.filter { row ->
             val matchesFilter = when (selectedFilter) {
                 "active" -> row.profile.status.equals(UserStatus.ACTIVE.value, ignoreCase = true) || row.profile.status.isBlank()
-                "teamless" -> row.teamSummaries.isEmpty()
+                "teamless" -> row.memberTeams.isEmpty()
                 "outdated" -> row.versionCompliance == UserVersionCompliance.OUTDATED_OPTIONAL ||
                     row.versionCompliance == UserVersionCompliance.FORCE_UPDATE_REQUIRED
                 "force_update" -> row.versionCompliance == UserVersionCompliance.FORCE_UPDATE_REQUIRED
@@ -2028,8 +2084,11 @@ fun AllPlatformUsersTab(
                 row.profile.email.lowercase(trLocale).contains(q) ||
                 row.profile.username.lowercase(trLocale).contains(q) ||
                 row.versionName.lowercase(trLocale).contains(q) ||
-                row.teamSummaries.any { (tName, detail, _) ->
-                    tName.lowercase(trLocale).contains(q) || detail.lowercase(trLocale).contains(q)
+                row.memberTeams.any { summary ->
+                    summary.teamName.lowercase(trLocale).contains(q) || summary.detail.lowercase(trLocale).contains(q)
+                } ||
+                row.pendingApplications.any { summary ->
+                    summary.teamName.lowercase(trLocale).contains(q) || summary.detail.lowercase(trLocale).contains(q)
                 }
             matchesFilter && matchesSearch
         }
@@ -2109,7 +2168,7 @@ fun AllPlatformUsersTab(
                             color = MaterialTheme.colorScheme.onSurface
                         )
                         Text(
-                            text = "Kullanıcıların bağlı olduğu tüm takımlar ve kullandıkları uygulama sürümü listelenir. Son sürümden ${AppUpdateManager.FORCE_UPDATE_MAX_VERSION_LAG}+ sürüm eski cihazlara otomatik zorunlu güncelleme uygulanır.",
+                            text = "Kullanıcıların bağlı olduğu mevcut takımlar ve kullandıkları uygulama sürümü listelenir. Son sürümden ${AppUpdateManager.FORCE_UPDATE_MAX_VERSION_LAG}+ sürüm eski cihazlara otomatik zorunlu güncelleme uygulanır.",
                             fontSize = 11.sp,
                             color = ext.textSecondary,
                             lineHeight = 16.sp
@@ -2280,7 +2339,7 @@ fun AllPlatformUsersTab(
                             }
                         }
 
-                        if (row.teamSummaries.isEmpty()) {
+                        if (row.memberTeams.isEmpty()) {
                             Surface(
                                 shape = RoundedCornerShape(8.dp),
                                 color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f),
@@ -2296,72 +2355,92 @@ fun AllPlatformUsersTab(
                         } else {
                             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                                 Text(
-                                    text = "Bağlı Olduğu Takımlar (${row.teamSummaries.size})",
+                                    text = "Bağlı Olduğu Takımlar (${row.memberTeams.size})",
                                     fontSize = 11.sp,
                                     fontWeight = FontWeight.Bold,
                                     color = ext.textSecondary
                                 )
-                                row.teamSummaries.forEach { (teamName, detail, membershipStatus) ->
-                                    Surface(
-                                        shape = RoundedCornerShape(8.dp),
-                                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.65f),
-                                        modifier = Modifier.fillMaxWidth()
-                                    ) {
-                                        Row(
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .padding(horizontal = 10.dp, vertical = 6.dp),
-                                            horizontalArrangement = Arrangement.SpaceBetween,
-                                            verticalAlignment = Alignment.CenterVertically
-                                        ) {
-                                            Column(
-                                                modifier = Modifier
-                                                    .weight(1f)
-                                                    .padding(end = 8.dp)
-                                            ) {
-                                                Text(
-                                                    text = teamName,
-                                                    fontSize = 12.sp,
-                                                    fontWeight = FontWeight.Bold,
-                                                    color = MaterialTheme.colorScheme.onSurface,
-                                                    maxLines = 1,
-                                                    overflow = TextOverflow.Ellipsis
-                                                )
-                                                Text(
-                                                    text = detail,
-                                                    fontSize = 10.sp,
-                                                    color = ext.textMuted,
-                                                    maxLines = 1,
-                                                    overflow = TextOverflow.Ellipsis
-                                                )
-                                            }
-                                            Surface(
-                                                shape = RoundedCornerShape(6.dp),
-                                                color = when (membershipStatus) {
-                                                    "Aktif" -> ext.emeraldSolid.copy(alpha = 0.14f)
-                                                    "Askıda", "Reddedildi" -> ext.dangerContainer
-                                                    else -> ext.amberText.copy(alpha = 0.16f)
-                                                }
-                                            ) {
-                                                Text(
-                                                    text = membershipStatus,
-                                                    fontSize = 10.sp,
-                                                    fontWeight = FontWeight.Bold,
-                                                    color = when (membershipStatus) {
-                                                        "Aktif" -> ext.emeraldText
-                                                        "Askıda", "Reddedildi" -> ext.dangerText
-                                                        else -> ext.amberText
-                                                    },
-                                                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
-                                                )
-                                            }
-                                        }
-                                    }
+                                row.memberTeams.forEach { summary ->
+                                    PlatformUserTeamSummaryRow(summary = summary)
+                                }
+                            }
+                        }
+
+                        if (row.pendingApplications.isNotEmpty()) {
+                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Text(
+                                    text = "Bekleyen Katılım Başvuruları (${row.pendingApplications.size})",
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = ext.amberText
+                                )
+                                row.pendingApplications.forEach { summary ->
+                                    PlatformUserTeamSummaryRow(summary = summary)
                                 }
                             }
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PlatformUserTeamSummaryRow(summary: PlatformUserTeamSummary) {
+    val ext = MaterialTheme.blackseaColors
+    Surface(
+        shape = RoundedCornerShape(8.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.65f),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 10.dp, vertical = 6.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(end = 8.dp)
+            ) {
+                Text(
+                    text = summary.teamName,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = summary.detail,
+                    fontSize = 10.sp,
+                    color = ext.textMuted,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            Surface(
+                shape = RoundedCornerShape(6.dp),
+                color = when (summary.statusLabel) {
+                    "Aktif" -> ext.emeraldSolid.copy(alpha = 0.14f)
+                    "Askıda" -> ext.dangerContainer
+                    else -> ext.amberText.copy(alpha = 0.16f)
+                }
+            ) {
+                Text(
+                    text = summary.statusLabel,
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = when (summary.statusLabel) {
+                        "Aktif" -> ext.emeraldText
+                        "Askıda" -> ext.dangerText
+                        else -> ext.amberText
+                    },
+                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
+                )
             }
         }
     }

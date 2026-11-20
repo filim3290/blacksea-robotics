@@ -228,9 +228,18 @@ service cloud.firestore {
          (!('status' in request.resource.data) ||
           request.resource.data.status == resource.data.get('status', 'pending') ||
           (request.resource.data.status == 'pending' && resource.data.get('status', 'pending') in ['pending', 'rejected', 'revoked'])) &&
-         (!('role' in request.resource.data) || request.resource.data.role == resource.data.get('role', '')) &&
-         (!('roles' in request.resource.data) || request.resource.data.roles == resource.data.get('roles', [])) &&
-         (!('isSuperAdmin' in request.resource.data) || request.resource.data.isSuperAdmin == resource.data.get('isSuperAdmin', false)) &&
+         (((!('role' in request.resource.data) || request.resource.data.role == resource.data.get('role', '')) &&
+           (!('roles' in request.resource.data) || request.resource.data.roles == resource.data.get('roles', []))) ||
+          (request.resource.data.get('role', '') == 'Takım Üyesi' &&
+           request.resource.data.get('roles', []) == ['Takım Üyesi'] &&
+           request.resource.data.get('isSuperAdmin', false) == false) ||
+          (hasMembership('blacksea_robotics', userId) &&
+           membershipIsActive(getMembership('blacksea_robotics', userId)) &&
+           !(request.resource.data.get('role', '') in ['Yönetici', 'Takım Kaptanı', 'Yetkili Öğretmen']) &&
+           !request.resource.data.get('roles', []).hasAny(['Yönetici', 'Takım Kaptanı', 'Yetkili Öğretmen']))) &&
+         (!('isSuperAdmin' in request.resource.data) ||
+          request.resource.data.isSuperAdmin == resource.data.get('isSuperAdmin', false) ||
+          request.resource.data.isSuperAdmin == false) &&
          (!('isPlatformAdmin' in request.resource.data) || request.resource.data.isPlatformAdmin == resource.data.get('isPlatformAdmin', false)))
       );
 

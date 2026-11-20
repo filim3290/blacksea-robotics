@@ -118,9 +118,10 @@ fun HomeScreen(
     val files by remember(activeTeamId) {
         repository.observeSharedFiles(teamId = activeTeamId)
     }.collectAsState(initial = emptyList())
-    val teamMemberships by remember(activeTeamId) {
+    val teamMembershipsState by remember(activeTeamId) {
         repository.observeTeamMemberships(activeTeamId)
-    }.collectAsState(initial = emptyList())
+    }.collectAsState(initial = null)
+    val teamMemberships = teamMembershipsState.orEmpty()
     val approvedMembers = remember(teamMemberships) {
         teamMemberships.filter { it.isActive() }
     }
@@ -137,8 +138,8 @@ fun HomeScreen(
 
     var showAddTaskDialog by remember { mutableStateOf(false) }
 
-    LaunchedEffect(activeTeamId, approvedMembers.size, activeTeam.memberCount, currentUid) {
-        if (currentUid.isNotBlank() && approvedMembers.isNotEmpty() && activeTeam.memberCount != approvedMembers.size.toLong()) {
+    LaunchedEffect(activeTeamId, teamMembershipsState, approvedMembers.size, activeTeam.memberCount, currentUid) {
+        if (teamMembershipsState != null && currentUid.isNotBlank() && activeTeam.memberCount != approvedMembers.size.toLong()) {
             repository.syncTeamMemberCountIfDrifted(activeTeamId, approvedMembers.size.toLong())
         }
     }

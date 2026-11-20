@@ -2659,15 +2659,27 @@ class BlackseaRepository(val db: FirebaseFirestore) {
             try {
                 val userRef = db.collection("users").document(uid)
                 val userSnap = userRef.get().await()
+                val userEmail = userSnap.getString("email").orEmpty().trim()
+                val isFounder = userEmail.equals(PLATFORM_FOUNDER_EMAIL, ignoreCase = true)
+                val isBsrTeacher = userEmail.equals(BLACKSEA_AUTHORIZED_TEACHER_EMAIL, ignoreCase = true)
+                val userUpdates = mutableMapOf<String, Any>()
                 if (userSnap.getString("activeTeamId") == cleanTeamId) {
-                    userRef.update(
-                        mapOf(
-                            "activeTeamId" to "",
-                            "updatedAt" to FieldValue.serverTimestamp()
-                        )
-                    ).await()
+                    userUpdates["activeTeamId"] = ""
                 }
-            } catch (_: Exception) {
+                // Prevent leaving BSR from triggering legacy BSR auto-membership fallback
+                if (cleanTeamId == PLATFORM_MAIN_TEAM_ID && !isFounder && !isBsrTeacher) {
+                    userUpdates["team"] = TeamType.GENERAL.displayName
+                    userUpdates["role"] = "Takım Üyesi"
+                    userUpdates["roles"] = listOf("Takım Üyesi")
+                    userUpdates["isSuperAdmin"] = false
+                    userUpdates["activeTeamId"] = ""
+                }
+                if (userUpdates.isNotEmpty()) {
+                    userUpdates["updatedAt"] = FieldValue.serverTimestamp()
+                    userRef.update(userUpdates).await()
+                }
+            } catch (userEx: Exception) {
+                logDebugWarn("Repository", "User profile cleanup skipped during leaveTeam", userEx)
             }
             Result.success(Unit)
         } catch (ce: CancellationException) {
@@ -2688,23 +2700,103 @@ class BlackseaRepository(val db: FirebaseFirestore) {
         } catch (e: Exception) {
             return Result.failure(e)
         }
+        val callerIsFounder = auth.currentUser?.email?.trim()
+            .equals(PLATFORM_FOUNDER_EMAIL, ignoreCase = true)
 
         return try {
-            val teamRef = db.collection("teams").document(cleanTeamId)
-            val teamSnap = teamRef.get().await()
-            if (!teamSnap.exists()) {
-                return Result.failure(IllegalArgumentException("Takım zaten silinmiş."))
-            }
-            if (teamSnap.getBoolean("isMainTeam") == true) {
-                return Result.failure(IllegalArgumentException("Ana platform takımı silinemez."))
-            }
-
             suspend fun deleteCollectionRefs(refs: List<com.google.firebase.firestore.DocumentReference>) {
                 refs.chunked(450).forEach { chunk ->
                     val batch = db.batch()
                     chunk.forEach { batch.delete(it) }
                     batch.commit().await()
                 }
+            }
+
+            suspend fun clearStaleActiveTeamIds(targetTeamId: String, candidateUserIds: Set<String>) {
+                if (callerIsFounder) {
+                    val uidsToClear = candidateUserIds.toMutableSet()
+                    try {
+                        val activeMatches = db.collection("users")
+                            .whereEqualTo("activeTeamId", targetTeamId)
+                            .get()
+                            .await()
+                        activeMatches.documents.forEach { doc ->
+                            if (doc.id.isNotBlank()) uidsToClear.add(doc.id)
+                        }
+                    } catch (_: Exception) {
+                    }
+                    uidsToClear.forEach { targetUid ->
+                        try {
+                            val uRef = db.collection("users").document(targetUid)
+                            val uSnap = uRef.get().await()
+                            if (uSnap.exists() && uSnap.getString("activeTeamId") == targetTeamId) {
+                                uRef.update(
+                                    mapOf(
+                                        "activeTeamId" to "",
+                                        "updatedAt" to FieldValue.serverTimestamp()
+                                    )
+                                ).await()
+                            }
+                        } catch (_: Exception) {
+                        }
+                    }
+                } else {
+                    try {
+                        val ownRef = db.collection("users").document(uid)
+                        val ownSnap = ownRef.get().await()
+                        if (ownSnap.exists() && ownSnap.getString("activeTeamId") == targetTeamId) {
+                            ownRef.update(
+                                mapOf(
+                                    "activeTeamId" to "",
+                                    "updatedAt" to FieldValue.serverTimestamp()
+                                )
+                            ).await()
+                        }
+                    } catch (_: Exception) {
+                    }
+                }
+            }
+
+            val teamRef = db.collection("teams").document(cleanTeamId)
+            val teamSnap = teamRef.get().await()
+            if (!teamSnap.exists()) {
+                // Clean up any orphaned memberships, watchers, or stale activeTeamId pointing to this non-existent team
+                val orphanMemberships = try {
+                    db.collection("team_memberships")
+                        .whereEqualTo("teamId", cleanTeamId)
+                        .get()
+                        .await()
+                        .documents
+                } catch (_: Exception) {
+                    emptyList()
+                }
+                val orphanUids = orphanMemberships
+                    .mapNotNull { it.getString("userId")?.trim()?.takeIf { id -> id.isNotBlank() } }
+                    .toSet()
+                val callerMembershipId = "${cleanTeamId}_$uid"
+                if (orphanMemberships.isNotEmpty()) {
+                    deleteCollectionRefs(orphanMemberships.filter { it.id != callerMembershipId }.map { it.reference })
+                    orphanMemberships.firstOrNull { it.id == callerMembershipId }?.let {
+                        try { it.reference.delete().await() } catch (_: Exception) {}
+                    }
+                }
+                try {
+                    val watchersSnap = db.collection("team_reopen_watchers")
+                        .whereEqualTo("teamId", cleanTeamId)
+                        .get()
+                        .await()
+                    deleteCollectionRefs(watchersSnap.documents.map { it.reference })
+                } catch (_: Exception) {
+                }
+                clearStaleActiveTeamIds(cleanTeamId, orphanUids)
+                return if (callerIsFounder || orphanMemberships.isNotEmpty()) {
+                    Result.success(Unit)
+                } else {
+                    Result.failure(IllegalArgumentException("Takım zaten silinmiş."))
+                }
+            }
+            if (teamSnap.getBoolean("isMainTeam") == true) {
+                return Result.failure(IllegalArgumentException("Ana platform takımı silinemez."))
             }
 
             // 1. Delete rooms and nested messages while caller is still team manager
@@ -2767,6 +2859,9 @@ class BlackseaRepository(val db: FirebaseFirestore) {
                 .whereEqualTo("teamId", cleanTeamId)
                 .get()
                 .await()
+            val affectedMemberUids = membershipsSnap.documents
+                .mapNotNull { it.getString("userId")?.trim()?.takeIf { id -> id.isNotBlank() } }
+                .toSet()
             val otherMembershipRefs = membershipsSnap.documents
                 .filter { it.id != callerMembershipId }
                 .map { it.reference }
@@ -2786,6 +2881,9 @@ class BlackseaRepository(val db: FirebaseFirestore) {
                 }
             }
 
+            // 8. Clear stale activeTeamId on affected user profiles
+            clearStaleActiveTeamIds(cleanTeamId, affectedMemberUids)
+
             Result.success(Unit)
         } catch (ce: CancellationException) {
             throw ce
@@ -2793,6 +2891,88 @@ class BlackseaRepository(val db: FirebaseFirestore) {
             handleFirestoreError(e, OperationType.DELETE, "teams/$cleanTeamId")
             Result.failure(e)
         }
+    }
+
+    /**
+     * Permanently removes orphaned `/team_memberships` and stale `/users.activeTeamId` pointers
+     * whose `teamId` is confirmed absent on the Firestore server (safe founder-only self-healing).
+     */
+    suspend fun cleanupOrphanedTeamMembershipsForAdmin(
+        memberships: List<TeamMembership>,
+        allTeams: List<TeamInfo>
+    ): Int {
+        val callerIsFounder = auth.currentUser?.email?.trim()
+            .equals(PLATFORM_FOUNDER_EMAIL, ignoreCase = true)
+        if (!callerIsFounder || allTeams.isEmpty()) return 0
+
+        val knownTeamIds = allTeams.map { it.id.trim() }.filter { it.isNotBlank() }.toSet() + PLATFORM_MAIN_TEAM_ID
+        val rejectedTeamIds = allTeams
+            .filter { it.isRejected() && !it.isMainTeam && it.id != PLATFORM_MAIN_TEAM_ID }
+            .map { it.id.trim() }
+            .toSet()
+
+        val candidateMissingTeamIds = memberships
+            .map { it.teamId.trim() }
+            .filter { it.isNotBlank() && it !in knownTeamIds }
+            .distinct()
+
+        var cleanedCount = 0
+        for (missingTeamId in candidateMissingTeamIds) {
+            try {
+                val serverSnap = db.collection("teams").document(missingTeamId).get(Source.SERVER).await()
+                if (!serverSnap.exists()) {
+                    val orphanSnap = db.collection("team_memberships")
+                        .whereEqualTo("teamId", missingTeamId)
+                        .get(Source.SERVER)
+                        .await()
+                    val refs = orphanSnap.documents.map { it.reference }
+                    refs.chunked(450).forEach { chunk ->
+                        val batch = db.batch()
+                        chunk.forEach { batch.delete(it) }
+                        batch.commit().await()
+                    }
+                    cleanedCount += refs.size
+                    orphanSnap.documents
+                        .mapNotNull { it.getString("userId")?.trim()?.takeIf { id -> id.isNotBlank() } }
+                        .distinct()
+                        .forEach { affectedUid ->
+                            try {
+                                val uRef = db.collection("users").document(affectedUid)
+                                val uSnap = uRef.get().await()
+                                if (uSnap.exists() && uSnap.getString("activeTeamId") == missingTeamId) {
+                                    uRef.update(
+                                        mapOf(
+                                            "activeTeamId" to "",
+                                            "updatedAt" to FieldValue.serverTimestamp()
+                                        )
+                                    ).await()
+                                }
+                            } catch (_: Exception) {
+                            }
+                        }
+                }
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (e: Exception) {
+                logDebugWarn("Repository", "Orphaned team cleanup skipped for $missingTeamId", e)
+            }
+        }
+
+        // Also clean any stray memberships with blank teamId or attached to a permanently rejected team application
+        val strayMembershipIds = memberships
+            .filter { m -> m.id.isNotBlank() && (m.teamId.isBlank() || m.teamId.trim() in rejectedTeamIds) }
+            .map { it.id }
+        for (strayId in strayMembershipIds) {
+            try {
+                db.collection("team_memberships").document(strayId).delete().await()
+                cleanedCount++
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (_: Exception) {
+            }
+        }
+
+        return cleanedCount
     }
 
     suspend fun updateMyTeamMembershipProfile(
